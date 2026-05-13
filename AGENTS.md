@@ -44,7 +44,7 @@ just test               # cargo nextest + maintenance script tests
 just check              # formatting check + cargo nextest + maintenance script tests
 ```
 
-Default flow: run `just check` before committing.
+Default flow: run `just check` before committing. Do not commit until `just check` passes locally unless Can explicitly accepts a narrower validation for that commit.
 
 Unit tests live next to the code (`#[cfg(test)] mod tests`). If you add behavior to `AppState` or `Workspace`, it should be testable with `AppState::test_new()` and `Workspace::test_new()` — no PTYs.
 
@@ -93,3 +93,7 @@ The release workflow must publish these four assets:
 ```
 
 The app update check and the in-app **What's New** flow both depend on that exact manifest shape.
+
+Do not edit `website/latest.json` during normal feature, fix, or test work. It describes the latest published release binaries, not the current unreleased source tree. The release workflow updates it after release assets are published.
+
+When changing the server/client wire protocol, bump `src/server/protocol.rs::PROTOCOL_VERSION` and update all hardcoded protocol expectations and manual protocol fixtures in tests. Keep protocol test expectations intentionally explicit so compatibility changes are reviewed instead of silently following the constant.

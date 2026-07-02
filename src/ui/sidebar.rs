@@ -122,7 +122,6 @@ fn agent_panel_entries_with_runtimes(
         .iter()
         .enumerate()
         .flat_map(|(ws_idx, ws)| {
-            let multi_tab = ws.tabs.len() > 1;
             let workspace_label = ws.display_name_from(&app.terminals, terminal_runtimes);
             ws.pane_details(&app.terminals)
                 .into_iter()
@@ -131,7 +130,7 @@ fn agent_panel_entries_with_runtimes(
                     tab_idx: detail.tab_idx,
                     pane_id: detail.pane_id,
                     primary_label: workspace_label.clone(),
-                    primary_tab_label: multi_tab.then_some(detail.tab_label),
+                    primary_tab_label: Some(detail.tab_label),
                     agent_label: Some(detail.agent_label),
                     state: detail.state,
                     seen: detail.seen,
@@ -1182,7 +1181,7 @@ mod tests {
 
         let entries = agent_panel_entries(&app);
         assert_eq!(entries[0].primary_label, "one");
-        assert!(entries[0].primary_tab_label.is_none());
+        assert_eq!(entries[0].primary_tab_label.as_deref(), Some("1"));
         assert_eq!(entries[0].agent_label.as_deref(), Some("pi"));
         assert_eq!(entries[1].primary_label, "two");
         assert_eq!(entries[1].primary_tab_label.as_deref(), Some("logs"));

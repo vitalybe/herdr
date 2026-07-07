@@ -66,6 +66,8 @@ pub struct WorkspaceSnapshot {
     pub tabs: Vec<TabSnapshot>,
     #[serde(default)]
     pub active_tab: usize,
+    #[serde(default)]
+    pub home_tab: usize,
 }
 
 #[derive(Deserialize)]
@@ -162,6 +164,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             next_public_tab_number: 0,
             tabs: vec![tab],
             active_tab: 0,
+            home_tab: 0,
         }
     }
 }
@@ -303,6 +306,7 @@ fn capture_workspace(
             .map(|tab| capture_tab(tab, terminals, terminal_runtimes))
             .collect(),
         active_tab: ws.active_tab,
+        home_tab: ws.home_tab,
     }
 }
 
@@ -645,6 +649,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                home_tab: 0,
             }],
             active: Some(0),
             selected: 0,
@@ -799,13 +804,14 @@ mod tests {
         let mut state = state_with_workspaces(&["one"]);
         state.workspaces[0].set_custom_name("renamed-workspace".into());
         let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
-        state.workspaces[0].switch_tab(second_tab);
+        state.workspaces[0].switch_tab_sticky(second_tab);
         state.workspaces[0].tabs[0].set_custom_name("main".into());
 
         let snapshot = capture_from_state(&state);
         let workspace = &snapshot.workspaces[0];
         assert_eq!(workspace.custom_name.as_deref(), Some("renamed-workspace"));
         assert_eq!(workspace.active_tab, second_tab);
+        assert_eq!(workspace.home_tab, second_tab);
         assert_eq!(workspace.tabs[0].custom_name.as_deref(), Some("main"));
         assert_eq!(workspace.tabs[1].custom_name.as_deref(), Some("logs"));
     }
@@ -1150,6 +1156,14 @@ mod tests {
     }
 
     #[test]
+    fn home_tab_default_is_zero() {
+        // Snapshots written before home_tab existed must still load.
+        let json = r#"{"custom_name":"test","identity_cwd":"/tmp","tabs":[],"active_tab":2}"#;
+        let ws: WorkspaceSnapshot = serde_json::from_str(json).unwrap();
+        assert_eq!(ws.home_tab, 0);
+    }
+
+    #[test]
     fn restore_falls_back_to_home_when_cwd_missing() {
         let mut panes = HashMap::new();
         panes.insert(
@@ -1200,6 +1214,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                home_tab: 0,
             }],
             active: Some(0),
             selected: 0,

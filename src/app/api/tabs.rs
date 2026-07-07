@@ -116,7 +116,7 @@ impl App {
                     }
                 }
                 if focus {
-                    self.state.switch_workspace_tab(ws_idx, tab_idx);
+                    self.state.switch_workspace_tab_sticky(ws_idx, tab_idx);
                     self.state.mode = Mode::Terminal;
                 }
                 self.schedule_session_save();
@@ -135,7 +135,7 @@ impl App {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return tab_not_found(id, &target.tab_id);
         };
-        self.state.switch_workspace_tab(ws_idx, tab_idx);
+        self.state.switch_workspace_tab_sticky(ws_idx, tab_idx);
         let tab = self.tab_info(ws_idx, tab_idx).unwrap();
 
         encode_success(id, ResponseResult::TabInfo { tab })

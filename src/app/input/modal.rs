@@ -165,15 +165,10 @@ pub(crate) fn handle_navigator_key(
     if state.navigator.search_focused {
         match key.code {
             KeyCode::Esc => {
-                if state.navigator.query.is_empty() {
-                    state.navigator.search_focused = false;
-                    leave_modal(state);
-                } else {
-                    state.navigator.query.clear();
-                    state.navigator.state_filter = None;
-                    state.navigator.search_focused = false;
-                    state.clamp_navigator_selection_from(terminal_runtimes);
-                }
+                state.navigator.query.clear();
+                state.navigator.state_filter = None;
+                state.navigator.search_focused = false;
+                state.clamp_navigator_selection_from(terminal_runtimes);
             }
             KeyCode::Enter => {
                 state.accept_navigator_selection_from(terminal_runtimes);

@@ -1509,10 +1509,8 @@ impl AppState {
             return;
         };
 
-        let visible = self.tab_bar_visible_order(ws);
         let layout = crate::ui::compute_tab_bar_view(
             ws,
-            &visible,
             area,
             self.tab_scroll,
             self.tab_scroll_follow_active,

@@ -547,9 +547,9 @@ You can also toggle it from Settings > Experiments > switch to ascii input sourc
 
 ## Hide tabs with agents
 
-If you drive agents mostly from the agents panel, the tab bar and spaces list can get crowded with agent tabs you never switch to directly.
+If you drive agents mostly from the agents panel, the spaces list can get crowded with agent-only spaces you never switch to directly.
 
-Set `hide_tabs_with_agents = true` to keep agent tabs out of the way:
+Set `hide_tabs_with_agents = true` to keep them out of the way:
 
 ```toml
 [experimental]
@@ -558,11 +558,10 @@ hide_tabs_with_agents = false
 
 When enabled:
 
-- Tabs that contain a running agent are dropped from the top tab bar. The active tab stays visible even if it is an agent tab, so a focused agent is never hidden.
-- Spaces whose tabs are all agents disappear from the spaces list, the collapsed rail, and space navigation.
-- Focusing an agent no longer highlights its space; the space selection clears while an agent is focused.
+- Spaces whose tabs are all agent tabs disappear from the spaces list, the collapsed rail, and space navigation.
+- Focusing an agent tab no longer highlights its space; the space selection clears while an agent tab is focused.
 
-Tabs and spaces that mix agents with plain shells stay visible. You can also toggle this from Settings > Experiments > hide tabs with agents.
+A tab counts as an agent tab only when every pane in it is an agent. Tabs that mix agents with plain shells are not agent tabs, and spaces containing any non-agent tab stay visible. Tabs are never removed from the top tab bar. You can also toggle this from Settings > Experiments > hide tabs with agents.
 
 ## Environment variables
 

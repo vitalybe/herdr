@@ -1390,9 +1390,9 @@ pub struct AppState {
     /// CJK IME is active. macOS only; a no-op elsewhere. See
     /// `[experimental] switch_ascii_input_source_in_prefix`.
     pub switch_ascii_input_source_in_prefix: bool,
-    /// Hide tabs that contain a running agent from the top tab bar (except the
-    /// active tab), hide agent-only spaces from the spaces list, and suppress
-    /// the space highlight while an agent is focused. See
+    /// Hide agent-only spaces (spaces whose every tab is an agent tab) from the
+    /// spaces list, collapsed rail, and navigation, and suppress the space
+    /// highlight while an agent tab is focused. See
     /// `[experimental] hide_tabs_with_agents`.
     pub hide_tabs_with_agents: bool,
     pub kitty_graphics_enabled: bool,
@@ -1480,26 +1480,8 @@ impl AppState {
         self.hide_tabs_with_agents
     }
 
-    /// Tab indices of the active workspace's tabs to show in the top tab bar,
-    /// in display order. With `hide_tabs_with_agents` on, tabs that contain an
-    /// agent are dropped, except the active tab which always stays visible.
-    pub(crate) fn tab_bar_visible_order(&self, ws: &crate::workspace::Workspace) -> Vec<usize> {
-        if !self.hide_tabs_with_agents {
-            return (0..ws.tabs.len()).collect();
-        }
-        (0..ws.tabs.len())
-            .filter(|&idx| {
-                idx == ws.active_tab
-                    || ws
-                        .tabs
-                        .get(idx)
-                        .is_none_or(|tab| !tab.has_agent_pane(&self.terminals))
-            })
-            .collect()
-    }
-
     /// True when the space list highlight should be suppressed because the
-    /// focused pane belongs to an agent tab under `hide_tabs_with_agents`.
+    /// focused tab is an agent tab under `hide_tabs_with_agents`.
     pub(crate) fn space_highlight_suppressed(&self) -> bool {
         if !self.hide_tabs_with_agents {
             return false;
@@ -1507,18 +1489,14 @@ impl AppState {
         self.active
             .and_then(|idx| self.workspaces.get(idx))
             .and_then(|ws| ws.tabs.get(ws.active_tab))
-            .is_some_and(|tab| tab.has_agent_pane(&self.terminals))
+            .is_some_and(|tab| tab.is_agent_tab(&self.terminals))
     }
 
-    /// True when the workspace has at least one tab and every tab contains an
-    /// agent, i.e. it should be hidden from the spaces list under
+    /// True when the workspace has at least one tab and every tab is an agent
+    /// tab, i.e. it should be hidden from the spaces list under
     /// `hide_tabs_with_agents`.
     pub(crate) fn workspace_is_agent_only(&self, ws: &crate::workspace::Workspace) -> bool {
-        !ws.tabs.is_empty()
-            && ws
-                .tabs
-                .iter()
-                .all(|tab| tab.has_agent_pane(&self.terminals))
+        !ws.tabs.is_empty() && ws.tabs.iter().all(|tab| tab.is_agent_tab(&self.terminals))
     }
 
     pub(crate) fn pane_exposes_host_cursor(

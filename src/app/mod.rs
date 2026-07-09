@@ -1422,10 +1422,7 @@ impl App {
                 config.experimental.cjk_ime_cursor_shape.to_decscusr();
             self.state.switch_ascii_input_source_in_prefix =
                 config.experimental.switch_ascii_input_source_in_prefix;
-            if self.state.hide_tabs_with_agents != config.experimental.hide_tabs_with_agents {
-                self.state.hide_tabs_with_agents = config.experimental.hide_tabs_with_agents;
-                self.state.refresh_tab_bar_view();
-            }
+            self.state.hide_tabs_with_agents = config.experimental.hide_tabs_with_agents;
             self.persist_pane_history = config.experimental.pane_history;
             self.state.pane_history_persistence = config.experimental.pane_history;
             if !self.persist_pane_history {

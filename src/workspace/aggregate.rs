@@ -31,14 +31,19 @@ impl Tab {
         })
     }
 
-    /// True when any pane in this tab is attached to an agent terminal,
-    /// regardless of the agent's current state (idle, working, or blocked).
-    pub fn has_agent_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
-        self.panes.values().any(|pane| {
-            terminals
-                .get(&pane.attached_terminal_id)
-                .is_some_and(TerminalState::is_agent_terminal)
-        })
+    /// True when this tab is an agent tab: it has at least one pane attached to
+    /// an agent terminal and no non-agent panes. A tab that mixes agent and
+    /// non-agent panes is not an agent tab. The agent's current state (idle,
+    /// working, or blocked) does not matter.
+    pub fn is_agent_tab(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
+        let mut saw_agent = false;
+        for pane in self.panes.values() {
+            match terminals.get(&pane.attached_terminal_id) {
+                Some(terminal) if terminal.is_agent_terminal() => saw_agent = true,
+                _ => return false,
+            }
+        }
+        saw_agent
     }
 
     fn pane_details(
@@ -203,6 +208,45 @@ mod tests {
 
         assert_eq!(state, AgentState::Idle);
         assert!(!seen);
+    }
+
+    #[test]
+    fn is_agent_tab_requires_all_panes_to_be_agents() {
+        let mut ws = Workspace::test_new("test");
+        let id2 = ws.test_split(Direction::Horizontal);
+        let root_id = ws.tabs[0]
+            .panes
+            .keys()
+            .find(|id| **id != id2)
+            .copied()
+            .unwrap();
+
+        let mut terminals = HashMap::new();
+        let mut root_terminal = terminal_for_pane(&ws, root_id);
+        root_terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+        terminals.insert(root_terminal.id.clone(), root_terminal);
+        let second_terminal = terminal_for_pane(&ws, id2);
+        terminals.insert(second_terminal.id.clone(), second_terminal);
+
+        // One agent pane, one plain shell pane: mixed, so not an agent tab.
+        assert!(!ws.tabs[0].is_agent_tab(&terminals));
+
+        // Both panes are agents: agent tab.
+        terminals
+            .get_mut(ws.terminal_id(id2).unwrap())
+            .unwrap()
+            .set_detected_state(Some(Agent::Pi), AgentState::Working);
+        assert!(ws.tabs[0].is_agent_tab(&terminals));
+    }
+
+    #[test]
+    fn is_agent_tab_false_without_any_agent() {
+        let ws = Workspace::test_new("test");
+        let root = ws.tabs[0].root_pane;
+        let mut terminals = HashMap::new();
+        let terminal = terminal_for_pane(&ws, root);
+        terminals.insert(terminal.id.clone(), terminal);
+        assert!(!ws.tabs[0].is_agent_tab(&terminals));
     }
 
     #[test]

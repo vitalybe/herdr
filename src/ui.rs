@@ -227,8 +227,10 @@ fn compute_view_internal(
         .active
         .and_then(|i| app.workspaces.get(i))
         .map(|ws| {
+            let visible = app.tab_bar_visible_order(ws);
             compute_tab_bar_view(
                 ws,
+                &visible,
                 tab_bar_rect,
                 app.tab_scroll,
                 app.tab_scroll_follow_active,

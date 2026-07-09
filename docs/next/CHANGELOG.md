@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Added `[experimental] hide_tabs_with_agents` (and Settings > Experiments > hide tabs with agents) to keep tabs containing a running agent out of the top tab bar except when active, hide spaces whose tabs are all agents from the spaces list and navigation, and stop highlighting a space while an agent is focused.
 - Added `ui.agent_panel.rows` to customize the two lines of each agent-panel entry with a small template language. Fields (`{icon}`, `{space}`, `{tab}`, `{status}`, `{agent}`, `{custom}`) can carry a literal prefix and a color style, e.g. `{agent:overlay0}`, `{agent:#f5c2e7}`, or `{space:text+bold}`. Colors are theme palette tokens or fixed literal colors with optional `+bold`/`+dim`/`+italic`/`+underline` modifiers.
 - Added `ui.sidebar_collapsed_mode = "hidden"` to make a collapsed sidebar use zero width while keeping the existing compact rail as the default. (#842)
 - Added `session.snapshot` to bootstrap client runtime state in one socket API response before subscribing to events.

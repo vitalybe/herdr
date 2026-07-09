@@ -113,6 +113,19 @@ impl App {
         }
     }
 
+    pub(super) fn save_hide_tabs_with_agents(&mut self, enabled: bool) {
+        if self.update_config_file("hide tabs with agents", |content| {
+            crate::config::upsert_section_bool(
+                content,
+                "experimental",
+                "hide_tabs_with_agents",
+                enabled,
+            )
+        }) {
+            self.apply_config_from_disk(false);
+        }
+    }
+
     pub(super) fn save_agent_panel_sort(&mut self, sort: crate::app::state::AgentPanelSort) {
         let value = match sort {
             crate::app::state::AgentPanelSort::Spaces => {

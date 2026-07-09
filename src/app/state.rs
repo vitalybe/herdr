@@ -880,10 +880,15 @@ impl SettingsSection {
 pub(crate) enum ExperimentSetting {
     PaneHistory,
     SwitchAsciiInputSourceInPrefix,
+    HideTabsWithAgents,
 }
 
 impl ExperimentSetting {
-    pub(crate) const ALL: [Self; 2] = [Self::PaneHistory, Self::SwitchAsciiInputSourceInPrefix];
+    pub(crate) const ALL: [Self; 3] = [
+        Self::PaneHistory,
+        Self::SwitchAsciiInputSourceInPrefix,
+        Self::HideTabsWithAgents,
+    ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -891,6 +896,7 @@ impl ExperimentSetting {
             Self::SwitchAsciiInputSourceInPrefix => {
                 "switch to ascii input source in prefix (macOS)"
             }
+            Self::HideTabsWithAgents => "hide tabs with agents",
         }
     }
 
@@ -900,6 +906,7 @@ impl ExperimentSetting {
             Self::SwitchAsciiInputSourceInPrefix => {
                 state.switch_ascii_input_source_in_prefix_enabled()
             }
+            Self::HideTabsWithAgents => state.hide_tabs_with_agents_enabled(),
         }
     }
 }
@@ -1383,6 +1390,11 @@ pub struct AppState {
     /// CJK IME is active. macOS only; a no-op elsewhere. See
     /// `[experimental] switch_ascii_input_source_in_prefix`.
     pub switch_ascii_input_source_in_prefix: bool,
+    /// Hide tabs that contain a running agent from the top tab bar (except the
+    /// active tab), hide agent-only spaces from the spaces list, and suppress
+    /// the space highlight while an agent is focused. See
+    /// `[experimental] hide_tabs_with_agents`.
+    pub hide_tabs_with_agents: bool,
     pub kitty_graphics_enabled: bool,
     pub default_shell: String,
     pub shell_mode: crate::config::ShellModeConfig,
@@ -1462,6 +1474,51 @@ impl AppState {
 
     pub fn switch_ascii_input_source_in_prefix_enabled(&self) -> bool {
         self.switch_ascii_input_source_in_prefix
+    }
+
+    pub fn hide_tabs_with_agents_enabled(&self) -> bool {
+        self.hide_tabs_with_agents
+    }
+
+    /// Tab indices of the active workspace's tabs to show in the top tab bar,
+    /// in display order. With `hide_tabs_with_agents` on, tabs that contain an
+    /// agent are dropped, except the active tab which always stays visible.
+    pub(crate) fn tab_bar_visible_order(&self, ws: &crate::workspace::Workspace) -> Vec<usize> {
+        if !self.hide_tabs_with_agents {
+            return (0..ws.tabs.len()).collect();
+        }
+        (0..ws.tabs.len())
+            .filter(|&idx| {
+                idx == ws.active_tab
+                    || ws
+                        .tabs
+                        .get(idx)
+                        .is_none_or(|tab| !tab.has_agent_pane(&self.terminals))
+            })
+            .collect()
+    }
+
+    /// True when the space list highlight should be suppressed because the
+    /// focused pane belongs to an agent tab under `hide_tabs_with_agents`.
+    pub(crate) fn space_highlight_suppressed(&self) -> bool {
+        if !self.hide_tabs_with_agents {
+            return false;
+        }
+        self.active
+            .and_then(|idx| self.workspaces.get(idx))
+            .and_then(|ws| ws.tabs.get(ws.active_tab))
+            .is_some_and(|tab| tab.has_agent_pane(&self.terminals))
+    }
+
+    /// True when the workspace has at least one tab and every tab contains an
+    /// agent, i.e. it should be hidden from the spaces list under
+    /// `hide_tabs_with_agents`.
+    pub(crate) fn workspace_is_agent_only(&self, ws: &crate::workspace::Workspace) -> bool {
+        !ws.tabs.is_empty()
+            && ws
+                .tabs
+                .iter()
+                .all(|tab| tab.has_agent_pane(&self.terminals))
     }
 
     pub(crate) fn pane_exposes_host_cursor(
@@ -1732,6 +1789,7 @@ impl AppState {
             cjk_ime_agents: Vec::new(),
             cjk_ime_cursor_shape: 2, // steady_block
             switch_ascii_input_source_in_prefix: false,
+            hide_tabs_with_agents: false,
             kitty_graphics_enabled: false,
             default_shell: String::new(),
             shell_mode: crate::config::ShellModeConfig::Auto,

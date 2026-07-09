@@ -929,6 +929,11 @@ pub struct ExperimentalConfig {
     /// source when prefix mode exits. macOS only; a no-op elsewhere and a
     /// best-effort no-op if the switch fails. Default: false.
     pub switch_ascii_input_source_in_prefix: bool,
+    /// Keep tabs that contain a running agent out of the top tab bar (except
+    /// the active tab), hide spaces whose tabs are all agents from the spaces
+    /// list, and stop highlighting a space when an agent is focused. Default:
+    /// false.
+    pub hide_tabs_with_agents: bool,
 }
 
 impl Default for KeysConfig {

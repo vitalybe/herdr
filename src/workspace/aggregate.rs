@@ -31,6 +31,16 @@ impl Tab {
         })
     }
 
+    /// True when any pane in this tab is attached to an agent terminal,
+    /// regardless of the agent's current state (idle, working, or blocked).
+    pub fn has_agent_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
+        self.panes.values().any(|pane| {
+            terminals
+                .get(&pane.attached_terminal_id)
+                .is_some_and(TerminalState::is_agent_terminal)
+        })
+    }
+
     fn pane_details(
         &self,
         terminals: &HashMap<TerminalId, TerminalState>,

@@ -366,6 +366,18 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
             }
         }
     }
+
+    // Under `hide_tabs_with_agents`, drop spaces whose tabs are all agents so
+    // they never surface in the spaces list, navigation, or switcher.
+    if app.hide_tabs_with_agents {
+        entries.retain(|entry| match entry {
+            WorkspaceListEntry::Workspace { ws_idx, .. } => app
+                .workspaces
+                .get(*ws_idx)
+                .is_none_or(|ws| !app.workspace_is_agent_only(ws)),
+        });
+    }
+
     entries
 }
 
@@ -617,15 +629,23 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         return;
     }
 
+    let suppress_active = app.space_highlight_suppressed();
+    let mut row: u16 = 0;
     for (visible_idx, ws) in app.workspaces.iter().enumerate() {
-        let y = ws_area.y + visible_idx as u16;
+        // Under `hide_tabs_with_agents`, agent-only spaces drop out of the
+        // collapsed rail just like they do from the expanded spaces list.
+        if app.hide_tabs_with_agents && app.workspace_is_agent_only(ws) {
+            continue;
+        }
+        let y = ws_area.y + row;
         if y >= ws_area.y + ws_area.height {
             break;
         }
+        row = row.saturating_add(1);
         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
         let (icon, icon_style) = state_dot(agg_state, agg_seen, p);
         let is_selected = visible_idx == app.selected && is_navigating;
-        let is_active = Some(visible_idx) == app.active;
+        let is_active = Some(visible_idx) == app.active && !suppress_active;
         let row_style = if is_selected {
             Style::default().bg(p.surface0)
         } else if is_active {
@@ -802,6 +822,7 @@ fn render_workspace_list(
     let metrics = workspace_list_scroll_metrics(app, area);
     let scrollbar_rect = workspace_list_scrollbar_rect(app, area);
     let cards = &app.view.workspace_card_areas;
+    let suppress_active = app.space_highlight_suppressed();
 
     for card in cards {
         let i = card.ws_idx;
@@ -809,7 +830,7 @@ fn render_workspace_list(
         let row_y = card.rect.y;
         let row_height = card.rect.height;
         let selected = i == app.selected && is_navigating;
-        let is_active = Some(i) == app.active;
+        let is_active = Some(i) == app.active && !suppress_active;
         let is_dragged = dragged_ws_idx == Some(i);
         let highlighted = selected || is_active || is_dragged;
         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
@@ -1699,5 +1720,77 @@ mod tests {
                 },
             ]
         );
+    }
+
+    fn mark_tab_agent(app: &mut AppState, ws_idx: usize, tab_idx: usize) {
+        let pane = app.workspaces[ws_idx].tabs[tab_idx].root_pane;
+        let terminal_id = app.workspaces[ws_idx].tabs[tab_idx].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals
+            .get_mut(&terminal_id)
+            .expect("terminal exists")
+            .detected_agent = Some(Agent::Pi);
+    }
+
+    #[test]
+    fn hide_tabs_with_agents_hides_agent_only_spaces() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("normal"), Workspace::test_new("agent")];
+        app.active = Some(0);
+        app.ensure_test_terminals();
+        // Workspace 1's only tab is an agent tab, making the whole space agent-only.
+        mark_tab_agent(&mut app, 1, 0);
+
+        app.hide_tabs_with_agents = false;
+        assert_eq!(workspace_list_entries(&app).len(), 2);
+
+        app.hide_tabs_with_agents = true;
+        assert_eq!(
+            workspace_list_entries(&app),
+            vec![WorkspaceListEntry::Workspace {
+                ws_idx: 0,
+                indented: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn hide_tabs_with_agents_keeps_mixed_spaces_visible() {
+        let mut app = AppState::test_new();
+        let mut mixed = Workspace::test_new("mixed");
+        mixed.test_add_tab(Some("agent"));
+        app.workspaces = vec![mixed];
+        app.active = Some(0);
+        app.ensure_test_terminals();
+        mark_tab_agent(&mut app, 0, 1);
+        app.hide_tabs_with_agents = true;
+
+        // Only tab 1 is an agent tab, so the space is not agent-only and stays.
+        assert_eq!(
+            workspace_list_entries(&app),
+            vec![WorkspaceListEntry::Workspace {
+                ws_idx: 0,
+                indented: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn hide_tabs_with_agents_suppresses_highlight_when_agent_focused() {
+        let mut app = AppState::test_new();
+        let mut mixed = Workspace::test_new("mixed");
+        mixed.test_add_tab(Some("agent"));
+        app.workspaces = vec![mixed];
+        app.active = Some(0);
+        app.ensure_test_terminals();
+        mark_tab_agent(&mut app, 0, 1);
+        app.hide_tabs_with_agents = true;
+
+        app.workspaces[0].switch_tab(0);
+        assert!(!app.space_highlight_suppressed());
+
+        app.workspaces[0].switch_tab(1);
+        assert!(app.space_highlight_suppressed());
     }
 }

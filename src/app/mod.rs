@@ -638,6 +638,7 @@ impl App {
             switch_ascii_input_source_in_prefix: config
                 .experimental
                 .switch_ascii_input_source_in_prefix,
+            hide_tabs_with_agents: config.experimental.hide_tabs_with_agents,
             kitty_graphics_enabled: config.experimental.kitty_graphics,
             default_shell: config.terminal.default_shell.clone(),
             shell_mode: config.terminal.shell_mode,
@@ -1421,6 +1422,10 @@ impl App {
                 config.experimental.cjk_ime_cursor_shape.to_decscusr();
             self.state.switch_ascii_input_source_in_prefix =
                 config.experimental.switch_ascii_input_source_in_prefix;
+            if self.state.hide_tabs_with_agents != config.experimental.hide_tabs_with_agents {
+                self.state.hide_tabs_with_agents = config.experimental.hide_tabs_with_agents;
+                self.state.refresh_tab_bar_view();
+            }
             self.persist_pane_history = config.experimental.pane_history;
             self.state.pane_history_persistence = config.experimental.pane_history;
             if !self.persist_pane_history {

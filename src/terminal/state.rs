@@ -112,6 +112,18 @@ struct RecentAgentProcessExit {
     observed_at: Instant,
 }
 
+/// Marks that herdr just fired a persisted resume command into a freshly
+/// spawned shell for `agent`, so the outcome can be watched for a bit: either
+/// the agent's own CLI prints its known "session not found" failure text, or
+/// the watch window elapses without one (assumed success, or an outcome
+/// herdr cannot observe from the screen). Not persisted across restarts - a
+/// fresh watch always starts fresh in the pane that fired the resume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingAgentResumeWatch {
+    pub agent: String,
+    pub fired_at: Instant,
+}
+
 /// Pure state for a server-owned terminal.
 ///
 /// During the migration this is still one-to-one with a pane-backed PTY, but
@@ -147,6 +159,7 @@ pub struct TerminalState {
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
     agent_process_acquisition_pending: bool,
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
+    pub pending_agent_resume_watch: Option<PendingAgentResumeWatch>,
 }
 
 impl TerminalState {
@@ -181,6 +194,7 @@ impl TerminalState {
             recent_agent_process_exit: None,
             agent_process_acquisition_pending: false,
             pending_agent_resume_plan: None,
+            pending_agent_resume_watch: None,
         }
     }
 
@@ -2064,6 +2078,7 @@ impl TerminalState {
         self.recent_agent_process_exit = None;
         self.agent_process_acquisition_pending = false;
         self.pending_agent_resume_plan = None;
+        self.pending_agent_resume_watch = None;
         self.clear_agent_name();
     }
 

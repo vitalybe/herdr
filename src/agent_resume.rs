@@ -217,6 +217,32 @@ pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<
     })
 }
 
+/// Known, agent-specific substrings that the underlying agent CLI itself
+/// prints when a `--resume`/`resume`-style session reference herdr persisted
+/// is no longer valid (e.g. the session was deleted, rotated, or was never
+/// durably written before herdr captured its id). Kept deliberately narrow to
+/// each CLI's exact, stable failure text rather than matching broader
+/// incidental screen content.
+///
+/// Only agents with solid, directly observed evidence of their failure text
+/// are listed here; agents without an entry are simply never recognized as
+/// having failed a resume from screen content alone.
+fn resume_failure_signature(agent: &str) -> Option<&'static str> {
+    match agent {
+        "claude" => Some("No conversation found with session ID:"),
+        _ => None,
+    }
+}
+
+/// Returns true when `screen_text` contains the agent's own known "resume
+/// target no longer exists" output. Used to recover from a persisted
+/// [`AgentSessionRef`] that the agent's CLI no longer recognizes, since herdr
+/// never verifies a resume target against the agent's own session storage
+/// before firing the resume command.
+pub fn resume_failed(agent: &str, screen_text: &str) -> bool {
+    resume_failure_signature(agent).is_some_and(|signature| screen_text.contains(signature))
+}
+
 pub fn dedupe_key(source: &str, agent: &str, session_ref: &AgentSessionRef) -> String {
     format!(
         "{source}\u{0}{agent}\u{0}{:?}\u{0}{}",
@@ -601,6 +627,30 @@ mod tests {
                 .unwrap();
         assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
         assert_eq!(session_ref.value, "agy-id");
+    }
+
+    #[test]
+    fn resume_failed_detects_claude_session_not_found_text() {
+        let screen = "No conversation found with session ID: ba8721cd-7029-42d2-afce-ae274a408734";
+        assert!(resume_failed("claude", screen));
+    }
+
+    #[test]
+    fn resume_failed_ignores_unrelated_screen_content() {
+        let screen = "Welcome back! Continuing your previous conversation.";
+        assert!(!resume_failed("claude", screen));
+        assert!(!resume_failed("claude", ""));
+    }
+
+    #[test]
+    fn resume_failed_has_no_signature_for_agents_without_evidence() {
+        // Only agents with directly observed failure text are recognized;
+        // everything else must not false-positive on arbitrary text.
+        assert!(!resume_failed(
+            "codex",
+            "No conversation found with session ID: x"
+        ));
+        assert!(!resume_failed("unknown-agent", "anything"));
     }
 
     #[test]

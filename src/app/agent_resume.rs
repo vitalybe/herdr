@@ -1,9 +1,16 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use ratatui::layout::Rect;
 
-use super::App;
+use super::state::ToastNotification;
+use super::{App, ToastKind};
+
+/// How long to watch a freshly fired resume command for the agent's own
+/// "session not found" style failure text before giving up and assuming the
+/// resume succeeded (or produced an outcome herdr cannot observe from the
+/// screen).
+const AGENT_RESUME_FAILURE_WATCH_WINDOW: Duration = Duration::from_secs(5);
 
 struct PendingAgentResumeCandidate {
     pane_id: crate::layout::PaneId,
@@ -65,6 +72,8 @@ impl App {
                 allow_empty_theme,
             );
         }
+
+        changed |= self.check_pending_agent_resume_failures(Instant::now());
 
         if changed {
             self.schedule_session_save();
@@ -281,7 +290,73 @@ impl App {
         if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
             terminal.pending_agent_resume_plan = None;
             terminal.respawn_shell_on_exit = false;
+            terminal.pending_agent_resume_watch = Some(crate::terminal::PendingAgentResumeWatch {
+                agent: plan.agent.clone(),
+                fired_at: Instant::now(),
+            });
         }
+        true
+    }
+
+    /// Checks terminals with a just-fired resume command for the agent's own
+    /// "session not found" style failure text.
+    ///
+    /// herdr never verifies a persisted `AgentSessionRef` against the
+    /// agent's own session storage before firing the resume command, so a
+    /// stale ref (session deleted, rotated, or captured before the agent
+    /// durably wrote it) surfaces only as the agent CLI's raw failure text in
+    /// the pane. When that text is observed, the stale session ref is
+    /// cleared so it is not retried on a future restart, and a toast tells
+    /// the user what happened instead of leaving the raw CLI error as the
+    /// only signal. If the watch window elapses without a match, the watch
+    /// is simply dropped.
+    pub(crate) fn check_pending_agent_resume_failures(&mut self, now: Instant) -> bool {
+        let mut outcomes: Vec<(crate::terminal::TerminalId, String, bool)> = Vec::new();
+        for (terminal_id, terminal) in self.state.terminals.iter() {
+            let Some(watch) = terminal.pending_agent_resume_watch.as_ref() else {
+                continue;
+            };
+            let Some(runtime) = self.terminal_runtimes.get(terminal_id) else {
+                continue;
+            };
+            if crate::agent_resume::resume_failed(&watch.agent, &runtime.detection_text()) {
+                outcomes.push((terminal_id.clone(), watch.agent.clone(), true));
+            } else if now.saturating_duration_since(watch.fired_at)
+                >= AGENT_RESUME_FAILURE_WATCH_WINDOW
+            {
+                outcomes.push((terminal_id.clone(), watch.agent.clone(), false));
+            }
+        }
+
+        if outcomes.is_empty() {
+            return false;
+        }
+
+        let previous_toast = self.state.toast.clone();
+        for (terminal_id, agent, failed) in outcomes {
+            let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
+                continue;
+            };
+            terminal.pending_agent_resume_watch = None;
+            if failed {
+                terminal.persisted_agent_session = None;
+                tracing::warn!(
+                    terminal = %terminal_id,
+                    agent = %agent,
+                    "agent resume failed: session no longer recognized by the agent"
+                );
+                self.state.toast = Some(ToastNotification {
+                    kind: ToastKind::NeedsAttention,
+                    title: "agent resume failed".to_string(),
+                    context: format!(
+                        "{agent} no longer recognizes the saved session; the pane's shell is ready for a new one"
+                    ),
+                    position: None,
+                    target: None,
+                });
+            }
+        }
+        self.sync_toast_deadline(previous_toast);
         true
     }
 }
@@ -785,6 +860,199 @@ mod tests {
                 .current_size(),
             (28, 98)
         );
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[cfg(unix)]
+    fn claude_resume_failure_argv() -> Vec<String> {
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "printf '%s' 'No conversation found with session ID: test-session'; sleep 5".into(),
+        ]
+    }
+
+    #[cfg(unix)]
+    fn test_app_with_resume_ready_terminal(
+        terminal_id: &crate::terminal::TerminalId,
+        workspace: crate::workspace::Workspace,
+    ) -> App {
+        let mut app = test_app();
+        app.state.view.pane_infos = workspace.tabs[0]
+            .layout
+            .panes(ratatui::layout::Rect::new(0, 0, 100, 30));
+        app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        app.state.host_terminal_theme = crate::terminal_theme::TerminalTheme {
+            foreground: Some(crate::terminal_theme::RgbColor {
+                r: 220,
+                g: 220,
+                b: 220,
+            }),
+            background: Some(crate::terminal_theme::RgbColor {
+                r: 20,
+                g: 20,
+                b: 20,
+            }),
+        };
+        let _ = terminal_id;
+        app
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pending_agent_resume_launch_starts_failure_watch() {
+        let workspace = crate::workspace::Workspace::test_new("restored");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        let mut app = test_app_with_resume_ready_terminal(&terminal_id, workspace);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test terminal should exist")
+            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
+            agent: "claude".into(),
+            argv: long_running_test_argv(),
+            dedupe_key: "herdr:claude\0claude\0Id\0claude-session".into(),
+        });
+
+        assert!(app.start_pending_agent_resumes(false));
+
+        let terminal = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("terminal should survive launch");
+        let watch = terminal
+            .pending_agent_resume_watch
+            .as_ref()
+            .expect("firing a resume command should start a failure watch");
+        assert_eq!(watch.agent, "claude");
+        assert!(terminal.pending_agent_resume_plan.is_none());
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn check_pending_agent_resume_failures_clears_stale_session_on_known_failure_text() {
+        let workspace = crate::workspace::Workspace::test_new("restored");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        let mut app = test_app_with_resume_ready_terminal(&terminal_id, workspace);
+        {
+            let terminal = app
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("test terminal should exist");
+            terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("stale-session").unwrap(),
+            });
+            terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
+                agent: "claude".into(),
+                argv: claude_resume_failure_argv(),
+                dedupe_key: "herdr:claude\0claude\0Id\0stale-session".into(),
+            });
+        }
+
+        assert!(app.start_pending_agent_resumes(false));
+
+        let signature = "No conversation found with session ID:";
+        for _ in 0..40 {
+            let matched = app
+                .terminal_runtimes
+                .get(&terminal_id)
+                .is_some_and(|runtime| runtime.detection_text().contains(signature));
+            if matched {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        assert!(app.check_pending_agent_resume_failures(Instant::now()));
+
+        let terminal = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("terminal should survive the failed resume");
+        assert!(
+            terminal.persisted_agent_session.is_none(),
+            "a detected resume failure should clear the stale session ref"
+        );
+        assert!(terminal.pending_agent_resume_watch.is_none());
+        let toast = app
+            .state
+            .toast
+            .as_ref()
+            .expect("resume failure should surface a toast");
+        assert_eq!(toast.kind, ToastKind::NeedsAttention);
+        assert_eq!(toast.title, "agent resume failed");
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn check_pending_agent_resume_failures_gives_up_after_window_without_match() {
+        let workspace = crate::workspace::Workspace::test_new("restored");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        let mut app = test_app_with_resume_ready_terminal(&terminal_id, workspace);
+        {
+            let terminal = app
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("test terminal should exist");
+            terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("live-session").unwrap(),
+            });
+            terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
+                agent: "claude".into(),
+                argv: long_running_test_argv(),
+                dedupe_key: "herdr:claude\0claude\0Id\0live-session".into(),
+            });
+        }
+
+        assert!(app.start_pending_agent_resumes(false));
+        let fired_at = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .and_then(|terminal| terminal.pending_agent_resume_watch.as_ref())
+            .map(|watch| watch.fired_at)
+            .expect("firing a resume command should start a failure watch");
+
+        let far_future =
+            fired_at + AGENT_RESUME_FAILURE_WATCH_WINDOW + std::time::Duration::from_secs(1);
+        assert!(app.check_pending_agent_resume_failures(far_future));
+
+        let terminal = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("terminal should survive the resume watch timing out");
+        assert!(terminal.pending_agent_resume_watch.is_none());
+        assert!(
+            terminal.persisted_agent_session.is_some(),
+            "an unresolved watch should not touch the persisted session"
+        );
+        assert!(app.state.toast.is_none());
 
         for (_, runtime) in app.terminal_runtimes.drain() {
             runtime.shutdown();

@@ -314,8 +314,8 @@ pub(super) fn open_rename_workspace(
 ) {
     state.selected = ws_idx;
     state.rename_pane_target = None;
-    state.name_input =
-        state.workspaces[ws_idx].display_name_from(&state.terminals, terminal_runtimes);
+    let name = state.workspaces[ws_idx].display_name_from(&state.terminals, terminal_runtimes);
+    state.set_name_input(name);
     state.name_input_replace_on_type = false;
     state.mode = Mode::RenameWorkspace;
 }
@@ -326,7 +326,7 @@ pub(super) fn open_rename_active_tab(state: &mut AppState, replace_on_type: bool
     state.rename_pane_target = None;
     if let Some(ws) = state.active.and_then(|i| state.workspaces.get(i)) {
         if let Some(name) = ws.active_tab_display_name() {
-            state.name_input = name;
+            state.set_name_input(name);
             state.name_input_replace_on_type = replace_on_type;
             state.mode = Mode::RenameTab;
         }
@@ -344,10 +344,10 @@ pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::Pan
     state.creating_new_tab = false;
     state.requested_new_tab_name = None;
     state.rename_pane_target = Some(pane_id);
-    state.name_input = terminal
-        .and_then(|t| t.manual_label.clone())
-        .unwrap_or_default();
-    state.name_input_replace_on_type = terminal.and_then(|t| t.manual_label.as_ref()).is_none();
+    let manual_label = terminal.and_then(|t| t.manual_label.clone());
+    let replace_on_type = manual_label.is_none();
+    state.set_name_input(manual_label.unwrap_or_default());
+    state.name_input_replace_on_type = replace_on_type;
     state.mode = Mode::RenamePane;
 }
 
@@ -366,10 +366,10 @@ pub(super) fn open_rename_agent(
     state.creating_new_tab = false;
     state.requested_new_tab_name = None;
     state.rename_pane_target = Some(pane_id);
-    state.name_input = terminal
-        .and_then(|t| t.agent_name.clone())
-        .unwrap_or_default();
-    state.name_input_replace_on_type = terminal.and_then(|t| t.agent_name.as_ref()).is_none();
+    let agent_name = terminal.and_then(|t| t.agent_name.clone());
+    let replace_on_type = agent_name.is_none();
+    state.set_name_input(agent_name.unwrap_or_default());
+    state.name_input_replace_on_type = replace_on_type;
     state.mode = Mode::RenameAgent;
 }
 
@@ -385,7 +385,8 @@ pub(super) fn open_new_tab_dialog(state: &mut AppState) {
     state.creating_new_tab = true;
     state.requested_new_tab_name = None;
     state.rename_pane_target = None;
-    state.name_input = next_new_tab_default_name(state);
+    let name = next_new_tab_default_name(state);
+    state.set_name_input(name);
     state.name_input_replace_on_type = true;
     state.mode = Mode::RenameTab;
 }
@@ -539,20 +540,17 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
             }
             state.creating_new_tab = false;
             state.rename_pane_target = None;
-            state.name_input.clear();
-            state.name_input_replace_on_type = false;
+            clear_rename_input(state);
             leave_modal(state);
         }
         ModalAction::Clear => {
-            state.name_input.clear();
-            state.name_input_replace_on_type = false;
+            clear_rename_input(state);
         }
         ModalAction::Cancel => {
             state.creating_new_tab = false;
             state.requested_new_tab_name = None;
             state.rename_pane_target = None;
-            state.name_input.clear();
-            state.name_input_replace_on_type = false;
+            clear_rename_input(state);
             leave_modal(state);
         }
         _ => {}
@@ -562,21 +560,57 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
 fn clear_rename_input(state: &mut AppState) {
     state.name_input.clear();
     state.name_input_replace_on_type = false;
+    state.name_input_cursor = 0;
+}
+
+/// Byte offset of the given char index within `name_input`. Returns the string
+/// length when the index is at (or past) the end, so all edits stay on char
+/// boundaries and never split multi-byte characters.
+fn name_input_byte_offset(state: &AppState, char_idx: usize) -> usize {
+    state
+        .name_input
+        .char_indices()
+        .nth(char_idx)
+        .map(|(byte, _)| byte)
+        .unwrap_or(state.name_input.len())
 }
 
 pub(crate) fn insert_rename_input_text(state: &mut AppState, text: &str) {
     if state.name_input_replace_on_type {
         clear_rename_input(state);
     }
-    state.name_input.push_str(text);
+    let byte = name_input_byte_offset(state, state.name_input_cursor);
+    state.name_input.insert_str(byte, text);
+    state.name_input_cursor += text.chars().count();
 }
 
+/// Backspace: delete the character before the caret.
 fn delete_rename_input_char(state: &mut AppState) {
     if state.name_input_replace_on_type {
         clear_rename_input(state);
-    } else {
-        state.name_input.pop();
+        return;
     }
+    if state.name_input_cursor == 0 {
+        return;
+    }
+    let start = name_input_byte_offset(state, state.name_input_cursor - 1);
+    let end = name_input_byte_offset(state, state.name_input_cursor);
+    state.name_input.replace_range(start..end, "");
+    state.name_input_cursor -= 1;
+}
+
+/// Forward delete: delete the character after the caret.
+fn delete_rename_input_forward_char(state: &mut AppState) {
+    if state.name_input_replace_on_type {
+        clear_rename_input(state);
+        return;
+    }
+    if state.name_input_cursor >= state.name_input_len_chars() {
+        return;
+    }
+    let start = name_input_byte_offset(state, state.name_input_cursor);
+    let end = name_input_byte_offset(state, state.name_input_cursor + 1);
+    state.name_input.replace_range(start..end, "");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -593,58 +627,125 @@ fn rename_word_delete_class(ch: char) -> RenameWordDeleteClass {
     }
 }
 
+/// Char index reached by moving one word to the left of `cursor`: skip any
+/// whitespace, then skip the run of the same character class.
+fn rename_word_left_index(text: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut idx = cursor.min(chars.len());
+    while idx > 0 && chars[idx - 1].is_whitespace() {
+        idx -= 1;
+    }
+    if idx == 0 {
+        return 0;
+    }
+    let class = rename_word_delete_class(chars[idx - 1]);
+    while idx > 0
+        && !chars[idx - 1].is_whitespace()
+        && rename_word_delete_class(chars[idx - 1]) == class
+    {
+        idx -= 1;
+    }
+    idx
+}
+
+/// Char index reached by moving one word to the right of `cursor`: skip the run
+/// at the caret, then any whitespace, landing at the start of the next word.
+fn rename_word_right_index(text: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut idx = cursor.min(len);
+    if idx < len && !chars[idx].is_whitespace() {
+        let class = rename_word_delete_class(chars[idx]);
+        while idx < len
+            && !chars[idx].is_whitespace()
+            && rename_word_delete_class(chars[idx]) == class
+        {
+            idx += 1;
+        }
+    }
+    while idx < len && chars[idx].is_whitespace() {
+        idx += 1;
+    }
+    idx
+}
+
 fn delete_rename_input_word(state: &mut AppState) {
     if state.name_input_replace_on_type {
         clear_rename_input(state);
         return;
     }
+    let target = rename_word_left_index(&state.name_input, state.name_input_cursor);
+    let start = name_input_byte_offset(state, target);
+    let end = name_input_byte_offset(state, state.name_input_cursor);
+    state.name_input.replace_range(start..end, "");
+    state.name_input_cursor = target;
+}
 
-    while state
-        .name_input
-        .chars()
-        .last()
-        .is_some_and(char::is_whitespace)
-    {
-        state.name_input.pop();
-    }
+/// Disarm replace-on-type without wiping the prefilled text. Called by caret
+/// movement so the first arrow/Home/End keeps the text and just positions the
+/// caret.
+fn disarm_replace_on_type(state: &mut AppState) {
+    state.name_input_replace_on_type = false;
+}
 
-    let Some(class) = state
-        .name_input
-        .chars()
-        .last()
-        .map(rename_word_delete_class)
-    else {
-        return;
-    };
+fn move_rename_cursor_left(state: &mut AppState) {
+    disarm_replace_on_type(state);
+    state.name_input_cursor = state.name_input_cursor.saturating_sub(1);
+}
 
-    while state
-        .name_input
-        .chars()
-        .last()
-        .is_some_and(|ch| !ch.is_whitespace() && rename_word_delete_class(ch) == class)
-    {
-        state.name_input.pop();
+fn move_rename_cursor_right(state: &mut AppState) {
+    disarm_replace_on_type(state);
+    if state.name_input_cursor < state.name_input_len_chars() {
+        state.name_input_cursor += 1;
     }
 }
 
+fn move_rename_cursor_home(state: &mut AppState) {
+    disarm_replace_on_type(state);
+    state.name_input_cursor = 0;
+}
+
+fn move_rename_cursor_end(state: &mut AppState) {
+    disarm_replace_on_type(state);
+    state.name_input_cursor = state.name_input_len_chars();
+}
+
+fn move_rename_cursor_word_left(state: &mut AppState) {
+    disarm_replace_on_type(state);
+    state.name_input_cursor = rename_word_left_index(&state.name_input, state.name_input_cursor);
+}
+
+fn move_rename_cursor_word_right(state: &mut AppState) {
+    disarm_replace_on_type(state);
+    state.name_input_cursor = rename_word_right_index(&state.name_input, state.name_input_cursor);
+}
+
 fn handle_rename_edit_key(state: &mut AppState, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u') if ctrl => {
             clear_rename_input(state);
         }
         KeyCode::Backspace if key.modifiers.contains(KeyModifiers::SUPER) => {
             clear_rename_input(state);
         }
-        KeyCode::Backspace
-            if key.modifiers.contains(KeyModifiers::CONTROL)
-                || key.modifiers.contains(KeyModifiers::ALT) =>
-        {
+        KeyCode::Backspace if ctrl || alt => {
             delete_rename_input_word(state);
         }
-        KeyCode::Char('h' | 'w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('h' | 'w') if ctrl => {
             delete_rename_input_word(state);
         }
         KeyCode::Backspace => delete_rename_input_char(state),
+        KeyCode::Delete => delete_rename_input_forward_char(state),
+        KeyCode::Left if ctrl || alt => move_rename_cursor_word_left(state),
+        KeyCode::Right if ctrl || alt => move_rename_cursor_word_right(state),
+        KeyCode::Left => move_rename_cursor_left(state),
+        KeyCode::Right => move_rename_cursor_right(state),
+        KeyCode::Home => move_rename_cursor_home(state),
+        KeyCode::End => move_rename_cursor_end(state),
+        KeyCode::Char('a') if ctrl => move_rename_cursor_home(state),
+        KeyCode::Char('e') if ctrl => move_rename_cursor_end(state),
         KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
             insert_rename_input_text(state, &c.to_string());
         }
@@ -1070,8 +1171,7 @@ impl App {
         match action {
             ModalAction::Save => self.save_rename_modal_via_api(),
             ModalAction::Clear => {
-                self.state.name_input.clear();
-                self.state.name_input_replace_on_type = false;
+                clear_rename_input(&mut self.state);
             }
             ModalAction::Cancel => cancel_rename_modal(&mut self.state),
             _ => {}
@@ -1332,8 +1432,7 @@ fn cancel_rename_modal(state: &mut AppState) {
     state.creating_new_tab = false;
     state.requested_new_tab_name = None;
     state.rename_pane_target = None;
-    state.name_input.clear();
-    state.name_input_replace_on_type = false;
+    clear_rename_input(state);
     leave_modal(state);
 }
 
@@ -1476,7 +1575,7 @@ mod tests {
     fn rename_modal_keyboard_and_mouse_share_actions() {
         let mut state = state_with_workspaces(&["test"]);
         state.mode = Mode::RenameWorkspace;
-        state.name_input = "hello".into();
+        state.set_name_input("hello");
 
         handle_rename_key(
             &mut state,
@@ -1484,7 +1583,7 @@ mod tests {
         );
         assert!(state.name_input.is_empty());
 
-        state.name_input = "renamed".into();
+        state.set_name_input("renamed");
         handle_rename_key(
             &mut state,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
@@ -1500,7 +1599,7 @@ mod tests {
         state.view.sidebar_rect = Rect::new(0, 0, 26, 20);
         state.view.terminal_area = Rect::new(26, 0, 80, 20);
         state.mode = Mode::RenameWorkspace;
-        state.name_input = "mouse".into();
+        state.set_name_input("mouse");
         let inner = state.rename_modal_inner().unwrap();
         let (save, _, _) = crate::ui::rename_button_rects(inner);
         let action = modal_action_from_buttons(save.x, save.y, &[(save, ModalAction::Save)]);
@@ -1511,7 +1610,7 @@ mod tests {
     fn tab_rename_updates_captured_snapshot() {
         let mut state = state_with_workspaces(&["test"]);
         state.mode = Mode::RenameTab;
-        state.name_input = "logs".into();
+        state.set_name_input("logs");
 
         handle_rename_key(
             &mut state,
@@ -1529,7 +1628,7 @@ mod tests {
     fn rename_cancel_returns_to_terminal_when_workspace_is_active() {
         let mut state = state_with_workspaces(&["test"]);
         state.mode = Mode::RenameTab;
-        state.name_input = "test".into();
+        state.set_name_input("test");
 
         handle_rename_key(
             &mut state,
@@ -1544,7 +1643,7 @@ mod tests {
     fn rename_modal_replaces_prefilled_text_on_first_type() {
         let mut state = state_with_workspaces(&["test"]);
         state.mode = Mode::RenameTab;
-        state.name_input = "2".into();
+        state.set_name_input("2");
         state.name_input_replace_on_type = true;
 
         handle_rename_key(
@@ -1565,7 +1664,7 @@ mod tests {
     fn rename_modal_replaces_prefilled_text_on_paste() {
         let mut state = state_with_workspaces(&["test"]);
         state.mode = Mode::RenameTab;
-        state.name_input = "2".into();
+        state.set_name_input("2");
         state.name_input_replace_on_type = true;
 
         insert_rename_input_text(&mut state, "feature/logs");
@@ -1582,7 +1681,7 @@ mod tests {
     fn rename_modal_handles_line_editing_shortcuts() {
         let mut state = state_with_workspaces(&["test"]);
         state.mode = Mode::RenameWorkspace;
-        state.name_input = "website zero".into();
+        state.set_name_input("website zero");
 
         handle_rename_key(
             &mut state,
@@ -1596,21 +1695,21 @@ mod tests {
         );
         assert_eq!(state.name_input, "website ");
 
-        state.name_input = "website-zero".into();
+        state.set_name_input("website-zero");
         handle_rename_key(
             &mut state,
             KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
         );
         assert_eq!(state.name_input, "website-");
 
-        state.name_input = "website-zero".into();
+        state.set_name_input("website-zero");
         handle_rename_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
         );
         assert_eq!(state.name_input, "website-");
 
-        state.name_input = "website-zero".into();
+        state.set_name_input("website-zero");
         handle_rename_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
@@ -1623,7 +1722,7 @@ mod tests {
         );
         assert!(state.name_input.is_empty());
 
-        state.name_input = "website zero".into();
+        state.set_name_input("website zero");
         handle_rename_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
@@ -1635,19 +1734,23 @@ mod tests {
     fn rename_modal_does_not_insert_modified_shortcut_chars() {
         let mut state = state_with_workspaces(&["test"]);
         state.mode = Mode::RenameWorkspace;
-        state.name_input = "website".into();
+        state.set_name_input("website");
 
+        // Ctrl+A is a caret-home shortcut, not an inserted 'a'.
         handle_rename_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         );
         assert_eq!(state.name_input, "website");
+        assert_eq!(state.name_input_cursor, 0);
 
+        // Shift+Z inserts a normal capital letter at the caret (now at home).
         handle_rename_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SHIFT),
         );
-        assert_eq!(state.name_input, "websiteZ");
+        assert_eq!(state.name_input, "Zwebsite");
+        assert_eq!(state.name_input_cursor, 1);
     }
 
     #[test]
@@ -1710,7 +1813,7 @@ mod tests {
     fn saving_new_tab_dialog_requests_creation_with_name() {
         let mut state = state_with_workspaces(&["test"]);
         open_new_tab_dialog(&mut state);
-        state.name_input = "logs".into();
+        state.set_name_input("logs");
         state.name_input_replace_on_type = false;
 
         handle_rename_key(
@@ -1918,5 +2021,179 @@ mod tests {
         assert_eq!(state.selected, 0);
         assert_eq!(state.mode, Mode::ConfirmClose);
         assert_eq!(state.workspaces.len(), 2);
+    }
+
+    fn rename_state(text: &str) -> AppState {
+        let mut state = state_with_workspaces(&["test"]);
+        state.mode = Mode::RenameWorkspace;
+        state.set_name_input(text);
+        state
+    }
+
+    fn press(state: &mut AppState, code: KeyCode) {
+        handle_rename_key(state, KeyEvent::new(code, KeyModifiers::empty()));
+    }
+
+    #[test]
+    fn caret_moves_left_right_and_clamps_at_bounds() {
+        let mut state = rename_state("abc");
+        assert_eq!(state.name_input_cursor, 3);
+
+        press(&mut state, KeyCode::Left);
+        assert_eq!(state.name_input_cursor, 2);
+        press(&mut state, KeyCode::Left);
+        press(&mut state, KeyCode::Left);
+        assert_eq!(state.name_input_cursor, 0);
+        // Clamps at start.
+        press(&mut state, KeyCode::Left);
+        assert_eq!(state.name_input_cursor, 0);
+
+        press(&mut state, KeyCode::Right);
+        assert_eq!(state.name_input_cursor, 1);
+        press(&mut state, KeyCode::Right);
+        press(&mut state, KeyCode::Right);
+        assert_eq!(state.name_input_cursor, 3);
+        // Clamps at end.
+        press(&mut state, KeyCode::Right);
+        assert_eq!(state.name_input_cursor, 3);
+    }
+
+    #[test]
+    fn caret_home_and_end_jump_to_bounds() {
+        let mut state = rename_state("abc");
+        press(&mut state, KeyCode::Home);
+        assert_eq!(state.name_input_cursor, 0);
+        press(&mut state, KeyCode::End);
+        assert_eq!(state.name_input_cursor, 3);
+
+        // Ctrl+A / Ctrl+E mirror Home / End.
+        handle_rename_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.name_input_cursor, 0);
+        handle_rename_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.name_input_cursor, 3);
+    }
+
+    #[test]
+    fn insert_happens_at_caret() {
+        let mut state = rename_state("abc");
+        press(&mut state, KeyCode::Left); // caret between b and c
+        press(&mut state, KeyCode::Char('X'));
+        assert_eq!(state.name_input, "abXc");
+        assert_eq!(state.name_input_cursor, 3);
+    }
+
+    #[test]
+    fn backspace_deletes_before_caret_and_delete_after() {
+        let mut state = rename_state("abcd");
+        press(&mut state, KeyCode::Left); // caret between c and d
+        press(&mut state, KeyCode::Backspace);
+        assert_eq!(state.name_input, "abd");
+        assert_eq!(state.name_input_cursor, 2);
+
+        press(&mut state, KeyCode::Delete);
+        assert_eq!(state.name_input, "ab");
+        assert_eq!(state.name_input_cursor, 2);
+
+        // Delete at end is a no-op.
+        press(&mut state, KeyCode::Delete);
+        assert_eq!(state.name_input, "ab");
+
+        // Backspace at start is a no-op.
+        press(&mut state, KeyCode::Home);
+        press(&mut state, KeyCode::Backspace);
+        assert_eq!(state.name_input, "ab");
+        assert_eq!(state.name_input_cursor, 0);
+    }
+
+    #[test]
+    fn paste_inserts_at_caret() {
+        let mut state = rename_state("abc");
+        press(&mut state, KeyCode::Home);
+        press(&mut state, KeyCode::Right); // between a and b
+        insert_rename_input_text(&mut state, "XY");
+        assert_eq!(state.name_input, "aXYbc");
+        assert_eq!(state.name_input_cursor, 3);
+    }
+
+    #[test]
+    fn replace_on_type_places_caret_after_inserted_text() {
+        let mut state = rename_state("2");
+        state.name_input_replace_on_type = true;
+
+        press(&mut state, KeyCode::Char('n'));
+        assert_eq!(state.name_input, "n");
+        assert_eq!(state.name_input_cursor, 1);
+        assert!(!state.name_input_replace_on_type);
+    }
+
+    #[test]
+    fn arrow_first_cancels_replace_on_type_without_wiping() {
+        let mut state = rename_state("prefill");
+        state.name_input_replace_on_type = true;
+
+        press(&mut state, KeyCode::Left);
+        assert_eq!(state.name_input, "prefill");
+        assert!(!state.name_input_replace_on_type);
+        assert_eq!(state.name_input_cursor, 6);
+
+        // Subsequent typing now inserts at the caret instead of replacing.
+        press(&mut state, KeyCode::Char('X'));
+        assert_eq!(state.name_input, "prefilXl");
+    }
+
+    #[test]
+    fn word_movement_steps_over_words() {
+        let mut state = rename_state("feature/logs here");
+        // caret at end (17)
+        handle_rename_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.name_input_cursor, 13); // start of "here"
+        handle_rename_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.name_input_cursor, 8); // start of "logs"
+
+        handle_rename_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.name_input_cursor, 13); // moved over "logs" to "here"
+    }
+
+    #[test]
+    fn caret_edits_around_cjk_stay_on_char_boundaries() {
+        // Each CJK char is multiple bytes; edits must never split them.
+        let mut state = rename_state("提交X反馈");
+        assert_eq!(state.name_input_cursor, 5);
+
+        press(&mut state, KeyCode::Home);
+        press(&mut state, KeyCode::Right); // between 提 and 交
+        press(&mut state, KeyCode::Char('a'));
+        assert_eq!(state.name_input, "提a交X反馈");
+        assert_eq!(state.name_input_cursor, 2);
+
+        // Forward-delete removes the whole CJK char after the caret.
+        press(&mut state, KeyCode::Delete);
+        assert_eq!(state.name_input, "提aX反馈");
+        assert_eq!(state.name_input_cursor, 2);
+
+        // Backspace removes the char before the caret.
+        press(&mut state, KeyCode::Backspace);
+        assert_eq!(state.name_input, "提X反馈");
+        assert_eq!(state.name_input_cursor, 1);
+
+        // Move to end and delete a trailing CJK char.
+        press(&mut state, KeyCode::End);
+        press(&mut state, KeyCode::Backspace);
+        assert_eq!(state.name_input, "提X反");
     }
 }

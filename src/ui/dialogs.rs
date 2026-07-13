@@ -5,6 +5,7 @@ use ratatui::{
     widgets::{Clear, Paragraph, Wrap},
     Frame,
 };
+use unicode_width::UnicodeWidthChar;
 
 use super::text::{display_width_u16, truncate_end};
 use super::widgets::{
@@ -70,14 +71,15 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
     render_modal_header(frame, rows[0], title, &app.palette);
 
     let input_rect = Rect::new(rows[2].x, rows[2].y, rows[2].width, 1);
-    frame.render_widget(Clear, input_rect);
-    frame.render_widget(
-        Paragraph::new(format!(" {}█", app.name_input)).style(
-            Style::default()
-                .fg(app.palette.text)
-                .bg(app.palette.surface0),
-        ),
+    let input_style = Style::default()
+        .fg(app.palette.text)
+        .bg(app.palette.surface0);
+    render_text_input_with_caret(
+        frame,
         input_rect,
+        &app.name_input,
+        app.name_input_cursor,
+        input_style,
     );
 
     let (save_rect, clear_rect, cancel_rect) = rename_button_rects(inner);
@@ -112,6 +114,74 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
             .bg(app.palette.surface0)
             .add_modifier(Modifier::BOLD),
     );
+}
+
+/// Render a single-line text input with a visible caret at `cursor` (a char
+/// index). The field has one column of leading padding; text scrolls
+/// horizontally so the caret stays visible, and character widths (including
+/// CJK) are respected so the caret never lands on a byte split.
+fn render_text_input_with_caret(
+    frame: &mut Frame,
+    rect: Rect,
+    text: &str,
+    cursor: usize,
+    style: Style,
+) {
+    frame.render_widget(Clear, rect);
+    if rect.width == 0 {
+        return;
+    }
+
+    let pad: u16 = 1;
+    let text_cols = rect.width.saturating_sub(pad) as usize;
+
+    let chars: Vec<char> = text.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let char_width = |c: char| UnicodeWidthChar::width(c).unwrap_or(0);
+    let cursor_col: usize = chars[..cursor].iter().copied().map(char_width).sum();
+
+    // Scroll offset (in display columns) that keeps the caret cell visible; the
+    // caret itself needs one column at the right edge.
+    let scroll = cursor_col.saturating_sub(text_cols.saturating_sub(1));
+
+    // Visible slice beginning at display column `scroll`. Scroll is always
+    // aligned to a char boundary because it is derived from summed char widths.
+    let mut visible = String::new();
+    let mut col = 0usize;
+    let mut vis_cols = 0usize;
+    for &c in &chars {
+        let w = char_width(c);
+        if col < scroll {
+            col += w;
+            continue;
+        }
+        if vis_cols + w > text_cols {
+            break;
+        }
+        visible.push(c);
+        vis_cols += w;
+        col += w;
+    }
+
+    frame.render_widget(Paragraph::new(format!(" {visible}")).style(style), rect);
+
+    if text_cols == 0 {
+        return;
+    }
+
+    let caret_rel = (cursor_col - scroll) as u16;
+    let caret_x = rect.x + pad + caret_rel;
+    if caret_x >= rect.x + rect.width {
+        return;
+    }
+
+    let cell = &mut frame.buffer_mut()[(caret_x, rect.y)];
+    if cell.symbol().is_empty() || cell.symbol() == " " {
+        cell.set_symbol("█");
+        cell.set_style(style);
+    } else {
+        cell.set_style(style.add_modifier(Modifier::REVERSED));
+    }
 }
 
 pub(crate) fn new_linked_worktree_inner_rect(area: Rect) -> Option<Rect> {
@@ -764,6 +834,43 @@ mod tests {
     use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 
     use super::{confirm_close_overlay_text, render_new_linked_worktree_overlay};
+
+    #[test]
+    fn rename_overlay_draws_caret_at_cursor_column() {
+        use super::render_rename_overlay;
+        use ratatui::style::Modifier;
+
+        let mut app = AppState::test_new();
+        app.mode = crate::app::Mode::RenameWorkspace;
+        app.set_name_input("abcdef");
+        app.name_input_cursor = 2; // caret over 'c'
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| render_rename_overlay(&app, frame, Rect::new(0, 0, 80, 24)))
+            .expect("rename overlay should render");
+        let buffer = terminal.backend().buffer().clone();
+
+        let mut caret = None;
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                let cell = &buffer[(x, y)];
+                if cell.style().add_modifier.contains(Modifier::REVERSED) {
+                    caret = Some((x, y, cell.symbol().to_string()));
+                }
+            }
+        }
+
+        let (cx, cy, sym) = caret.expect("a reversed caret cell should be drawn");
+        assert_eq!(sym, "c", "caret should sit over the char at the cursor");
+        assert_eq!(buffer[(cx - 1, cy)].symbol(), "b");
+        assert!(!buffer[(cx - 1, cy)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED));
+        assert_eq!(buffer[(cx + 1, cy)].symbol(), "d");
+    }
 
     #[test]
     fn confirm_close_text_reports_parent_group_scope() {

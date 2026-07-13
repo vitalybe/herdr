@@ -1458,6 +1458,9 @@ pub struct AppState {
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
+    /// Caret position within `name_input`, measured as a char index in
+    /// `0..=name_input.chars().count()`. TUI/client presentation state only.
+    pub name_input_cursor: usize,
     pub release_notes: Option<ReleaseNotesState>,
     pub product_announcement: Option<ProductAnnouncementState>,
     pub keybind_help: KeybindHelpState,
@@ -1597,6 +1600,18 @@ pub struct AppState {
 impl AppState {
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
+    }
+
+    /// Set the rename/name input text and place the caret at the end. Keeps
+    /// `name_input` and `name_input_cursor` consistent for all callers.
+    pub(crate) fn set_name_input(&mut self, value: impl Into<String>) {
+        self.name_input = value.into();
+        self.name_input_cursor = self.name_input.chars().count();
+    }
+
+    /// Number of caret positions in `name_input` (char count).
+    pub(crate) fn name_input_len_chars(&self) -> usize {
+        self.name_input.chars().count()
     }
 
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
@@ -1842,6 +1857,7 @@ impl AppState {
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
+            name_input_cursor: 0,
             release_notes: None,
             product_announcement: None,
             keybind_help: KeybindHelpState { scroll: 0 },

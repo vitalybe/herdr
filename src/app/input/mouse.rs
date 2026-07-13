@@ -277,6 +277,7 @@ impl AppState {
                                 self.worktree_create = None;
                                 self.name_input.clear();
                                 self.name_input_replace_on_type = false;
+                                self.name_input_cursor = 0;
                                 leave_modal(self);
                             }
                             _ => {}

@@ -5,6 +5,7 @@ use ratatui::{
     widgets::{Clear, Paragraph, Wrap},
     Frame,
 };
+use unicode_width::UnicodeWidthChar;
 
 use super::text::{display_width_u16, truncate_end};
 use super::widgets::{
@@ -46,33 +47,15 @@ pub(crate) fn rename_button_rects(inner: Rect) -> (Rect, Rect, Rect) {
 /// explicit cursor the frame carries none, the client keeps the position last
 /// reported by the focused pane, and composition lands behind the dialog.
 fn render_name_input_field(app: &AppState, frame: &mut Frame, input_rect: Rect) {
-    frame.render_widget(Clear, input_rect);
-
-    // The text stops one column short of the field so the clamped caret always
-    // lands on a blank cell: a host terminal inverts the cell under its cursor,
-    // and an IME composes there.
-    let text_rect = Rect {
-        width: input_rect.width.saturating_sub(1),
-        ..input_rect
-    };
-    frame.render_widget(
-        Paragraph::new(format!(" {}", app.name_input)).style(
-            Style::default()
-                .fg(app.palette.text)
-                .bg(app.palette.surface0),
-        ),
-        text_rect,
+    render_text_input_with_caret(
+        frame,
+        input_rect,
+        &app.name_input,
+        app.name_input_cursor,
+        Style::default()
+            .fg(app.palette.text)
+            .bg(app.palette.surface0),
     );
-
-    if input_rect.width == 0 {
-        return;
-    }
-    let caret_x = input_rect
-        .x
-        .saturating_add(1)
-        .saturating_add(display_width_u16(&app.name_input))
-        .min(input_rect.right().saturating_sub(1));
-    frame.set_cursor_position((caret_x, input_rect.y));
 }
 
 pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -140,6 +123,71 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
             .bg(app.palette.surface0)
             .add_modifier(Modifier::BOLD),
     );
+}
+
+/// Render a single-line text input with a visible caret at `cursor` (a char
+/// index). The field has one column of leading padding; text scrolls
+/// horizontally so the caret stays visible, and character widths (including
+/// CJK) are respected so the caret never lands on a byte split.
+fn render_text_input_with_caret(
+    frame: &mut Frame,
+    rect: Rect,
+    text: &str,
+    cursor: usize,
+    style: Style,
+) {
+    frame.render_widget(Clear, rect);
+    if rect.width == 0 {
+        return;
+    }
+
+    let pad: u16 = 1;
+    let text_cols = rect.width.saturating_sub(pad) as usize;
+
+    let chars: Vec<char> = text.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let char_width = |c: char| UnicodeWidthChar::width(c).unwrap_or(0);
+    let cursor_col: usize = chars[..cursor].iter().copied().map(char_width).sum();
+
+    // Scroll offset (in display columns) that keeps the caret cell visible; the
+    // caret itself needs one column at the right edge.
+    let scroll = cursor_col.saturating_sub(text_cols.saturating_sub(1));
+
+    // Visible slice beginning at display column `scroll`. Scroll is always
+    // aligned to a char boundary because it is derived from summed char widths.
+    let mut visible = String::new();
+    let mut col = 0usize;
+    let mut vis_cols = 0usize;
+    for &c in &chars {
+        let w = char_width(c);
+        if col < scroll {
+            col += w;
+            continue;
+        }
+        if vis_cols + w > text_cols {
+            break;
+        }
+        visible.push(c);
+        vis_cols += w;
+        col += w;
+    }
+
+    frame.render_widget(Paragraph::new(format!(" {visible}")).style(style), rect);
+
+    if text_cols == 0 {
+        return;
+    }
+
+    let caret_rel = (cursor_col - scroll) as u16;
+    let caret_x = rect.x + pad + caret_rel;
+    if caret_x >= rect.x + rect.width {
+        return;
+    }
+
+    // The host terminal draws the caret by inverting the cell under its cursor,
+    // and an IME composes its preview there, so the frame only has to carry the
+    // position - no glyph of our own, which would swallow the host cursor.
+    frame.set_cursor_position((caret_x, rect.y));
 }
 
 pub(crate) fn new_linked_worktree_inner_rect(area: Rect) -> Option<Rect> {
@@ -894,6 +942,36 @@ mod tests {
     }
 
     #[test]
+    fn rename_overlay_anchors_the_host_cursor_at_the_cursor_column() {
+        use super::render_rename_overlay;
+
+        let mut app = AppState::test_new();
+        app.mode = crate::app::Mode::RenameWorkspace;
+        app.set_name_input("abcdef");
+        app.name_input_cursor = 2; // caret over 'c'
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| render_rename_overlay(&app, frame, Rect::new(0, 0, 80, 24)))
+            .expect("rename overlay should render");
+        let caret = terminal
+            .get_cursor_position()
+            .expect("the frame should carry a cursor position");
+        let buffer = terminal.backend().buffer().clone();
+
+        // The host terminal inverts the cell under its cursor, so the caret is
+        // the position alone - the text under it stays untouched.
+        assert_eq!(
+            buffer[(caret.x, caret.y)].symbol(),
+            "c",
+            "caret should sit over the char at the cursor"
+        );
+        assert_eq!(buffer[(caret.x - 1, caret.y)].symbol(), "b");
+        assert_eq!(buffer[(caret.x + 1, caret.y)].symbol(), "d");
+    }
+
+    #[test]
     fn confirm_close_text_reports_parent_group_scope() {
         let mut app = AppState::test_new();
         let mut parent = Workspace::test_new("main");
@@ -995,7 +1073,7 @@ mod tests {
     fn rename_overlay_caret_in(mode: Mode, name: &str) -> (Position, Buffer) {
         let mut app = AppState::test_new();
         app.mode = mode;
-        app.name_input = name.into();
+        app.set_name_input(name);
 
         let mut terminal = Terminal::new(TestBackend::new(RENAME_AREA.width, RENAME_AREA.height))
             .expect("test terminal");
@@ -1012,7 +1090,7 @@ mod tests {
 
     fn worktree_overlay_caret(branch: &str) -> Position {
         let mut app = AppState::test_new();
-        app.name_input = branch.into();
+        app.set_name_input(branch);
         app.worktree_create = Some(WorktreeCreateState {
             source_workspace_id: "source".into(),
             source_checkout_path: "/repo/herdr".into(),
@@ -1124,7 +1202,7 @@ mod tests {
         let input = rename_input_rect(RENAME_AREA);
         let mut app = AppState::test_new();
         app.mode = Mode::RenameWorkspace;
-        app.name_input = "ab".into();
+        app.set_name_input("ab");
 
         // The widget tests above stop at the ratatui frame. This one goes through
         // the server's cursor resolution, which is where the bug lived: the frame

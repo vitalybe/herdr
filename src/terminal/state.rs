@@ -124,6 +124,21 @@ pub struct PendingAgentResumeWatch {
     pub fired_at: Instant,
 }
 
+/// Resolves a directory to launch a plain shell into when a terminal's own
+/// remembered working directory no longer exists on disk (for example, a
+/// task worktree that was removed after merging). Mirrors the fallback used
+/// when restoring a pane whose saved cwd was removed.
+pub fn fallback_pane_cwd() -> PathBuf {
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/"));
+    if home.exists() {
+        home
+    } else {
+        PathBuf::from("/")
+    }
+}
+
 /// Pure state for a server-owned terminal.
 ///
 /// During the migration this is still one-to-one with a pane-backed PTY, but

@@ -226,6 +226,18 @@ impl App {
             return false;
         }
 
+        if !cwd.exists() {
+            return self.abandon_pending_agent_resume_for_missing_cwd(
+                pane_id,
+                terminal_id,
+                cwd,
+                plan.agent,
+                rows,
+                cols,
+                host_terminal_theme,
+            );
+        }
+
         let Some(resume_command) = shell_command_from_argv(&plan.argv) else {
             tracing::warn!(
                 pane = pane_id.raw(),
@@ -295,6 +307,101 @@ impl App {
                 fired_at: Instant::now(),
             });
         }
+        true
+    }
+
+    /// Handles a pending agent resume whose remembered working directory no
+    /// longer exists on disk (for example, a task worktree that was removed
+    /// after merging).
+    ///
+    /// Claude Code and similar agent CLIs scope `--resume <id>` lookups by an
+    /// encoding of the *current working directory* they are launched from.
+    /// If herdr spawned a shell into a directory that no longer exists, the
+    /// resume command would end up running from some other directory and the
+    /// agent CLI would report a misleading "session not found" even though
+    /// the saved session is still on disk, just filed under the old
+    /// directory's encoded path. Instead of letting that misleading text be
+    /// the only signal, herdr skips the resume command entirely, clears the
+    /// stale plan/session so it is not retried on a future restart, tells the
+    /// user the exact missing path, and leaves the pane with a plain shell in
+    /// the same fallback directory used elsewhere when a saved cwd is gone.
+    fn abandon_pending_agent_resume_for_missing_cwd(
+        &mut self,
+        pane_id: crate::layout::PaneId,
+        terminal_id: crate::terminal::TerminalId,
+        missing_cwd: std::path::PathBuf,
+        agent: String,
+        rows: u16,
+        cols: u16,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+    ) -> bool {
+        tracing::warn!(
+            pane = pane_id.raw(),
+            terminal = %terminal_id,
+            agent = %agent,
+            cwd = %missing_cwd.display(),
+            "skipping agent resume: saved working directory no longer exists"
+        );
+
+        let Some(launch_env) = self
+            .find_pane(pane_id)
+            .and_then(|(ws_idx, _)| self.pane_launch_env(ws_idx, pane_id, Vec::new()))
+        else {
+            return false;
+        };
+
+        let fallback_cwd = crate::terminal::fallback_pane_cwd();
+        let runtime = match crate::terminal::TerminalRuntime::spawn(
+            pane_id,
+            rows,
+            cols,
+            fallback_cwd.clone(),
+            self.state.pane_scrollback_limit_bytes,
+            host_terminal_theme,
+            self.state.host_terminal_appearance,
+            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
+            &launch_env,
+            self.event_tx.clone(),
+            self.render_notify.clone(),
+            self.render_dirty.clone(),
+        ) {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                tracing::warn!(
+                    pane = pane_id.raw(),
+                    terminal = %terminal_id,
+                    agent = %agent,
+                    err = %err,
+                    "failed to start fallback shell after missing agent resume cwd"
+                );
+                if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                    terminal.clear_agent_runtime_identity_after_respawn();
+                }
+                return false;
+            }
+        };
+
+        self.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+            terminal.pending_agent_resume_plan = None;
+            terminal.persisted_agent_session = None;
+            terminal.respawn_shell_on_exit = false;
+            terminal.cwd = fallback_cwd;
+        }
+
+        let previous_toast = self.state.toast.clone();
+        self.state.toast = Some(ToastNotification {
+            kind: ToastKind::NeedsAttention,
+            title: "agent resume skipped".to_string(),
+            context: format!(
+                "the working directory for this session no longer exists ({}), so it can't be resumed; the pane's shell is ready for a new one",
+                missing_cwd.display()
+            ),
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
+
         true
     }
 
@@ -1053,6 +1160,151 @@ mod tests {
             "an unresolved watch should not touch the persisted session"
         );
         assert!(app.state.toast.is_none());
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[cfg(unix)]
+    fn unique_missing_path(label: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "herdr-agent-resume-missing-cwd-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        std::env::temp_dir().join(unique)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pending_agent_resume_skips_and_toasts_missing_cwd_with_full_path() {
+        let workspace = crate::workspace::Workspace::test_new("restored");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        let mut app = test_app_with_resume_ready_terminal(&terminal_id, workspace);
+
+        let missing_cwd = unique_missing_path("skip");
+        assert!(
+            !missing_cwd.exists(),
+            "test setup should pick a path that does not exist"
+        );
+
+        {
+            let terminal = app
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("test terminal should exist");
+            terminal.cwd = missing_cwd.clone();
+            terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("removed-worktree-session")
+                    .unwrap(),
+            });
+            terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
+                agent: "claude".into(),
+                argv: long_running_test_argv(),
+                dedupe_key: "herdr:claude\0claude\0Id\0removed-worktree-session".into(),
+            });
+        }
+
+        assert!(app.start_pending_agent_resumes(false));
+
+        let terminal = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("terminal should survive the skipped resume");
+        assert!(
+            terminal.pending_agent_resume_plan.is_none(),
+            "a missing cwd should not be left pending forever"
+        );
+        assert!(
+            terminal.persisted_agent_session.is_none(),
+            "a missing cwd should clear the stale session ref so it is not retried on a future restart"
+        );
+        assert_ne!(
+            terminal.cwd, missing_cwd,
+            "the pane should get a fallback shell instead of one rooted in the missing directory"
+        );
+        assert!(terminal.cwd.exists());
+        assert!(
+            app.terminal_runtimes.get(&terminal_id).is_some(),
+            "the pane should still be left with a normal, usable shell"
+        );
+
+        let toast = app
+            .state
+            .toast
+            .as_ref()
+            .expect("a missing resume cwd should surface a toast");
+        assert_eq!(toast.kind, ToastKind::NeedsAttention);
+        assert!(
+            toast.context.contains(&missing_cwd.display().to_string()),
+            "the toast should name the full missing path, got: {}",
+            toast.context
+        );
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pending_agent_resume_still_fires_when_cwd_exists() {
+        let workspace = crate::workspace::Workspace::test_new("restored");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        let mut app = test_app_with_resume_ready_terminal(&terminal_id, workspace);
+        let existing_cwd = std::env::temp_dir();
+
+        {
+            let terminal = app
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("test terminal should exist");
+            terminal.cwd = existing_cwd.clone();
+            terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("live-worktree-session")
+                    .unwrap(),
+            });
+            terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
+                agent: "claude".into(),
+                argv: long_running_test_argv(),
+                dedupe_key: "herdr:claude\0claude\0Id\0live-worktree-session".into(),
+            });
+        }
+
+        assert!(app.start_pending_agent_resumes(false));
+
+        let terminal = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("terminal should survive the resume");
+        assert!(terminal.pending_agent_resume_plan.is_none());
+        assert!(
+            terminal.pending_agent_resume_watch.is_some(),
+            "an existing cwd should still fire the resume command and start the failure watch"
+        );
+        assert_eq!(
+            terminal.cwd, existing_cwd,
+            "an existing cwd should not be swapped out for a fallback"
+        );
+        assert!(
+            app.state.toast.is_none(),
+            "a normal resume should not surface the missing-cwd toast"
+        );
+        assert!(app.terminal_runtimes.get(&terminal_id).is_some());
 
         for (_, runtime) in app.terminal_runtimes.drain() {
             runtime.shutdown();

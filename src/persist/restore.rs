@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -474,20 +475,13 @@ fn restore_tab(
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
 
         let cwd = if saved_cwd.exists() {
-            saved_cwd
+            saved_cwd.clone()
         } else {
             warn!(
                 cwd = %saved_cwd.display(),
                 "saved pane cwd does not exist, falling back to HOME"
             );
-            let home = std::env::var("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("/"));
-            if home.exists() {
-                home
-            } else {
-                PathBuf::from("/")
-            }
+            crate::terminal::fallback_pane_cwd()
         };
 
         let saved_label = saved_pane.and_then(|p| p.label.clone());
@@ -535,7 +529,14 @@ fn restore_tab(
         };
         if let Some(plan) = pending_native_agent_restore {
             let terminal_id = TerminalId::alloc();
-            let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone())
+            // Preserve the original saved cwd here, even if it no longer
+            // exists on disk. Substituting HOME this early would make the
+            // deferred resume fire in the wrong directory and produce a
+            // misleading "session not found" from the agent CLI instead of
+            // an accurate, actionable message; the deferred resume path in
+            // `app/agent_resume.rs` checks for a missing cwd itself right
+            // before firing.
+            let mut terminal = TerminalState::new(terminal_id.clone(), saved_cwd.clone())
                 .with_pending_agent_resume_plan(plan);
             if let Some(label) = saved_label {
                 terminal.set_manual_label(label);
@@ -1578,6 +1579,99 @@ mod tests {
         assert!(
             handoff_runtimes.is_empty(),
             "handoff restore should not replace pending native agent resume with a shell runtime"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_agent_restore_preserves_missing_saved_cwd_for_deferred_resume() {
+        let missing_cwd = std::env::temp_dir().join(format!(
+            "herdr-restore-missing-worktree-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        assert!(
+            !missing_cwd.exists(),
+            "test setup should pick a path that does not exist"
+        );
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: missing_cwd.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd: missing_cwd.clone(),
+                            label: None,
+                            agent_name: None,
+                            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                                source: "herdr:claude".into(),
+                                agent: "claude".into(),
+                                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                                value: "removed-worktree-session".into(),
+                            }),
+                            launch_argv: None,
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+                home_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+            agent_manual_order: None,
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (_workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let terminal = terminals
+            .values()
+            .next()
+            .expect("native agent restore should create terminal state");
+        assert!(
+            terminal.pending_agent_resume_plan.is_some(),
+            "restored native agent panes should defer resume until client terminal context is known"
+        );
+        assert_eq!(
+            terminal.cwd, missing_cwd,
+            "the deferred resume plan should keep the original saved cwd, even though it no longer \
+             exists on disk, so the deferred resume path can detect the missing directory and give an \
+             accurate message instead of silently substituting HOME and firing in the wrong directory"
+        );
+        assert!(
+            runtimes.is_empty(),
+            "native agent restore should not spawn a runtime during snapshot restore"
         );
     }
 

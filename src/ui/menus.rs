@@ -61,6 +61,11 @@ pub(super) fn render_prefix_overlay(app: &AppState, frame: &mut Frame, area: Rec
 }
 
 pub(super) fn render_copy_mode_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    if app.copy_search.is_some() {
+        render_copy_search_overlay(app, frame, area);
+        return;
+    }
+
     let key = Style::default()
         .fg(app.palette.accent)
         .add_modifier(Modifier::BOLD);
@@ -94,6 +99,64 @@ pub(super) fn render_copy_mode_overlay(app: &AppState, frame: &mut Frame, area: 
     let overlay_y = area.y + area.height.saturating_sub(1);
     let overlay_area = Rect::new(area.x, overlay_y, area.width, 1);
     render_bottom_bar(frame, overlay_area, line, app.palette.panel_bg);
+}
+
+fn render_copy_search_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    let Some(search) = app.copy_search.as_ref() else {
+        return;
+    };
+    let key = Style::default()
+        .fg(app.palette.accent)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(app.palette.overlay0);
+    let mode_style = Style::default()
+        .fg(panel_contrast_fg(&app.palette))
+        .bg(app.palette.accent)
+        .add_modifier(Modifier::BOLD);
+
+    let sigil = match search.direction {
+        crate::app::state::CopySearchDirection::Forward => "/",
+        crate::app::state::CopySearchDirection::Backward => "?",
+    };
+    let count = if search.query.is_empty() {
+        String::new()
+    } else if search.matches.is_empty() {
+        "no matches".to_string()
+    } else {
+        let current = search.current.map_or(0, |idx| idx + 1);
+        format!("{current}/{}", search.matches.len())
+    };
+    // A caret marks the edit position while typing.
+    let query = if search.editing {
+        format!("{}{}\u{2588}", sigil, search.query)
+    } else {
+        format!("{}{}", sigil, search.query)
+    };
+
+    let mut spans = vec![
+        Span::styled(" FIND ", mode_style),
+        Span::raw(" "),
+        Span::styled(query, Style::default().fg(app.palette.text)),
+    ];
+    if !count.is_empty() {
+        spans.push(Span::styled(format!("  {count}"), dim));
+    }
+    spans.push(Span::raw("  "));
+    if search.editing {
+        spans.push(Span::styled("enter", key));
+        spans.push(Span::styled(" go  ", dim));
+        spans.push(Span::styled("esc", key));
+        spans.push(Span::styled(" cancel", dim));
+    } else {
+        spans.push(Span::styled("n/N", key));
+        spans.push(Span::styled(" next/prev  ", dim));
+        spans.push(Span::styled("esc", key));
+        spans.push(Span::styled(" exit", dim));
+    }
+
+    let overlay_y = area.y + area.height.saturating_sub(1);
+    let overlay_area = Rect::new(area.x, overlay_y, area.width, 1);
+    render_bottom_bar(frame, overlay_area, Line::from(spans), app.palette.panel_bg);
 }
 
 pub(super) fn render_navigate_overlay(app: &AppState, frame: &mut Frame, area: Rect) {

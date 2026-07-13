@@ -291,6 +291,10 @@ impl TerminalRuntime {
         self.0.recent_text(lines)
     }
 
+    pub fn scrollback_lines(&self) -> Vec<String> {
+        self.0.scrollback_lines()
+    }
+
     pub fn recent_ansi(&self, lines: usize) -> String {
         self.0.recent_ansi(lines)
     }

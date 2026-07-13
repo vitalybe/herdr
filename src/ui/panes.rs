@@ -340,6 +340,7 @@ pub(super) fn render_panes(
                 &app.palette,
                 app.host_terminal_theme,
             );
+            render_copy_search_highlight(app, frame, info, rt.scroll_metrics());
             render_copy_mode_cursor(app, frame, info);
         }
     }
@@ -617,6 +618,52 @@ fn render_copy_mode_cursor(app: &AppState, frame: &mut Frame, info: &PaneInfo) {
             .bg(app.palette.accent)
             .add_modifier(Modifier::BOLD),
     );
+}
+
+fn render_copy_search_highlight(
+    app: &AppState,
+    frame: &mut Frame,
+    info: &PaneInfo,
+    scroll_metrics: Option<crate::pane::ScrollMetrics>,
+) {
+    if app.mode != Mode::Copy {
+        return;
+    }
+    let (Some(search), Some(copy_mode)) = (app.copy_search.as_ref(), app.copy_mode) else {
+        return;
+    };
+    if copy_mode.pane_id != info.id || search.matches.is_empty() {
+        return;
+    }
+    let inner = info.inner_rect;
+    let viewport_top = scroll_metrics.map_or(0i64, |m| {
+        m.max_offset_from_bottom as i64 - m.offset_from_bottom as i64
+    });
+    let current_style = Style::default()
+        .fg(panel_contrast_fg(&app.palette))
+        .bg(app.palette.accent)
+        .add_modifier(Modifier::BOLD);
+    let other_style = Style::default()
+        .fg(app.palette.panel_bg)
+        .bg(app.palette.yellow);
+
+    let buf = frame.buffer_mut();
+    for (idx, hit) in search.matches.iter().enumerate() {
+        let row = hit.row as i64 - viewport_top;
+        if row < 0 || row >= i64::from(inner.height) {
+            continue;
+        }
+        let y = inner.y + row as u16;
+        let style = if Some(idx) == search.current {
+            current_style
+        } else {
+            other_style
+        };
+        let end = hit.col.saturating_add(hit.width).min(inner.width);
+        for x in hit.col..end {
+            buf[(inner.x + x, y)].set_style(style);
+        }
+    }
 }
 
 fn render_selection_highlight(

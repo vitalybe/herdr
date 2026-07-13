@@ -11,7 +11,7 @@ use ratatui::layout::Direction;
 
 use crate::{
     app::{
-        state::{AppState, Mode},
+        state::{AppState, CopySearchDirection, Mode},
         App,
     },
     input::TerminalKey,
@@ -302,6 +302,9 @@ impl App {
             }
             NavigateAction::EditScrollback => {}
             NavigateAction::CopyMode => self.state.enter_copy_mode(&self.terminal_runtimes),
+            NavigateAction::Find => self
+                .state
+                .enter_copy_search(&self.terminal_runtimes, CopySearchDirection::Forward),
             NavigateAction::Zoom => {
                 self.zoom_focused_pane_via_api();
                 leave_navigate_mode(&mut self.state);
@@ -1240,6 +1243,7 @@ pub(crate) enum NavigateAction {
     ClosePane,
     EditScrollback,
     CopyMode,
+    Find,
     Zoom,
     EnterResizeMode,
     ToggleSidebar,
@@ -1333,6 +1337,7 @@ fn action_for_key(
         (&kb.rename_pane, NavigateAction::RenamePane),
         (&kb.edit_scrollback, NavigateAction::EditScrollback),
         (&kb.copy_mode, NavigateAction::CopyMode),
+        (&kb.find, NavigateAction::Find),
         (&kb.focus_pane_left, NavigateAction::FocusPaneLeft),
         (&kb.focus_pane_down, NavigateAction::FocusPaneDown),
         (&kb.focus_pane_up, NavigateAction::FocusPaneUp),
@@ -1549,6 +1554,9 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::EditScrollback => {}
         NavigateAction::CopyMode => state.enter_copy_mode(terminal_runtimes),
+        NavigateAction::Find => {
+            state.enter_copy_search(terminal_runtimes, CopySearchDirection::Forward)
+        }
         NavigateAction::Zoom => {
             state.toggle_zoom();
             leave_navigate_mode(state);

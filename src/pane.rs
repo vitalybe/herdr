@@ -2383,6 +2383,10 @@ impl PaneRuntime {
         self.terminal.recent_text(lines)
     }
 
+    pub fn scrollback_lines(&self) -> Vec<String> {
+        self.terminal.scrollback_lines()
+    }
+
     pub fn recent_ansi(&self, lines: usize) -> String {
         self.terminal.recent_ansi(lines)
     }

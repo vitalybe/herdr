@@ -219,6 +219,13 @@ impl PaneTerminal {
         self.ghostty.recent_text(lines)
     }
 
+    /// All screen rows top-to-bottom (scrollback + live), one string per row.
+    /// The index of each entry is its absolute row, matching the row model used
+    /// by [`crate::selection::Selection`].
+    pub fn scrollback_lines(&self) -> Vec<String> {
+        self.ghostty.scrollback_lines()
+    }
+
     pub fn recent_ansi(&self, lines: usize) -> String {
         self.ghostty.recent_ansi(lines)
     }
@@ -1132,6 +1139,14 @@ impl GhosttyPaneTerminal {
             .unwrap_or_default()
     }
 
+    pub fn scrollback_lines(&self) -> Vec<String> {
+        self.core
+            .lock()
+            .ok()
+            .and_then(|core| ghostty_scrollback_lines(&core).ok())
+            .unwrap_or_default()
+    }
+
     pub fn recent_ansi(&self, lines: usize) -> String {
         self.core
             .lock()
@@ -1718,6 +1733,19 @@ fn ghostty_recent_text(
     }
     trim_trailing_blank_rows(&mut rows);
     Ok(recent_text_from_rows(&rows, lines))
+}
+
+fn ghostty_scrollback_lines(core: &GhosttyPaneCore) -> Result<Vec<String>, crate::ghostty::Error> {
+    let total_rows = core.terminal.total_rows()?;
+    let cols = core.terminal.cols()?;
+    if total_rows == 0 || cols == 0 {
+        return Ok(Vec::new());
+    }
+    let mut rows = Vec::with_capacity(total_rows);
+    for y in 0..total_rows {
+        rows.push(ghostty_screen_row(core, cols, y as u32)?);
+    }
+    Ok(rows)
 }
 
 fn ghostty_recent_text_unwrapped(

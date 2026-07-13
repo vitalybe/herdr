@@ -832,6 +832,48 @@ pub(crate) enum CopyModeSelection {
     Linewise { anchor_row: u32 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CopySearchDirection {
+    Forward,
+    Backward,
+}
+
+/// A single scrollback search hit, addressed by absolute row and the cell
+/// column span it occupies (matching the row/cell model in
+/// [`crate::selection::Selection`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CopySearchMatch {
+    pub row: u32,
+    pub col: u16,
+    pub width: u16,
+}
+
+/// Scrollback find state that rides alongside copy mode. Kept separate from
+/// [`CopyModeState`] so that value stays `Copy`; this owns the query string and
+/// match list, which cannot be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CopySearchState {
+    pub query: String,
+    pub direction: CopySearchDirection,
+    /// True while the prompt is focused and the query is being edited. False
+    /// once the search is committed and the user is stepping matches.
+    pub editing: bool,
+    pub matches: Vec<CopySearchMatch>,
+    pub current: Option<usize>,
+    /// Scroll offset captured when the search opened, restored on cancel.
+    pub origin_offset_from_bottom: usize,
+    /// Cursor position (absolute row, cell column) when the search opened.
+    /// Incremental matches are chosen relative to this anchor, like vim's
+    /// incremental search, so growing the query does not drift the anchor.
+    pub origin_row: u32,
+    pub origin_col: u16,
+    /// True when the search opened directly (via the `find` action) rather than
+    /// from within an existing copy-mode session. Cancelling a direct search
+    /// leaves copy mode entirely; cancelling a search started from copy mode
+    /// stays in copy mode.
+    pub entered_via_find: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AgentPanelSort {
     #[default]
@@ -1320,6 +1362,7 @@ pub struct AppState {
     pub keybind_help: KeybindHelpState,
     pub navigator: NavigatorState,
     pub copy_mode: Option<CopyModeState>,
+    pub(crate) copy_search: Option<CopySearchState>,
     pub workspace_scroll: usize,
     pub agent_panel_scroll: usize,
     pub tab_scroll: usize,
@@ -1700,6 +1743,7 @@ impl AppState {
             keybind_help: KeybindHelpState { scroll: 0 },
             navigator: NavigatorState::default(),
             copy_mode: None,
+            copy_search: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
             tab_scroll: 0,

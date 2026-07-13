@@ -569,6 +569,7 @@ impl App {
             keybind_help: state::KeybindHelpState { scroll: 0 },
             navigator: state::NavigatorState::default(),
             copy_mode: None,
+            copy_search: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
             tab_scroll: 0,

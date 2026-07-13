@@ -40,6 +40,7 @@ Panes:
 | Swap panes | `prefix+shift+h/j/k/l` |
 | Resize mode | `prefix+r` |
 | Copy mode | `prefix+[` |
+| Search scrollback | `prefix+/` |
 
 Tabs:
 
@@ -65,6 +66,10 @@ The full keymap and the binding syntax live in the [keybinding reference](/docs/
 ## Copy mode
 
 Press `prefix+[` to enter copy mode for the focused pane. Use `h/j/k/l`, `w/b/e`, `{`/`}`, and `ctrl+b`/`ctrl+f` to move, `v` or Space to start a selection, `y` or Enter to copy it, and `q` or Esc to leave without copying. Mouse drag-select copies without entering copy mode at all.
+
+## Search scrollback
+
+Press `prefix+/` to search the focused pane's scrollback. Type your query and matches highlight as you go; the current match count shows in the prompt. Press Enter to confirm, then `n` and `N` to step to the next and previous match. Press Esc to cancel and return to the terminal at your original position. From inside copy mode you can also start a search with `/` (forward) or `?` (backward). Matching is case-insensitive.
 
 ## Change anything
 

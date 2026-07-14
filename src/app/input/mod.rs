@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use crate::app::{AgentRowClickState, PaneClickState};
+use crate::app::{AgentRowClickState, PaneClickState, TabRowClickState};
 use crate::input::TerminalKey;
 use ratatui::layout::Direction;
 
@@ -257,6 +257,10 @@ impl App {
             return;
         }
 
+        if self.handle_tab_row_double_click(mouse) {
+            return;
+        }
+
         if self.handle_modified_url_click(mouse) {
             return;
         }
@@ -304,9 +308,6 @@ impl App {
                         SettingsAction::SaveSwitchAsciiInputSourceInPrefix(enabled) => {
                             self.save_switch_ascii_input_source_in_prefix(enabled)
                         }
-                        SettingsAction::SaveHideTabsWithAgents(enabled) => {
-                            self.save_hide_tabs_with_agents(enabled)
-                        }
                         SettingsAction::InstallRecommendedIntegrations => {
                             self.install_recommended_integrations()
                         }
@@ -315,6 +316,9 @@ impl App {
                         self.focus_workspace_idx_via_api(ws_idx)
                     }
                     MouseAction::FocusTab { tab_idx } => self.focus_tab_idx_via_api(tab_idx),
+                    MouseAction::FocusTabInWorkspace { ws_idx, tab_idx } => {
+                        self.focus_tab_in_workspace_via_api(ws_idx, tab_idx)
+                    }
                     MouseAction::FocusPane { ws_idx, pane_id } => {
                         self.focus_pane_internal_via_api(ws_idx, pane_id)
                     }
@@ -334,6 +338,12 @@ impl App {
                         // routing through the runtime API path used by
                         // workspace/tab moves.
                         self.state.move_agent_entry(source, insert_idx);
+                    }
+                    MouseAction::MoveTabSectionEntry { source, insert_idx } => {
+                        // The Tabs-section order is client-only presentation state
+                        // and never changes the real tab order, so mutate it
+                        // directly instead of routing through the runtime API.
+                        self.state.move_tab_section_entry(source, insert_idx);
                     }
                     MouseAction::SetSplitRatio { path, ratio } => {
                         self.set_split_ratio_via_api(path, ratio)
@@ -465,6 +475,58 @@ impl App {
         }
 
         self.last_agent_row_click = Some(click);
+        false
+    }
+
+    /// Detects a double-click on a Tabs-section row and opens the tab rename modal
+    /// targeting that tab. The first click is recorded and left to normal
+    /// single-click activation; only the qualifying second click is consumed.
+    fn handle_tab_row_double_click(&mut self, mouse: MouseEvent) -> bool {
+        // A left drag starts a reorder gesture; invalidate any pending tab-row
+        // click so a drag is never mistaken for the first half of a double-click.
+        if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) {
+            self.last_tab_row_click = None;
+            return false;
+        }
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+        if !mouse.modifiers.is_empty() {
+            self.last_tab_row_click = None;
+            return false;
+        }
+
+        let sidebar = self.state.view.sidebar_rect;
+        let in_sidebar = mouse.column >= sidebar.x
+            && mouse.column < sidebar.x + sidebar.width
+            && mouse.row >= sidebar.y
+            && mouse.row < sidebar.y + sidebar.height;
+        if !in_sidebar {
+            self.last_tab_row_click = None;
+            return false;
+        }
+
+        let Some((_order_idx, ws_idx, tab_idx)) = self.state.tab_section_row_at(mouse.row) else {
+            self.last_tab_row_click = None;
+            return false;
+        };
+
+        let click = TabRowClickState {
+            ws_idx,
+            tab_idx,
+            at: std::time::Instant::now(),
+        };
+        if self
+            .last_tab_row_click
+            .is_some_and(|last| last.is_double_click_for(click))
+        {
+            self.last_tab_row_click = None;
+            self.focus_tab_in_workspace_via_api(ws_idx, tab_idx);
+            modal::open_rename_tab(&mut self.state, ws_idx, tab_idx);
+            return true;
+        }
+
+        self.last_tab_row_click = Some(click);
         false
     }
 
@@ -719,8 +781,10 @@ fn capture_snapshot(state: &AppState) -> crate::persist::SessionSnapshot {
         state.selected,
         state.sidebar_width,
         state.sidebar_section_split,
+        state.sidebar_tabs_section_split,
         state.collapsed_space_keys.clone(),
         state.agent_manual_order.to_public_keys(&state.workspaces),
+        state.tab_section_order.to_refs(),
     )
 }
 

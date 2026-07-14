@@ -19,7 +19,6 @@ pub(super) enum SettingsAction {
     SaveAgentBorderLabels(bool),
     SavePaneHistory(bool),
     SaveSwitchAsciiInputSourceInPrefix(bool),
-    SaveHideTabsWithAgents(bool),
     InstallRecommendedIntegrations,
 }
 
@@ -34,9 +33,6 @@ fn experiment_toggle_action(state: &AppState, idx: usize) -> Option<SettingsActi
                 !ExperimentSetting::SwitchAsciiInputSourceInPrefix.enabled(state),
             ))
         }
-        ExperimentSetting::HideTabsWithAgents => Some(SettingsAction::SaveHideTabsWithAgents(
-            !ExperimentSetting::HideTabsWithAgents.enabled(state),
-        )),
     }
 }
 
@@ -56,9 +52,6 @@ impl App {
                 }
                 SettingsAction::SaveSwitchAsciiInputSourceInPrefix(enabled) => {
                     self.save_switch_ascii_input_source_in_prefix(enabled)
-                }
-                SettingsAction::SaveHideTabsWithAgents(enabled) => {
-                    self.save_hide_tabs_with_agents(enabled)
                 }
                 SettingsAction::InstallRecommendedIntegrations => {
                     self.install_recommended_integrations()

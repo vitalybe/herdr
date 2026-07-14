@@ -40,6 +40,7 @@ const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 const SIDEBAR_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const AGENT_ROW_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
+const TAB_ROW_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_COPY_HIGHLIGHT_DURATION: Duration = Duration::from_millis(500);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
 
@@ -105,6 +106,22 @@ impl AgentRowClickState {
     }
 }
 
+/// TUI-only double-click tracking for rows in the sidebar Tabs section.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TabRowClickState {
+    ws_idx: usize,
+    tab_idx: usize,
+    at: Instant,
+}
+
+impl TabRowClickState {
+    fn is_double_click_for(self, next: Self) -> bool {
+        self.ws_idx == next.ws_idx
+            && self.tab_idx == next.tab_idx
+            && next.at.duration_since(self.at) <= TAB_ROW_DOUBLE_CLICK_WINDOW
+    }
+}
+
 pub struct App {
     pub state: AppState,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
@@ -131,6 +148,7 @@ pub struct App {
     pub(crate) last_sidebar_divider_click: Option<Instant>,
     pub(crate) last_pane_click: Option<PaneClickState>,
     pub(crate) last_agent_row_click: Option<AgentRowClickState>,
+    pub(crate) last_tab_row_click: Option<TabRowClickState>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_animation_tick: Option<Instant>,
     pub(crate) next_auto_update_check: Option<Instant>,
@@ -260,6 +278,28 @@ fn restore_agent_manual_order(
         })
         .collect();
     state::AgentManualOrder::from_public_keys(&keys, workspaces)
+}
+
+/// Rebuild the client-only Tabs-section order from a restored snapshot. Tab
+/// references are keyed by (workspace id + stable tab number), which survive
+/// restore directly, so this only drops references to workspaces that no longer
+/// exist; reconcile handles dead/new tabs on the next frame.
+fn restore_tab_section_order(
+    snap: &crate::persist::SessionSnapshot,
+    workspaces: &[crate::workspace::Workspace],
+) -> state::TabSectionOrder {
+    let Some(order) = snap.tab_section_order.as_ref() else {
+        return state::TabSectionOrder::default();
+    };
+    let refs: Vec<state::TabRef> = order
+        .entries
+        .iter()
+        .map(|entry| state::TabRef {
+            workspace_id: entry.workspace_id.clone(),
+            tab_number: entry.tab_number,
+        })
+        .collect();
+    state::TabSectionOrder::from_refs(refs, workspaces)
 }
 
 fn agent_panel_sort_from_config(
@@ -439,8 +479,10 @@ impl App {
             sidebar_width,
             sidebar_width_source,
             sidebar_section_split,
+            sidebar_tabs_section_split,
             collapsed_space_keys,
             agent_manual_order,
+            tab_section_order,
         ) = if no_session {
             (
                 Vec::new(),
@@ -449,8 +491,10 @@ impl App {
                 config.ui.sidebar_width,
                 state::SidebarWidthSource::ConfigDefault,
                 0.5_f32,
+                0.5_f32,
                 std::collections::HashSet::new(),
                 state::AgentManualOrder::default(),
+                state::TabSectionOrder::default(),
             )
         } else if let Some(snap) = crate::persist::load() {
             let history = config
@@ -486,14 +530,17 @@ impl App {
                         state::SidebarWidthSource::ConfigDefault
                     },
                     snap.sidebar_section_split.unwrap_or(0.5),
+                    snap.sidebar_tabs_section_split.unwrap_or(0.5),
                     snap.collapsed_space_keys,
                     state::AgentManualOrder::default(),
+                    state::TabSectionOrder::default(),
                 )
             } else {
                 crate::logging::session_restored(ws.len(), "ok");
                 let active = snap.active.filter(|&i| i < ws.len());
                 let selected = snap.selected.min(ws.len().saturating_sub(1));
                 let agent_manual_order = restore_agent_manual_order(&snap, &ws);
+                let tab_section_order = restore_tab_section_order(&snap, &ws);
                 (
                     ws,
                     active,
@@ -505,8 +552,10 @@ impl App {
                         state::SidebarWidthSource::ConfigDefault
                     },
                     snap.sidebar_section_split.unwrap_or(0.5),
+                    snap.sidebar_tabs_section_split.unwrap_or(0.5),
                     snap.collapsed_space_keys,
                     agent_manual_order,
+                    tab_section_order,
                 )
             }
         } else {
@@ -517,8 +566,10 @@ impl App {
                 config.ui.sidebar_width,
                 state::SidebarWidthSource::ConfigDefault,
                 0.5_f32,
+                0.5_f32,
                 std::collections::HashSet::new(),
                 state::AgentManualOrder::default(),
+                state::TabSectionOrder::default(),
             )
         };
 
@@ -603,6 +654,7 @@ impl App {
             requested_new_tab_name: None,
             rename_pane_target: None,
             rename_line_split_target: None,
+            rename_tab_target: None,
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
@@ -629,6 +681,7 @@ impl App {
             copy_search: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
+            tab_section_scroll: 0,
             tab_scroll: 0,
             tab_scroll_follow_active: true,
             mobile_switcher_scroll: 0,
@@ -636,6 +689,7 @@ impl App {
                 layout: state::ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                tab_section_row_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -652,6 +706,7 @@ impl App {
             workspace_press: None,
             tab_press: None,
             agent_press: None,
+            tab_section_press: None,
             selection: None,
             selection_autoscroll: None,
             context_menu: None,
@@ -676,8 +731,10 @@ impl App {
             sidebar_collapsed: false,
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_section_split,
+            sidebar_tabs_section_split,
             agent_panel_sort,
             agent_manual_order,
+            tab_section_order,
             agent_panel_row_templates,
             next_agent_state_change_seq: 0,
             mouse_capture: config.ui.mouse_capture,
@@ -698,7 +755,6 @@ impl App {
             switch_ascii_input_source_in_prefix: config
                 .experimental
                 .switch_ascii_input_source_in_prefix,
-            hide_tabs_with_agents: config.experimental.hide_tabs_with_agents,
             kitty_graphics_enabled: config.experimental.kitty_graphics,
             default_shell: config.terminal.default_shell.clone(),
             shell_mode: config.terminal.shell_mode,
@@ -790,6 +846,7 @@ impl App {
             last_sidebar_divider_click: None,
             last_pane_click: None,
             last_agent_row_click: None,
+            last_tab_row_click: None,
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
             next_animation_tick: None,
             next_auto_update_check: version_check_enabled
@@ -877,8 +934,12 @@ impl App {
         if let Some(split) = snapshot.sidebar_section_split {
             app.state.sidebar_section_split = split;
         }
+        if let Some(split) = snapshot.sidebar_tabs_section_split {
+            app.state.sidebar_tabs_section_split = split;
+        }
         app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
         app.state.agent_manual_order = restore_agent_manual_order(snapshot, &app.state.workspaces);
+        app.state.tab_section_order = restore_tab_section_order(snapshot, &app.state.workspaces);
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
         } else {
@@ -1484,7 +1545,6 @@ impl App {
                 config.experimental.cjk_ime_cursor_shape.to_decscusr();
             self.state.switch_ascii_input_source_in_prefix =
                 config.experimental.switch_ascii_input_source_in_prefix;
-            self.state.hide_tabs_with_agents = config.experimental.hide_tabs_with_agents;
             self.persist_pane_history = config.experimental.pane_history;
             self.state.pane_history_persistence = config.experimental.pane_history;
             if !self.persist_pane_history {

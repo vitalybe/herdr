@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- Added `[experimental] hide_tabs_with_agents` (and Settings > Experiments > hide tabs with agents) to hide spaces whose tabs are all agent tabs from the spaces list and navigation, and stop highlighting a space while an agent tab is focused. A tab counts as an agent tab only when every pane in it is an agent.
+- Added a sidebar "Tabs" section that lists every non-agent tab across all spaces as a two-line row (tab name over its space). Tabs can be reordered by dragging (visual only - it never changes the real tab order in any workspace), renamed by double-clicking, and scrolled when they overflow. The section collapses when there are no non-agent tabs.
 - Added `ui.agent_panel.rows` to customize the two lines of each agent-panel entry with a small template language. Fields (`{icon}`, `{space}`, `{tab}`, `{status}`, `{agent}`, `{custom}`) can carry a literal prefix and a color style, e.g. `{agent:overlay0}`, `{agent:#f5c2e7}`, or `{space:text+bold}`. Colors are theme palette tokens or fixed literal colors with optional `+bold`/`+dim`/`+italic`/`+underline` modifiers.
 - Added `ui.sidebar_collapsed_mode = "hidden"` to make a collapsed sidebar use zero width while keeping the existing compact rail as the default. (#842)
 - Added `session.snapshot` to bootstrap client runtime state in one socket API response before subscribing to events.
@@ -12,6 +12,7 @@
 - Added `herdr terminal session control` for bridge processes that need live ANSI frames plus input, resize, scroll, release, and takeover authority.
 
 ### Changed
+- Clicking a space now returns to that workspace's latest active tab instead of a separately tracked home tab.
 - Bumped the client/server protocol version to 15 for socket API placement mutation event and response compatibility.
 
 ### Fixed

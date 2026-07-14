@@ -9,7 +9,7 @@ use crate::terminal::TerminalRuntimeRegistry;
 use crate::workspace::Workspace;
 
 /// Current snapshot format version.
-pub(super) const SNAPSHOT_VERSION: u32 = 5;
+pub(super) const SNAPSHOT_VERSION: u32 = 6;
 
 /// Serializable snapshot of the entire herdr session.
 #[derive(Serialize, Deserialize)]
@@ -24,12 +24,34 @@ pub struct SessionSnapshot {
     pub sidebar_width: Option<u16>,
     #[serde(default)]
     pub sidebar_section_split: Option<f32>,
+    /// Ratio of the sidebar region below the Spaces band allocated to the Tabs
+    /// section. Optional for back-compat.
+    #[serde(default)]
+    pub sidebar_tabs_section_split: Option<f32>,
     #[serde(default)]
     pub collapsed_space_keys: std::collections::HashSet<String>,
     /// Flat manual agent ordering (TUI presentation state). Serialized by stable
     /// keys so it survives the PaneId remap on restore. Optional for back-compat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_manual_order: Option<AgentManualOrderSnapshot>,
+    /// Flat Tabs-section ordering (TUI presentation state). Serialized by stable
+    /// (workspace id + tab number) references. Optional for back-compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_section_order: Option<TabSectionOrderSnapshot>,
+}
+
+/// Persisted flat Tabs-section ordering. Entries reference tabs by stable keys
+/// (workspace id + public tab number) rather than a positional index.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct TabSectionOrderSnapshot {
+    pub entries: Vec<TabSectionEntrySnapshot>,
+}
+
+/// A single persisted Tabs-section entry.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TabSectionEntrySnapshot {
+    pub workspace_id: String,
+    pub tab_number: usize,
 }
 
 /// Persisted flat manual agent ordering. Entries reference panes by stable keys
@@ -211,9 +233,13 @@ struct RawSessionSnapshot {
     #[serde(default)]
     sidebar_section_split: Option<f32>,
     #[serde(default)]
+    sidebar_tabs_section_split: Option<f32>,
+    #[serde(default)]
     collapsed_space_keys: std::collections::HashSet<String>,
     #[serde(default)]
     agent_manual_order: Option<AgentManualOrderSnapshot>,
+    #[serde(default)]
+    tab_section_order: Option<TabSectionOrderSnapshot>,
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -228,8 +254,10 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
         selected: raw.selected,
         sidebar_width: raw.sidebar_width,
         sidebar_section_split: raw.sidebar_section_split,
+        sidebar_tabs_section_split: raw.sidebar_tabs_section_split,
         collapsed_space_keys: raw.collapsed_space_keys,
         agent_manual_order: raw.agent_manual_order,
+        tab_section_order: raw.tab_section_order,
     })
 }
 
@@ -291,9 +319,20 @@ pub fn capture(
     selected: usize,
     sidebar_width: u16,
     sidebar_section_split: f32,
+    sidebar_tabs_section_split: f32,
     collapsed_space_keys: std::collections::HashSet<String>,
     agent_manual_order_keys: Vec<crate::app::state::ManualOrderEntryKey>,
+    tab_section_order_refs: Vec<crate::app::state::TabRef>,
 ) -> SessionSnapshot {
+    let tab_section_order = (!tab_section_order_refs.is_empty()).then(|| TabSectionOrderSnapshot {
+        entries: tab_section_order_refs
+            .into_iter()
+            .map(|tab_ref| TabSectionEntrySnapshot {
+                workspace_id: tab_ref.workspace_id,
+                tab_number: tab_ref.tab_number,
+            })
+            .collect(),
+    });
     let agent_manual_order =
         (!agent_manual_order_keys.is_empty()).then(|| AgentManualOrderSnapshot {
             entries: agent_manual_order_keys
@@ -325,8 +364,10 @@ pub fn capture(
         selected,
         sidebar_width: Some(sidebar_width),
         sidebar_section_split: Some(sidebar_section_split),
+        sidebar_tabs_section_split: Some(sidebar_tabs_section_split),
         collapsed_space_keys,
         agent_manual_order,
+        tab_section_order,
     }
 }
 
@@ -595,8 +636,10 @@ mod tests {
             state.selected,
             state.sidebar_width,
             state.sidebar_section_split,
+            state.sidebar_tabs_section_split,
             state.collapsed_space_keys.clone(),
             state.agent_manual_order.to_public_keys(&state.workspaces),
+            state.tab_section_order.to_refs(),
         )
     }
 
@@ -625,6 +668,8 @@ mod tests {
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
             agent_manual_order: None,
+            sidebar_tabs_section_split: None,
+            tab_section_order: None,
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored = parse_snapshot(&json).unwrap();
@@ -632,6 +677,45 @@ mod tests {
         assert_eq!(restored.active, None);
         assert_eq!(restored.sidebar_width, Some(26));
         assert_eq!(restored.sidebar_section_split, Some(0.5));
+    }
+
+    #[test]
+    fn tab_section_order_snapshot_roundtrip() {
+        let snap = SessionSnapshot {
+            version: SNAPSHOT_VERSION,
+            workspaces: vec![],
+            active: None,
+            selected: 0,
+            sidebar_width: Some(26),
+            sidebar_section_split: Some(0.4),
+            sidebar_tabs_section_split: Some(0.6),
+            collapsed_space_keys: Default::default(),
+            agent_manual_order: None,
+            tab_section_order: Some(TabSectionOrderSnapshot {
+                entries: vec![
+                    TabSectionEntrySnapshot {
+                        workspace_id: "w2".into(),
+                        tab_number: 1,
+                    },
+                    TabSectionEntrySnapshot {
+                        workspace_id: "w1".into(),
+                        tab_number: 3,
+                    },
+                ],
+            }),
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        let restored = parse_snapshot(&json).unwrap();
+        assert_eq!(restored.sidebar_tabs_section_split, Some(0.6));
+        let entries = restored
+            .tab_section_order
+            .expect("tab section order persisted")
+            .entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].workspace_id, "w2");
+        assert_eq!(entries[0].tab_number, 1);
+        assert_eq!(entries[1].workspace_id, "w1");
+        assert_eq!(entries[1].tab_number, 3);
     }
 
     #[test]
@@ -727,7 +811,7 @@ mod tests {
 
         let snap = capture_from_state(&state);
         assert_eq!(snap.version, SNAPSHOT_VERSION);
-        assert_eq!(SNAPSHOT_VERSION, 5);
+        assert_eq!(SNAPSHOT_VERSION, 6);
 
         let json = serde_json::to_string(&snap).unwrap();
         let parsed = parse_snapshot(&json).unwrap();
@@ -846,6 +930,8 @@ mod tests {
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
             agent_manual_order: None,
+            sidebar_tabs_section_split: None,
+            tab_section_order: None,
             version: SNAPSHOT_VERSION,
         };
 
@@ -1412,6 +1498,8 @@ mod tests {
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
             agent_manual_order: None,
+            sidebar_tabs_section_split: None,
+            tab_section_order: None,
         };
 
         let json = serde_json::to_string(&snap).unwrap();

@@ -956,12 +956,11 @@ impl AppState {
             self.mark_session_dirty();
             self.ensure_workspace_visible(idx);
             if let Some(ws) = self.workspaces.get_mut(idx) {
-                // Restore the deliberately-chosen home tab, not whatever tab a
-                // transient agent-panel jump last displayed.
-                let home_tab = ws.home_tab;
-                ws.switch_tab(home_tab);
+                // Clicking a space activates the workspace's latest active tab.
+                let active_tab = ws.active_tab;
+                ws.switch_tab(active_tab);
                 let tab_id =
-                    public_tab_id_for_index(ws, home_tab).unwrap_or_else(|| workspace_id.clone());
+                    public_tab_id_for_index(ws, active_tab).unwrap_or_else(|| workspace_id.clone());
                 crate::logging::tab_focused(&workspace_id, &tab_id);
             }
             self.tab_scroll_follow_active = true;
@@ -1356,6 +1355,99 @@ impl AppState {
         true
     }
 
+    /// Reconcile the client-only Tabs-section order with the live set of
+    /// non-agent tabs across all workspaces. Called from the compute_view
+    /// mutation phase so render stays pure.
+    ///
+    /// Drops references to tabs that no longer exist or that became agent tabs,
+    /// seeds the natural display order on first run, then places genuinely new
+    /// non-agent tabs at the top of the list.
+    pub(crate) fn reconcile_tab_section_order(&mut self) {
+        use crate::app::state::TabRef;
+        // Flat set of live non-agent tabs in natural display order
+        // (workspaces x tabs).
+        let mut flat: Vec<TabRef> = Vec::new();
+        for ws in &self.workspaces {
+            for tab in &ws.tabs {
+                if !tab.is_agent_tab(&self.terminals) {
+                    flat.push(TabRef {
+                        workspace_id: ws.id.clone(),
+                        tab_number: tab.number,
+                    });
+                }
+            }
+        }
+        let current: std::collections::HashSet<TabRef> = flat.iter().cloned().collect();
+
+        // Drop stale references (closed tabs or tabs that became agent tabs) and
+        // prune the known set to match.
+        self.tab_section_order
+            .order
+            .retain(|tab_ref| current.contains(tab_ref));
+        self.tab_section_order
+            .known
+            .retain(|tab_ref| current.contains(tab_ref));
+
+        if !self.tab_section_order.seeded {
+            // First reconcile: establish the natural tab order.
+            for tab_ref in &flat {
+                if self.tab_section_order.known.insert(tab_ref.clone()) {
+                    self.tab_section_order.order.push(tab_ref.clone());
+                }
+            }
+            self.tab_section_order.seeded = true;
+            return;
+        }
+
+        // Genuinely new non-agent tabs go to the top of the list, keeping their
+        // natural relative order among themselves.
+        let mut insert_at = 0usize;
+        for tab_ref in &flat {
+            if self.tab_section_order.known.contains(tab_ref) {
+                continue;
+            }
+            let at = insert_at.min(self.tab_section_order.order.len());
+            self.tab_section_order.order.insert(at, tab_ref.clone());
+            self.tab_section_order.known.insert(tab_ref.clone());
+            insert_at = at + 1;
+        }
+    }
+
+    /// Move a non-agent tab to a new position in the flat Tabs-section order.
+    /// `insert_idx` is a slot in the current order (before removal), clamped to
+    /// bounds. Cross-space moves are allowed. This is client-only presentation
+    /// state and never changes the real tab order inside any workspace. Returns
+    /// true when the order changed.
+    pub(crate) fn move_tab_section_entry(
+        &mut self,
+        source: crate::app::state::TabRef,
+        insert_idx: usize,
+    ) -> bool {
+        let Some(from) = self
+            .tab_section_order
+            .order
+            .iter()
+            .position(|tab_ref| *tab_ref == source)
+        else {
+            return false;
+        };
+
+        let insert_idx = insert_idx.min(self.tab_section_order.order.len());
+        let target_idx = if from < insert_idx {
+            insert_idx - 1
+        } else {
+            insert_idx
+        };
+        if from == target_idx {
+            return false;
+        }
+
+        self.mark_session_dirty();
+        let entry = self.tab_section_order.order.remove(from);
+        self.tab_section_order.order.insert(target_idx, entry);
+        true
+    }
+
     pub fn scroll_tabs_left(&mut self) {
         self.tab_scroll_follow_active = false;
         self.tab_scroll = self.tab_scroll.saturating_sub(1);
@@ -1458,9 +1550,11 @@ impl AppState {
             return;
         }
 
-        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
+        let detail_area = crate::ui::tabs_agents_detail_rect(
             self.view.sidebar_rect,
             self.sidebar_section_split,
+            self.sidebar_tabs_section_split,
+            crate::ui::sidebar_shows_tab_section(self),
         );
         let metrics = crate::ui::agent_panel_scroll_metrics(self, detail_area);
         let visible = metrics.viewport_rows;
@@ -1477,6 +1571,40 @@ impl AppState {
         let max_scroll =
             crate::ui::agent_panel_scroll_metrics(self, detail_area).max_offset_from_bottom;
         self.agent_panel_scroll = self.agent_panel_scroll.min(max_scroll);
+    }
+
+    /// Scroll the Tabs section so the row for `(ws_idx, tab_idx)` is visible, if
+    /// that tab is currently listed. Mirrors `ensure_agent_panel_entry_visible`.
+    pub(crate) fn ensure_tab_section_row_visible(&mut self, ws_idx: usize, tab_idx: usize) {
+        if self.sidebar_collapsed {
+            return;
+        }
+        let entries = crate::ui::sidebar_tab_entries(self);
+        let Some(resolved_idx) = entries
+            .iter()
+            .position(|entry| entry.ws_idx == ws_idx && entry.tab_idx == tab_idx)
+        else {
+            return;
+        };
+
+        let tabs_area = crate::ui::tab_section_rect(
+            self.view.sidebar_rect,
+            self.sidebar_section_split,
+            self.sidebar_tabs_section_split,
+            crate::ui::sidebar_shows_tab_section(self),
+        );
+        let metrics = crate::ui::tab_section_scroll_metrics(self, tabs_area);
+        let visible = metrics.viewport_rows;
+        if visible == 0 {
+            return;
+        }
+
+        if resolved_idx < self.tab_section_scroll {
+            self.tab_section_scroll = resolved_idx;
+        } else if resolved_idx >= self.tab_section_scroll.saturating_add(visible) {
+            self.tab_section_scroll = resolved_idx.saturating_add(1).saturating_sub(visible);
+        }
+        self.tab_section_scroll = self.tab_section_scroll.min(metrics.max_offset_from_bottom);
     }
 
     pub(crate) fn terminal_ids_for_workspace(
@@ -3859,7 +3987,9 @@ mod tests {
             mark_agent(&mut state, 0, tab_idx, pane_id);
         }
         state.workspaces[0].tabs[0].layout.focus_pane(root);
-        crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 80, 14));
+        // Height accommodates the three-band sidebar (Spaces/Tabs/Agents) while
+        // keeping the Agents band small enough that 8 agents must scroll.
+        crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 80, 24));
 
         state.previous_agent();
 
@@ -4027,27 +4157,28 @@ mod tests {
     }
 
     #[test]
-    fn switch_workspace_restores_home_tab_after_transient_agent_focus() {
+    fn space_click_activates_latest_active_tab() {
         let mut state = app_with_workspaces(&["one", "two"]);
         let root = state.workspaces[0].tabs[0].root_pane;
         let logs_tab = state.workspaces[0].test_add_tab(Some("logs"));
 
-        // Deliberately select the logs tab: it becomes the workspace's home tab.
+        // Deliberately select the logs tab: it becomes both the active and home
+        // tab.
         state.switch_tab(logs_tab);
         assert_eq!(state.workspaces[0].active_tab, logs_tab);
         assert_eq!(state.workspaces[0].home_tab, logs_tab);
 
-        // Simulate an agent-panel jump to a pane in the first tab: it moves the
-        // view but must not overwrite the home tab.
+        // An agent-panel jump to a pane in the first tab moves the active tab
+        // (the latest active tab) without touching the home tab.
         state.focus_pane_in_workspace(0, root);
         assert_eq!(state.workspaces[0].active_tab, 0);
         assert_eq!(state.workspaces[0].home_tab, logs_tab);
 
-        // Leaving and returning to the workspace restores the home tab, not the
-        // transiently-focused tab.
+        // Leaving and returning to the workspace restores the latest active tab,
+        // not the deliberately-chosen home tab.
         state.switch_workspace(1);
         state.switch_workspace(0);
-        assert_eq!(state.workspaces[0].active_tab, logs_tab);
+        assert_eq!(state.workspaces[0].active_tab, 0);
     }
 
     #[test]
@@ -4157,6 +4288,77 @@ mod tests {
         assert!(state.agent_manual_order.seeded);
         assert_eq!(manual_order_pane_ids(&state), vec![a, b, c]);
         state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn tab_section_manual_order_reorders_across_spaces_visually() {
+        let mut state = app_with_workspaces(&["one", "two"]);
+        // Each workspace has a single plain (non-agent) tab.
+        state.reconcile_tab_section_order();
+        let ws0_id = state.workspaces[0].id.clone();
+        let ws1_id = state.workspaces[1].id.clone();
+        assert_eq!(
+            state
+                .tab_section_order
+                .order
+                .iter()
+                .map(|r| r.workspace_id.clone())
+                .collect::<Vec<_>>(),
+            vec![ws0_id.clone(), ws1_id.clone()]
+        );
+        let tab0_number = state.workspaces[0].tabs[0].number;
+        let tab1_number = state.workspaces[1].tabs[0].number;
+
+        // Move workspace two's tab to the front: a cross-space visual reorder.
+        let source = state.tab_section_order.order[1].clone();
+        assert!(state.move_tab_section_entry(source, 0));
+        assert_eq!(
+            state
+                .tab_section_order
+                .order
+                .iter()
+                .map(|r| r.workspace_id.clone())
+                .collect::<Vec<_>>(),
+            vec![ws1_id, ws0_id]
+        );
+
+        // The real tabs inside each workspace are untouched.
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
+        assert_eq!(state.workspaces[1].tabs.len(), 1);
+        assert_eq!(state.workspaces[0].tabs[0].number, tab0_number);
+        assert_eq!(state.workspaces[1].tabs[0].number, tab1_number);
+    }
+
+    #[test]
+    fn tab_section_reconcile_drops_dead_and_places_new_at_top() {
+        let mut state = app_with_workspaces(&["one"]);
+        state.workspaces[0].test_add_tab(Some("logs")); // tab 1 (plain)
+        state.ensure_test_terminals();
+        state.reconcile_tab_section_order();
+        assert_eq!(state.tab_section_order.order.len(), 2);
+
+        // A genuinely new non-agent tab lands at the top of the list.
+        let new_tab = state.workspaces[0].test_add_tab(Some("new"));
+        state.ensure_test_terminals();
+        state.reconcile_tab_section_order();
+        let new_number = state.workspaces[0].tabs[new_tab].number;
+        assert_eq!(state.tab_section_order.order[0].tab_number, new_number);
+        assert_eq!(state.tab_section_order.order.len(), 3);
+
+        // Turning tab 0 into an agent tab drops it from the Tabs section.
+        let tab0_number = state.workspaces[0].tabs[0].number;
+        let tab0_pane = state.workspaces[0].tabs[0].root_pane;
+        mark_agent(&mut state, 0, 0, tab0_pane);
+        state.reconcile_tab_section_order();
+        assert!(
+            !state
+                .tab_section_order
+                .order
+                .iter()
+                .any(|r| r.tab_number == tab0_number),
+            "agent tab must drop out of the Tabs section"
+        );
+        assert_eq!(state.tab_section_order.order.len(), 2);
     }
 
     #[test]

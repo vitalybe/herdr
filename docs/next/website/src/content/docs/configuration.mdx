@@ -546,24 +546,6 @@ When enabled, Herdr switches input sources only after prefix mode is entered, th
 
 You can also toggle it from Settings > Experiments > switch to ascii input source in prefix (macOS).
 
-## Hide tabs with agents
-
-If you drive agents mostly from the agents panel, the spaces list can get crowded with agent-only spaces you never switch to directly.
-
-Set `hide_tabs_with_agents = true` to keep them out of the way:
-
-```toml
-[experimental]
-hide_tabs_with_agents = false
-```
-
-When enabled:
-
-- Spaces whose tabs are all agent tabs disappear from the spaces list, the collapsed rail, and space navigation.
-- Focusing an agent tab no longer highlights its space; the space selection clears while an agent tab is focused.
-
-A tab counts as an agent tab only when every pane in it is an agent. Tabs that mix agents with plain shells are not agent tabs, and spaces containing any non-agent tab stay visible. Tabs are never removed from the top tab bar. You can also toggle this from Settings > Experiments > hide tabs with agents.
-
 ## Environment variables
 
 | Variable | Purpose |

@@ -576,6 +576,16 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
+/// Screen placement of one visible Tabs-section row (a two-line tab entry).
+/// `order_idx` is the flat index into `TabSectionOrder`. Client-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabSectionRowArea {
+    pub ws_idx: usize,
+    pub tab_idx: usize,
+    pub order_idx: usize,
+    pub rect: Rect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -731,6 +741,7 @@ pub struct ViewState {
     pub layout: ViewLayout,
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
+    pub tab_section_row_areas: Vec<TabSectionRowArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -1040,6 +1051,60 @@ impl AgentManualOrder {
     }
 }
 
+/// Stable reference to a single tab, independent of its position within a
+/// workspace. Tabs are addressed by their owning workspace id plus their stable
+/// public tab number (which survives reorders and restore), so a `TabRef` can be
+/// persisted and rebuilt directly without a remap. Client-only presentation
+/// state; never enters the server/runtime protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct TabRef {
+    pub(crate) workspace_id: String,
+    pub(crate) tab_number: usize,
+}
+
+/// Flat, client-only manual ordering of non-agent tabs for the sidebar Tabs
+/// section.
+///
+/// This is TUI presentation state: it never enters the server/runtime protocol
+/// and never changes the real tab order inside any workspace. `order` drives the
+/// display order across all spaces, `known` tracks which tabs have already been
+/// placed (so genuinely new tabs get the placement rule), and `seeded` records
+/// whether the natural order has been captured at least once.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TabSectionOrder {
+    pub(crate) order: Vec<TabRef>,
+    pub(crate) known: std::collections::HashSet<TabRef>,
+    pub(crate) seeded: bool,
+}
+
+impl TabSectionOrder {
+    /// Rebuild a tab-section order from persisted references, keeping only those
+    /// whose workspace still exists. `seeded` is set because a snapshot was
+    /// present, so reconcile treats later arrivals as genuinely new tabs rather
+    /// than reseeding.
+    pub(crate) fn from_refs(refs: Vec<TabRef>, workspaces: &[crate::workspace::Workspace]) -> Self {
+        let live_ids: std::collections::HashSet<&str> =
+            workspaces.iter().map(|ws| ws.id.as_str()).collect();
+        let mut order = Vec::new();
+        let mut known = std::collections::HashSet::new();
+        for tab_ref in refs {
+            if live_ids.contains(tab_ref.workspace_id.as_str()) && known.insert(tab_ref.clone()) {
+                order.push(tab_ref);
+            }
+        }
+        Self {
+            order,
+            known,
+            seeded: true,
+        }
+    }
+
+    /// Snapshot the current order as plain references for persistence.
+    pub(crate) fn to_refs(&self) -> Vec<TabRef> {
+        self.order.clone()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Settings UI state
 // ---------------------------------------------------------------------------
@@ -1081,15 +1146,10 @@ impl SettingsSection {
 pub(crate) enum ExperimentSetting {
     PaneHistory,
     SwitchAsciiInputSourceInPrefix,
-    HideTabsWithAgents,
 }
 
 impl ExperimentSetting {
-    pub(crate) const ALL: [Self; 3] = [
-        Self::PaneHistory,
-        Self::SwitchAsciiInputSourceInPrefix,
-        Self::HideTabsWithAgents,
-    ];
+    pub(crate) const ALL: [Self; 2] = [Self::PaneHistory, Self::SwitchAsciiInputSourceInPrefix];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -1097,7 +1157,6 @@ impl ExperimentSetting {
             Self::SwitchAsciiInputSourceInPrefix => {
                 "switch to ascii input source in prefix (macOS)"
             }
-            Self::HideTabsWithAgents => "hide tabs with agents",
         }
     }
 
@@ -1107,7 +1166,6 @@ impl ExperimentSetting {
             Self::SwitchAsciiInputSourceInPrefix => {
                 state.switch_ascii_input_source_in_prefix_enabled()
             }
-            Self::HideTabsWithAgents => state.hide_tabs_with_agents_enabled(),
         }
     }
 }
@@ -1224,10 +1282,21 @@ pub(crate) enum DragTarget {
         source: ManualEntryRef,
         insert_idx: Option<usize>,
     },
+    /// Reorder of a non-agent tab within the flat, client-only Tabs-section
+    /// ordering. Cross-workspace moves are allowed; this only changes the
+    /// sidebar's visual order, never the real tab order inside any workspace.
+    /// `insert_idx` is a flat index into the tab-section order.
+    TabSectionReorder {
+        source: TabRef,
+        insert_idx: Option<usize>,
+    },
     WorkspaceListScrollbar {
         grab_row_offset: u16,
     },
     AgentPanelScrollbar {
+        grab_row_offset: u16,
+    },
+    TabSectionScrollbar {
         grab_row_offset: u16,
     },
     PaneSplit {
@@ -1250,7 +1319,11 @@ pub(crate) enum DragTarget {
         grab_row_offset: u16,
     },
     SidebarDivider,
-    SidebarSectionDivider,
+    /// Drag of one of the two sidebar section dividers. `index` selects which
+    /// divider: 0 = Spaces/Tabs, 1 = Tabs/Agents.
+    SidebarSectionDivider {
+        index: usize,
+    },
 }
 
 /// Active mouse drag on a split border or sidebar divider.
@@ -1273,6 +1346,12 @@ pub(crate) struct TabPressState {
 
 pub(crate) struct AgentPressState {
     pub entry: ManualEntryRef,
+    pub start_col: u16,
+    pub start_row: u16,
+}
+
+pub(crate) struct TabSectionPressState {
+    pub entry: TabRef,
     pub start_col: u16,
     pub start_row: u16,
 }
@@ -1529,6 +1608,10 @@ pub struct AppState {
     /// Target line-split for the rename modal (client-only; mirrors
     /// `rename_pane_target`). Set only while `mode == Mode::RenameLineSplit`.
     pub(crate) rename_line_split_target: Option<LineSplitId>,
+    /// Target `(ws_idx, tab_idx)` for the tab rename modal (client-only; mirrors
+    /// `rename_pane_target`). When set, the RenameTab commit renames this tab
+    /// instead of the active tab. Set only while `mode == Mode::RenameTab`.
+    pub(crate) rename_tab_target: Option<(usize, usize)>,
     pub worktree_create: Option<WorktreeCreateState>,
     pub worktree_open: Option<WorktreeOpenState>,
     pub worktree_remove: Option<WorktreeRemoveState>,
@@ -1548,6 +1631,8 @@ pub struct AppState {
     pub(crate) copy_search: Option<CopySearchState>,
     pub workspace_scroll: usize,
     pub agent_panel_scroll: usize,
+    /// Scroll offset (in flat order index) for the sidebar Tabs section.
+    pub tab_section_scroll: usize,
     pub tab_scroll: usize,
     pub tab_scroll_follow_active: bool,
     pub mobile_switcher_scroll: usize,
@@ -1557,6 +1642,7 @@ pub struct AppState {
     pub(crate) workspace_press: Option<WorkspacePressState>,
     pub(crate) tab_press: Option<TabPressState>,
     pub(crate) agent_press: Option<AgentPressState>,
+    pub(crate) tab_section_press: Option<TabSectionPressState>,
     pub selection: Option<Selection>,
     pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub context_menu: Option<ContextMenuState>,
@@ -1584,11 +1670,18 @@ pub struct AppState {
     pub sidebar_width_auto: bool,
     pub sidebar_collapsed: bool,
     pub sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig,
-    /// Ratio of sidebar height allocated to the workspaces section.
+    /// Ratio of total sidebar height allocated to the Spaces section (the first
+    /// of three stacked bands: Spaces / Tabs / Agents).
     pub sidebar_section_split: f32,
+    /// Ratio of the remaining sidebar height (below the Spaces band) allocated to
+    /// the Tabs section; the Agents section takes the rest.
+    pub sidebar_tabs_section_split: f32,
     pub agent_panel_sort: AgentPanelSort,
     /// Flat client-only manual ordering of agent panes (TUI presentation state).
     pub(crate) agent_manual_order: AgentManualOrder,
+    /// Flat client-only manual ordering of non-agent tabs for the Tabs section
+    /// (TUI presentation state).
+    pub(crate) tab_section_order: TabSectionOrder,
     /// Compiled row templates for the two lines of each agent-panel entry.
     pub agent_panel_row_templates: [crate::ui::RowTemplate; 2],
     pub next_agent_state_change_seq: u64,
@@ -1619,11 +1712,6 @@ pub struct AppState {
     /// CJK IME is active. macOS only; a no-op elsewhere. See
     /// `[experimental] switch_ascii_input_source_in_prefix`.
     pub switch_ascii_input_source_in_prefix: bool,
-    /// Hide agent-only spaces (spaces whose every tab is an agent tab) from the
-    /// spaces list, collapsed rail, and navigation, and suppress the space
-    /// highlight while an agent tab is focused. See
-    /// `[experimental] hide_tabs_with_agents`.
-    pub hide_tabs_with_agents: bool,
     pub kitty_graphics_enabled: bool,
     pub default_shell: String,
     pub shell_mode: crate::config::ShellModeConfig,
@@ -1715,29 +1803,6 @@ impl AppState {
 
     pub fn switch_ascii_input_source_in_prefix_enabled(&self) -> bool {
         self.switch_ascii_input_source_in_prefix
-    }
-
-    pub fn hide_tabs_with_agents_enabled(&self) -> bool {
-        self.hide_tabs_with_agents
-    }
-
-    /// True when the space list highlight should be suppressed because the
-    /// focused tab is an agent tab under `hide_tabs_with_agents`.
-    pub(crate) fn space_highlight_suppressed(&self) -> bool {
-        if !self.hide_tabs_with_agents {
-            return false;
-        }
-        self.active
-            .and_then(|idx| self.workspaces.get(idx))
-            .and_then(|ws| ws.tabs.get(ws.active_tab))
-            .is_some_and(|tab| tab.is_agent_tab(&self.terminals))
-    }
-
-    /// True when the workspace has at least one tab and every tab is an agent
-    /// tab, i.e. it should be hidden from the spaces list under
-    /// `hide_tabs_with_agents`.
-    pub(crate) fn workspace_is_agent_only(&self, ws: &crate::workspace::Workspace) -> bool {
-        !ws.tabs.is_empty() && ws.tabs.iter().all(|tab| tab.is_agent_tab(&self.terminals))
     }
 
     pub(crate) fn pane_exposes_host_cursor(
@@ -1929,6 +1994,7 @@ impl AppState {
             requested_new_tab_name: None,
             rename_pane_target: None,
             rename_line_split_target: None,
+            rename_tab_target: None,
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
@@ -1946,6 +2012,7 @@ impl AppState {
             copy_search: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
+            tab_section_scroll: 0,
             tab_scroll: 0,
             tab_scroll_follow_active: true,
             mobile_switcher_scroll: 0,
@@ -1953,6 +2020,7 @@ impl AppState {
                 layout: ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                tab_section_row_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -1969,6 +2037,7 @@ impl AppState {
             workspace_press: None,
             tab_press: None,
             agent_press: None,
+            tab_section_press: None,
             selection: None,
             selection_autoscroll: None,
             context_menu: None,
@@ -1993,8 +2062,10 @@ impl AppState {
             sidebar_collapsed: false,
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
+            sidebar_tabs_section_split: 0.5,
             agent_panel_sort: AgentPanelSort::Spaces,
             agent_manual_order: AgentManualOrder::default(),
+            tab_section_order: TabSectionOrder::default(),
             agent_panel_row_templates: crate::ui::RowTemplate::default_agent_panel_rows(),
             next_agent_state_change_seq: 0,
             mouse_capture: true,
@@ -2013,7 +2084,6 @@ impl AppState {
             cjk_ime_agents: Vec::new(),
             cjk_ime_cursor_shape: 2, // steady_block
             switch_ascii_input_source_in_prefix: false,
-            hide_tabs_with_agents: false,
             kitty_graphics_enabled: false,
             default_shell: String::new(),
             shell_mode: crate::config::ShellModeConfig::Auto,
@@ -2133,6 +2203,10 @@ impl AppState {
             assert!(
                 self.rename_line_split_target.is_none(),
                 "empty app state must not keep rename line-split target"
+            );
+            assert!(
+                self.rename_tab_target.is_none(),
+                "empty app state must not keep rename tab target"
             );
             assert!(
                 self.selection.is_none(),
@@ -2413,6 +2487,19 @@ impl AppState {
             assert!(
                 self.rename_line_split_target.is_none(),
                 "rename line-split target must be cleared outside RenameLineSplit mode"
+            );
+        }
+        if self.mode != Mode::RenameTab {
+            assert!(
+                self.rename_tab_target.is_none(),
+                "rename tab target must be cleared outside RenameTab mode"
+            );
+        } else if let Some((ws_idx, tab_idx)) = self.rename_tab_target {
+            assert!(
+                self.workspaces
+                    .get(ws_idx)
+                    .is_some_and(|ws| tab_idx < ws.tabs.len()),
+                "rename tab target must reference a live tab"
             );
         }
         if let Some(menu) = &self.context_menu {

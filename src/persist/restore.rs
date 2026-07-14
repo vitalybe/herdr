@@ -1195,6 +1195,8 @@ mod tests {
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
             agent_manual_order: None,
+            sidebar_tabs_section_split: None,
+            tab_section_order: None,
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1286,6 +1288,8 @@ mod tests {
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
             agent_manual_order: None,
+            sidebar_tabs_section_split: None,
+            tab_section_order: None,
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1393,6 +1397,8 @@ mod tests {
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
             agent_manual_order: None,
+            sidebar_tabs_section_split: None,
+            tab_section_order: None,
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1507,6 +1513,8 @@ mod tests {
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
             agent_manual_order: None,
+            sidebar_tabs_section_split: None,
+            tab_section_order: None,
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1622,6 +1630,8 @@ mod tests {
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
             agent_manual_order: None,
+            sidebar_tabs_section_split: None,
+            tab_section_order: None,
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1792,6 +1802,8 @@ mod tests {
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: Default::default(),
             agent_manual_order: None,
+            sidebar_tabs_section_split: None,
+            tab_section_order: None,
         };
         (snapshot, history)
     }

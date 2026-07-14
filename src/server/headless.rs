@@ -864,6 +864,7 @@ impl HeadlessServer {
             .state
             .agent_manual_order
             .to_public_keys(&self.app.state.workspaces);
+        let tab_section_order_refs = self.app.state.tab_section_order.to_refs();
         let snapshot = crate::persist::capture(
             &self.app.state.workspaces,
             &self.app.state.terminals,
@@ -872,8 +873,10 @@ impl HeadlessServer {
             self.app.state.selected,
             self.app.state.sidebar_width,
             self.app.state.sidebar_section_split,
+            self.app.state.sidebar_tabs_section_split,
             self.app.state.collapsed_space_keys.clone(),
             agent_manual_order_keys,
+            tab_section_order_refs,
         );
 
         let mut handoff_entries = Vec::new();

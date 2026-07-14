@@ -314,6 +314,7 @@ pub(super) fn open_rename_workspace(
 ) {
     state.selected = ws_idx;
     state.rename_pane_target = None;
+    state.rename_tab_target = None;
     let name = state.workspaces[ws_idx].display_name_from(&state.terminals, terminal_runtimes);
     state.set_name_input(name);
     state.name_input_replace_on_type = false;
@@ -324,6 +325,7 @@ pub(super) fn open_rename_active_tab(state: &mut AppState, replace_on_type: bool
     state.creating_new_tab = false;
     state.requested_new_tab_name = None;
     state.rename_pane_target = None;
+    state.rename_tab_target = None;
     if let Some(ws) = state.active.and_then(|i| state.workspaces.get(i)) {
         if let Some(name) = ws.active_tab_display_name() {
             state.set_name_input(name);
@@ -331,6 +333,27 @@ pub(super) fn open_rename_active_tab(state: &mut AppState, replace_on_type: bool
             state.mode = Mode::RenameTab;
         }
     }
+}
+
+/// Open the tab rename modal targeting an explicit `(ws_idx, tab_idx)`, which may
+/// be a non-active tab in any workspace. The RenameTab commit prefers
+/// `rename_tab_target` when set.
+pub(super) fn open_rename_tab(state: &mut AppState, ws_idx: usize, tab_idx: usize) {
+    let Some(ws) = state.workspaces.get(ws_idx) else {
+        return;
+    };
+    let Some(name) = ws.tab_display_name(tab_idx) else {
+        return;
+    };
+    state.creating_new_tab = false;
+    state.requested_new_tab_name = None;
+    state.rename_pane_target = None;
+    state.rename_tab_target = Some((ws_idx, tab_idx));
+    // Keep the renamed tab's row visible in the Tabs section if it is listed.
+    state.ensure_tab_section_row_visible(ws_idx, tab_idx);
+    state.set_name_input(name);
+    state.name_input_replace_on_type = false;
+    state.mode = Mode::RenameTab;
 }
 
 pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::PaneId) {
@@ -344,6 +367,7 @@ pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::Pan
     state.creating_new_tab = false;
     state.requested_new_tab_name = None;
     state.rename_pane_target = Some(pane_id);
+    state.rename_tab_target = None;
     let manual_label = terminal.and_then(|t| t.manual_label.clone());
     let replace_on_type = manual_label.is_none();
     state.set_name_input(manual_label.unwrap_or_default());
@@ -366,6 +390,7 @@ pub(super) fn open_rename_agent(
     state.creating_new_tab = false;
     state.requested_new_tab_name = None;
     state.rename_pane_target = Some(pane_id);
+    state.rename_tab_target = None;
     let agent_name = terminal.and_then(|t| t.agent_name.clone());
     let replace_on_type = agent_name.is_none();
     state.set_name_input(agent_name.unwrap_or_default());
@@ -390,6 +415,7 @@ pub(super) fn open_rename_line_split(state: &mut AppState, id: crate::app::state
     state.creating_new_tab = false;
     state.requested_new_tab_name = None;
     state.rename_pane_target = None;
+    state.rename_tab_target = None;
     state.rename_line_split_target = Some(id);
     state.set_name_input(name);
     state.name_input_replace_on_type = true;
@@ -430,6 +456,7 @@ pub(super) fn open_new_tab_dialog(state: &mut AppState) {
     state.creating_new_tab = true;
     state.requested_new_tab_name = None;
     state.rename_pane_target = None;
+    state.rename_tab_target = None;
     let name = next_new_tab_default_name(state);
     state.set_name_input(name);
     state.name_input_replace_on_type = true;
@@ -518,29 +545,31 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                         };
                 }
                 Mode::RenameTab => {
-                    if let Some(ws_idx) = state.active {
+                    let target = state.rename_tab_target.or_else(|| {
+                        state
+                            .active
+                            .map(|ws_idx| (ws_idx, state.workspaces[ws_idx].active_tab))
+                    });
+                    if let Some((ws_idx, tab_idx)) = target {
                         if let Some(ws) = state.workspaces.get_mut(ws_idx) {
                             let workspace_id = ws.id.clone();
-                            let active_tab = ws.active_tab;
-                            let keep_auto_name = ws
-                                .tabs
-                                .get(active_tab)
-                                .is_some_and(|tab| tab.is_auto_named())
-                                && ws
-                                    .tab_display_name(active_tab)
-                                    .is_some_and(|name| new_name == name);
-                            if let Some(tab) = ws.active_tab_mut() {
+                            let keep_auto_name =
+                                ws.tabs.get(tab_idx).is_some_and(|tab| tab.is_auto_named())
+                                    && ws
+                                        .tab_display_name(tab_idx)
+                                        .is_some_and(|name| new_name == name);
+                            let tab_id = ws
+                                .public_tab_number(tab_idx)
+                                .map(|number| {
+                                    crate::workspace::public_tab_id_for_number(
+                                        &workspace_id,
+                                        number,
+                                    )
+                                })
+                                .unwrap_or_else(|| workspace_id.clone());
+                            if let Some(tab) = ws.tabs.get_mut(tab_idx) {
                                 if !new_name.is_empty() && !keep_auto_name {
                                     tab.set_custom_name(new_name);
-                                    let tab_id = ws
-                                        .public_tab_number(active_tab)
-                                        .map(|number| {
-                                            crate::workspace::public_tab_id_for_number(
-                                                &workspace_id,
-                                                number,
-                                            )
-                                        })
-                                        .unwrap_or_else(|| workspace_id.clone());
                                     crate::logging::tab_renamed(&workspace_id, &tab_id);
                                     state.mark_session_dirty();
                                 }
@@ -591,6 +620,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
             state.creating_new_tab = false;
             state.rename_pane_target = None;
             state.rename_line_split_target = None;
+            state.rename_tab_target = None;
             clear_rename_input(state);
             leave_modal(state);
         }
@@ -602,6 +632,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
             state.requested_new_tab_name = None;
             state.rename_pane_target = None;
             state.rename_line_split_target = None;
+            state.rename_tab_target = None;
             clear_rename_input(state);
             leave_modal(state);
         }
@@ -1169,11 +1200,23 @@ impl App {
                 );
             }
             Mode::RenameTab if !new_name.is_empty() => {
-                let Some(ws_idx) = self.state.active else {
+                // Prefer an explicit tab target (e.g. Tabs-section or agent-row
+                // double-click); otherwise rename the active workspace's active
+                // tab.
+                let target = self.state.rename_tab_target.or_else(|| {
+                    self.state
+                        .active
+                        .map(|ws_idx| (ws_idx, self.state.workspaces[ws_idx].active_tab))
+                });
+                let Some((ws_idx, tab_idx)) = target.filter(|&(ws_idx, tab_idx)| {
+                    self.state
+                        .workspaces
+                        .get(ws_idx)
+                        .is_some_and(|ws| tab_idx < ws.tabs.len())
+                }) else {
                     cancel_rename_modal(&mut self.state);
                     return;
                 };
-                let tab_idx = self.state.workspaces[ws_idx].active_tab;
                 let keep_auto_name = self.state.workspaces[ws_idx]
                     .tabs
                     .get(tab_idx)
@@ -1514,6 +1557,7 @@ fn cancel_rename_modal(state: &mut AppState) {
     state.requested_new_tab_name = None;
     state.rename_pane_target = None;
     state.rename_line_split_target = None;
+    state.rename_tab_target = None;
     clear_rename_input(state);
     leave_modal(state);
 }

@@ -17,6 +17,10 @@ use crate::terminal::TerminalRuntimeRegistry;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
+/// Header rows above the Tabs-section body: a divider rule plus the title.
+const TABS_SECTION_HEADER_ROWS: u16 = 2;
+/// Content height of a single Tabs-section row: tab name line + space name line.
+const TAB_SECTION_ROW_HEIGHT: u16 = 2;
 
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
@@ -95,6 +99,233 @@ pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect
 
     let (ws_h, _) = sidebar_section_heights(content.height, split_ratio);
     Rect::new(content.x, content.y + ws_h, content.width, 1)
+}
+
+/// Partition the sidebar content height into three stacked bands
+/// (Spaces / Tabs / Agents). `spaces_ratio` allocates the Spaces band out of the
+/// total height; `tabs_ratio` then allocates the Tabs band out of the remaining
+/// height, leaving the rest for Agents. Reuses the two-band split so the Spaces
+/// band matches the historical geometry exactly.
+///
+/// When `show_tabs` is false (no non-agent tabs exist) the Tabs band collapses
+/// to zero height and the Agents band takes the whole region below Spaces, so
+/// agent-only sidebars keep the historical two-band geometry.
+pub(crate) fn expanded_sidebar_sections3(
+    area: Rect,
+    spaces_ratio: f32,
+    tabs_ratio: f32,
+    show_tabs: bool,
+) -> (Rect, Rect, Rect) {
+    let (spaces_area, rest) = expanded_sidebar_sections(area, spaces_ratio);
+    if rest.width == 0 || rest.height == 0 {
+        return (spaces_area, Rect::default(), rest);
+    }
+    if !show_tabs {
+        let tabs_area = Rect::new(rest.x, rest.y, rest.width, 0);
+        return (spaces_area, tabs_area, rest);
+    }
+    let (tabs_h, agents_h) = sidebar_section_heights(rest.height, tabs_ratio);
+    let tabs_area = Rect::new(rest.x, rest.y, rest.width, tabs_h);
+    let agents_area = Rect::new(rest.x, rest.y + tabs_h, rest.width, agents_h);
+    (spaces_area, tabs_area, agents_area)
+}
+
+/// The draggable divider between the Tabs and Agents bands (divider index 1).
+/// Empty when the Tabs band is collapsed.
+pub(crate) fn sidebar_tabs_section_divider_rect(
+    area: Rect,
+    spaces_ratio: f32,
+    tabs_ratio: f32,
+    show_tabs: bool,
+) -> Rect {
+    if !show_tabs {
+        return Rect::default();
+    }
+    let (_, rest) = expanded_sidebar_sections(area, spaces_ratio);
+    if rest.width == 0 || rest.height < 6 {
+        return Rect::default();
+    }
+    let (tabs_h, _) = sidebar_section_heights(rest.height, tabs_ratio);
+    Rect::new(rest.x, rest.y + tabs_h, rest.width, 1)
+}
+
+/// The Agents (detail) band as the third of three stacked sidebar sections.
+pub(crate) fn tabs_agents_detail_rect(
+    area: Rect,
+    spaces_ratio: f32,
+    tabs_ratio: f32,
+    show_tabs: bool,
+) -> Rect {
+    let (_, _, agents_area) = expanded_sidebar_sections3(area, spaces_ratio, tabs_ratio, show_tabs);
+    agents_area
+}
+
+/// The Tabs band as the middle of three stacked sidebar sections.
+pub(crate) fn tab_section_rect(
+    area: Rect,
+    spaces_ratio: f32,
+    tabs_ratio: f32,
+    show_tabs: bool,
+) -> Rect {
+    let (_, tabs_area, _) = expanded_sidebar_sections3(area, spaces_ratio, tabs_ratio, show_tabs);
+    tabs_area
+}
+
+/// Whether the sidebar Tabs section has any entries to show. When false, the
+/// Tabs band collapses and the Agents band keeps the historical geometry.
+pub(crate) fn sidebar_shows_tab_section(app: &AppState) -> bool {
+    !sidebar_tab_entries(app).is_empty()
+}
+
+/// Body (scrolling content) region of the Tabs band, below its header rows.
+/// Reserves the rightmost column for the scrollbar when `has_scrollbar`.
+pub(crate) fn tab_section_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
+    if area.width == 0 || area.height <= TABS_SECTION_HEADER_ROWS {
+        return Rect::default();
+    }
+    let body_y = area.y.saturating_add(TABS_SECTION_HEADER_ROWS);
+    let body_height = (area.y + area.height).saturating_sub(body_y);
+    let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
+    Rect::new(area.x, body_y, body_width, body_height)
+}
+
+/// A single non-agent tab surfaced in the Tabs section, resolved from the
+/// client-only [`crate::app::state::TabSectionOrder`].
+pub(crate) struct TabSectionEntry {
+    pub order_idx: usize,
+    pub ws_idx: usize,
+    pub tab_idx: usize,
+}
+
+/// All non-agent tabs across every workspace, ordered by the client-only Tabs
+/// section ordering. Entries whose tab no longer resolves are skipped.
+pub(crate) fn sidebar_tab_entries(app: &AppState) -> Vec<TabSectionEntry> {
+    let mut lookup: std::collections::HashMap<(&str, usize), (usize, usize)> =
+        std::collections::HashMap::new();
+    for (ws_idx, ws) in app.workspaces.iter().enumerate() {
+        for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+            if !tab.is_agent_tab(&app.terminals) {
+                lookup.insert((ws.id.as_str(), tab.number), (ws_idx, tab_idx));
+            }
+        }
+    }
+    app.tab_section_order
+        .order
+        .iter()
+        .enumerate()
+        .filter_map(|(order_idx, tab_ref)| {
+            lookup
+                .get(&(tab_ref.workspace_id.as_str(), tab_ref.tab_number))
+                .map(|&(ws_idx, tab_idx)| TabSectionEntry {
+                    order_idx,
+                    ws_idx,
+                    tab_idx,
+                })
+        })
+        .collect()
+}
+
+/// Visible-row layout for the Tabs section, walking entries from `scroll` and
+/// laying out two-line rows (with a one-row gap) inside `body`. Pure; does not
+/// consult scroll metrics, so it is safe to call from the metrics path.
+fn tab_section_row_areas_in(
+    app: &AppState,
+    body: Rect,
+    scroll: usize,
+) -> Vec<crate::app::state::TabSectionRowArea> {
+    let mut areas = Vec::new();
+    if body.width == 0 || body.height == 0 {
+        return areas;
+    }
+    let body_bottom = body.y + body.height;
+    let mut row_y = body.y;
+    for entry in sidebar_tab_entries(app).into_iter().skip(scroll) {
+        if row_y.saturating_add(TAB_SECTION_ROW_HEIGHT) > body_bottom {
+            break;
+        }
+        areas.push(crate::app::state::TabSectionRowArea {
+            ws_idx: entry.ws_idx,
+            tab_idx: entry.tab_idx,
+            order_idx: entry.order_idx,
+            rect: Rect::new(body.x, row_y, body.width, TAB_SECTION_ROW_HEIGHT),
+        });
+        row_y = row_y.saturating_add(TAB_SECTION_ROW_HEIGHT);
+        if row_y < body_bottom {
+            row_y = row_y.saturating_add(1);
+        }
+    }
+    areas
+}
+
+fn tab_section_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
+    let body = tab_section_body_rect(area, false);
+    tab_section_row_areas_in(app, body, scroll).len()
+}
+
+pub(crate) fn tab_section_scroll_metrics(app: &AppState, area: Rect) -> crate::pane::ScrollMetrics {
+    let total_rows = sidebar_tab_entries(app).len();
+    let scroll = app.tab_section_scroll.min(total_rows.saturating_sub(1));
+    let viewport_rows = tab_section_visible_count(app, area, scroll);
+    let max_offset_from_bottom = total_rows.saturating_sub(viewport_rows);
+    let offset_from_bottom = total_rows
+        .saturating_sub(app.tab_section_scroll)
+        .saturating_sub(viewport_rows);
+
+    crate::pane::ScrollMetrics {
+        offset_from_bottom,
+        max_offset_from_bottom,
+        viewport_rows,
+    }
+}
+
+pub(crate) fn tab_section_scrollbar_rect(app: &AppState, area: Rect) -> Option<Rect> {
+    let metrics = tab_section_scroll_metrics(app, area);
+    let body = tab_section_body_rect(area, true);
+    (should_show_scrollbar(metrics) && body.width > 0 && body.height > 0).then_some(Rect::new(
+        area.x + area.width.saturating_sub(1),
+        body.y,
+        1,
+        body.height,
+    ))
+}
+
+/// Screen placement of the visible Tabs-section rows, honoring the current scroll
+/// offset and reserving space for the scrollbar when one is shown.
+pub(crate) fn compute_tab_section_row_areas(
+    app: &AppState,
+    area: Rect,
+) -> Vec<crate::app::state::TabSectionRowArea> {
+    let metrics = tab_section_scroll_metrics(app, area);
+    let body = tab_section_body_rect(area, should_show_scrollbar(metrics));
+    tab_section_row_areas_in(app, body, app.tab_section_scroll)
+}
+
+/// Row (y) of the drop indicator for a Tabs-section reorder targeting flat
+/// `insert_idx`, mirroring the agent-panel drop indicator.
+pub(crate) fn tab_section_drop_indicator_row(
+    areas: &[crate::app::state::TabSectionRowArea],
+    body: Rect,
+    insert_idx: usize,
+) -> Option<u16> {
+    if body.height == 0 {
+        return None;
+    }
+    let body_bottom = body.y + body.height;
+    if let Some(area) = areas.iter().find(|area| area.order_idx == insert_idx) {
+        let y = if area.rect.y == body.y {
+            body.y
+        } else {
+            area.rect.y.saturating_sub(1)
+        };
+        return (y < body_bottom).then_some(y);
+    }
+    if let Some(last) = areas.last() {
+        if insert_idx >= last.order_idx.saturating_add(1) {
+            let y = last.rect.y.saturating_add(last.rect.height);
+            return (y < body_bottom).then_some(y);
+        }
+    }
+    None
 }
 
 fn agent_panel_sort_label(sort: AgentPanelSort) -> &'static str {
@@ -541,17 +772,6 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
         }
     }
 
-    // Under `hide_tabs_with_agents`, drop spaces whose tabs are all agents so
-    // they never surface in the spaces list, navigation, or switcher.
-    if app.hide_tabs_with_agents {
-        entries.retain(|entry| match entry {
-            WorkspaceListEntry::Workspace { ws_idx, .. } => app
-                .workspaces
-                .get(*ws_idx)
-                .is_none_or(|ws| !app.workspace_is_agent_only(ws)),
-        });
-    }
-
     entries
 }
 
@@ -794,14 +1014,8 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         return;
     }
 
-    let suppress_active = app.space_highlight_suppressed();
     let mut row: u16 = 0;
     for (visible_idx, ws) in app.workspaces.iter().enumerate() {
-        // Under `hide_tabs_with_agents`, agent-only spaces drop out of the
-        // collapsed rail just like they do from the expanded spaces list.
-        if app.hide_tabs_with_agents && app.workspace_is_agent_only(ws) {
-            continue;
-        }
         let y = ws_area.y + row;
         if y >= ws_area.y + ws_area.height {
             break;
@@ -810,7 +1024,7 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
         let (icon, icon_style) = state_dot(agg_state, agg_seen, p);
         let is_selected = visible_idx == app.selected && is_navigating;
-        let is_active = Some(visible_idx) == app.active && !suppress_active;
+        let is_active = Some(visible_idx) == app.active;
         let row_style = if is_selected {
             Style::default().bg(p.surface0)
         } else if is_active {
@@ -974,11 +1188,137 @@ pub(super) fn render_sidebar(
         buf[(sep_x, y)].set_style(sep_style);
     }
 
-    let (ws_area, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+    let (ws_area, tabs_area, detail_area) = expanded_sidebar_sections3(
+        area,
+        app.sidebar_section_split,
+        app.sidebar_tabs_section_split,
+        sidebar_shows_tab_section(app),
+    );
 
     render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
+    render_tab_section(app, terminal_runtimes, frame, tabs_area);
     render_agent_detail(app, terminal_runtimes, frame, detail_area);
     render_sidebar_toggle(app, frame, area, false, p);
+}
+
+/// Render the Tabs section: every non-agent tab across all spaces as a two-line
+/// row (tab name over its space name), ordered by the client-only Tabs-section
+/// order, with a drop indicator during a reorder drag.
+fn render_tab_section(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    let p = &app.palette;
+    if area.height < 3 {
+        return;
+    }
+
+    let sep_line = "─".repeat(area.width as usize);
+    frame.render_widget(
+        Paragraph::new(Span::styled(&sep_line, Style::default().fg(p.surface_dim))),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            " tabs",
+            Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+        )])),
+        Rect::new(area.x, area.y + 1, area.width, 1),
+    );
+
+    let metrics = tab_section_scroll_metrics(app, area);
+    let scrollbar_rect = tab_section_scrollbar_rect(app, area);
+    let body = tab_section_body_rect(area, should_show_scrollbar(metrics));
+    if body == Rect::default() {
+        return;
+    }
+
+    let dragged = match app.drag.as_ref().map(|drag| &drag.target) {
+        Some(crate::app::state::DragTarget::TabSectionReorder { source, .. }) => {
+            Some(source.clone())
+        }
+        _ => None,
+    };
+
+    let areas = &app.view.tab_section_row_areas;
+    let max_width = body.width as usize;
+    for row in areas {
+        let ws = &app.workspaces[row.ws_idx];
+        let is_active = Some(row.ws_idx) == app.active && ws.active_tab == row.tab_idx;
+        let is_dragged = dragged.as_ref().is_some_and(|source| {
+            source.workspace_id == ws.id
+                && ws
+                    .tabs
+                    .get(row.tab_idx)
+                    .is_some_and(|tab| tab.number == source.tab_number)
+        });
+
+        if is_active || is_dragged {
+            let bg = if is_dragged {
+                p.surface1
+            } else {
+                p.surface_dim
+            };
+            let buf = frame.buffer_mut();
+            for y in row.rect.y..row.rect.y + row.rect.height {
+                for x in row.rect.x..row.rect.x + row.rect.width {
+                    buf[(x, y)].set_style(Style::default().bg(bg));
+                }
+            }
+        }
+
+        let name_style = if is_active || is_dragged {
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.text)
+        };
+        let tab_name = ws
+            .tab_display_name(row.tab_idx)
+            .unwrap_or_else(|| (row.tab_idx + 1).to_string());
+        let space_name = ws.display_name_from(&app.terminals, terminal_runtimes);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                format!(" {}", truncate_end(&tab_name, max_width.saturating_sub(1))),
+                name_style,
+            )])),
+            Rect::new(body.x, row.rect.y, body.width, 1),
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                format!(
+                    " {}",
+                    truncate_end(&space_name, max_width.saturating_sub(1))
+                ),
+                Style::default().fg(p.overlay0),
+            )])),
+            Rect::new(body.x, row.rect.y + 1, body.width, 1),
+        );
+    }
+
+    if let Some(insert_idx) = match app.drag.as_ref().map(|drag| &drag.target) {
+        Some(crate::app::state::DragTarget::TabSectionReorder {
+            insert_idx: Some(insert_idx),
+            ..
+        }) => Some(*insert_idx),
+        _ => None,
+    } {
+        if let Some(y) = tab_section_drop_indicator_row(areas, body, insert_idx) {
+            let indicator_right = scrollbar_rect
+                .map(|rect| rect.x)
+                .unwrap_or(body.x + body.width);
+            let buf = frame.buffer_mut();
+            for x in body.x..indicator_right {
+                buf[(x, y)].set_symbol("─");
+                buf[(x, y)].set_style(Style::default().fg(p.accent));
+            }
+        }
+    }
+
+    if let Some(track) = scrollbar_rect {
+        render_scrollbar(frame, metrics, track, p.surface_dim, p.overlay0, "▕");
+    }
 }
 
 fn render_workspace_list(
@@ -1017,7 +1357,6 @@ fn render_workspace_list(
     let metrics = workspace_list_scroll_metrics(app, area);
     let scrollbar_rect = workspace_list_scrollbar_rect(app, area);
     let cards = &app.view.workspace_card_areas;
-    let suppress_active = app.space_highlight_suppressed();
 
     for card in cards {
         let i = card.ws_idx;
@@ -1025,7 +1364,7 @@ fn render_workspace_list(
         let row_y = card.rect.y;
         let row_height = card.rect.height;
         let selected = i == app.selected && is_navigating;
-        let is_active = Some(i) == app.active && !suppress_active;
+        let is_active = Some(i) == app.active;
         let is_dragged = dragged_ws_idx == Some(i);
         let highlighted = selected || is_active || is_dragged;
         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
@@ -1459,6 +1798,94 @@ mod tests {
         assert_eq!(entries[1].primary_label, "two");
         assert_eq!(entries[1].primary_tab_label.as_deref(), Some("logs"));
         assert_eq!(entries[1].agent_label.as_deref(), Some("claude"));
+    }
+
+    fn mark_pane_agent(app: &mut AppState, pane: crate::layout::PaneId) {
+        let terminal_id = app
+            .workspaces
+            .iter()
+            .find_map(|ws| {
+                ws.tabs
+                    .iter()
+                    .find_map(|tab| tab.panes.get(&pane))
+                    .map(|p| p.attached_terminal_id.clone())
+            })
+            .expect("pane has a terminal");
+        app.terminals
+            .get_mut(&terminal_id)
+            .expect("terminal exists")
+            .detected_agent = Some(Agent::Pi);
+    }
+
+    #[test]
+    fn sidebar_two_section_split_geometry_unchanged() {
+        // Characterization: pin the historical two-band Spaces/Agents geometry so
+        // the three-band generalization keeps the Spaces band identical.
+        let area = Rect::new(0, 0, 26, 40);
+        assert_eq!(
+            expanded_sidebar_sections(area, 0.5),
+            (Rect::new(0, 0, 25, 20), Rect::new(0, 20, 25, 20))
+        );
+        assert_eq!(
+            expanded_sidebar_sections(area, 0.3),
+            (Rect::new(0, 0, 25, 12), Rect::new(0, 12, 25, 28))
+        );
+        // Ratio clamps to [0.1, 0.9]; each band keeps at least three rows.
+        assert_eq!(
+            expanded_sidebar_sections(area, 0.99),
+            (Rect::new(0, 0, 25, 36), Rect::new(0, 36, 25, 4))
+        );
+    }
+
+    #[test]
+    fn three_section_split_partitions_full_height_without_overlap() {
+        let area = Rect::new(0, 0, 26, 40);
+        let (spaces, tabs, agents) = expanded_sidebar_sections3(area, 0.5, 0.5, true);
+        // Contiguous, non-overlapping, and covering the whole content height.
+        assert_eq!(spaces.y, 0);
+        assert_eq!(tabs.y, spaces.y + spaces.height);
+        assert_eq!(agents.y, tabs.y + tabs.height);
+        assert_eq!(agents.y + agents.height, 40);
+        assert_eq!(
+            spaces.height + tabs.height + agents.height,
+            40,
+            "bands cover the full content height"
+        );
+        assert!(tabs.height >= 3 && agents.height >= 3);
+
+        // With no Tabs entries the Tabs band collapses and Agents keeps the
+        // historical two-band geometry.
+        let (spaces2, tabs2, agents2) = expanded_sidebar_sections3(area, 0.5, 0.5, false);
+        assert_eq!(tabs2.height, 0);
+        assert_eq!(spaces2, spaces);
+        assert_eq!(agents2, expanded_sidebar_sections(area, 0.5).1);
+    }
+
+    #[test]
+    fn tabs_section_lists_only_non_agent_tabs() {
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("one"); // tab 0: plain
+        ws.test_add_tab(Some("agent")); // tab 1: pure agent
+        ws.test_add_tab(Some("mixed")); // tab 2: mixed (agent + shell)
+        ws.active_tab = 2;
+        let mixed_extra = ws.test_split(ratatui::layout::Direction::Horizontal);
+        let agent_pane = ws.tabs[1].root_pane;
+        let mixed_agent_pane = ws.tabs[2].root_pane;
+        app.workspaces = vec![ws];
+        app.ensure_test_terminals();
+        mark_pane_agent(&mut app, agent_pane);
+        mark_pane_agent(&mut app, mixed_agent_pane);
+        let _ = mixed_extra; // left as a non-agent shell so tab 2 stays mixed
+        app.active = Some(0);
+        app.selected = 0;
+
+        app.reconcile_tab_section_order();
+        let entries: Vec<usize> = sidebar_tab_entries(&app)
+            .into_iter()
+            .map(|entry| entry.tab_idx)
+            .collect();
+        // Plain (0) and mixed (2) tabs appear; the pure-agent tab (1) does not.
+        assert_eq!(entries, vec![0, 2]);
     }
 
     #[test]
@@ -2110,77 +2537,5 @@ mod tests {
                 },
             ]
         );
-    }
-
-    fn mark_tab_agent(app: &mut AppState, ws_idx: usize, tab_idx: usize) {
-        let pane = app.workspaces[ws_idx].tabs[tab_idx].root_pane;
-        let terminal_id = app.workspaces[ws_idx].tabs[tab_idx].panes[&pane]
-            .attached_terminal_id
-            .clone();
-        app.terminals
-            .get_mut(&terminal_id)
-            .expect("terminal exists")
-            .detected_agent = Some(Agent::Pi);
-    }
-
-    #[test]
-    fn hide_tabs_with_agents_hides_agent_only_spaces() {
-        let mut app = AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("normal"), Workspace::test_new("agent")];
-        app.active = Some(0);
-        app.ensure_test_terminals();
-        // Workspace 1's only tab is an agent tab, making the whole space agent-only.
-        mark_tab_agent(&mut app, 1, 0);
-
-        app.hide_tabs_with_agents = false;
-        assert_eq!(workspace_list_entries(&app).len(), 2);
-
-        app.hide_tabs_with_agents = true;
-        assert_eq!(
-            workspace_list_entries(&app),
-            vec![WorkspaceListEntry::Workspace {
-                ws_idx: 0,
-                indented: false,
-            }]
-        );
-    }
-
-    #[test]
-    fn hide_tabs_with_agents_keeps_mixed_spaces_visible() {
-        let mut app = AppState::test_new();
-        let mut mixed = Workspace::test_new("mixed");
-        mixed.test_add_tab(Some("agent"));
-        app.workspaces = vec![mixed];
-        app.active = Some(0);
-        app.ensure_test_terminals();
-        mark_tab_agent(&mut app, 0, 1);
-        app.hide_tabs_with_agents = true;
-
-        // Only tab 1 is an agent tab, so the space is not agent-only and stays.
-        assert_eq!(
-            workspace_list_entries(&app),
-            vec![WorkspaceListEntry::Workspace {
-                ws_idx: 0,
-                indented: false,
-            }]
-        );
-    }
-
-    #[test]
-    fn hide_tabs_with_agents_suppresses_highlight_when_agent_focused() {
-        let mut app = AppState::test_new();
-        let mut mixed = Workspace::test_new("mixed");
-        mixed.test_add_tab(Some("agent"));
-        app.workspaces = vec![mixed];
-        app.active = Some(0);
-        app.ensure_test_terminals();
-        mark_tab_agent(&mut app, 0, 1);
-        app.hide_tabs_with_agents = true;
-
-        app.workspaces[0].switch_tab(0);
-        assert!(!app.space_highlight_suppressed());
-
-        app.workspaces[0].switch_tab(1);
-        assert!(app.space_highlight_suppressed());
     }
 }

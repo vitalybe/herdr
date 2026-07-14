@@ -399,6 +399,19 @@ impl App {
         );
     }
 
+    /// Focus a tab in an arbitrary workspace (used by the sidebar Tabs section,
+    /// which can activate tabs across spaces). The tab id encodes its workspace,
+    /// so the server-side handler switches workspace and tab as needed.
+    pub(crate) fn focus_tab_in_workspace_via_api(&mut self, ws_idx: usize, tab_idx: usize) {
+        let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
+            return;
+        };
+        self.dispatch_tui_api_request(
+            "tui.tab.focus",
+            crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget { tab_id }),
+        );
+    }
+
     pub(crate) fn close_active_tab_via_api(&mut self) {
         let Some(ws_idx) = self.state.active else {
             return;

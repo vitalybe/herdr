@@ -3731,7 +3731,7 @@ mod tests {
     }
 
     #[test]
-    fn double_click_agent_row_opens_rename_agent_expanded() {
+    fn double_click_agent_row_opens_tab_rename_expanded() {
         let (mut app, pane) = app_with_single_agent();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
         let sidebar = app.state.view.sidebar_rect;
@@ -3743,16 +3743,18 @@ mod tests {
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
         assert_eq!(app.state.mode, Mode::Terminal);
         assert!(app.last_agent_row_click.is_some());
-        assert_eq!(app.state.rename_pane_target, None);
+        assert_eq!(app.state.rename_tab_target, None);
 
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
-        assert_eq!(app.state.mode, Mode::RenameAgent);
-        assert_eq!(app.state.rename_pane_target, Some(pane));
+        // Double-clicking an agent renames its tab, not the agent.
+        assert_eq!(app.state.mode, Mode::RenameTab);
+        assert_eq!(app.state.rename_tab_target, Some((0, 0)));
+        assert_eq!(app.state.rename_pane_target, None);
         assert!(app.last_agent_row_click.is_none());
     }
 
     #[test]
-    fn double_click_agent_row_opens_rename_agent_collapsed() {
+    fn double_click_agent_row_opens_tab_rename_collapsed() {
         let (mut app, pane) = app_with_single_agent();
         app.state.sidebar_collapsed = true;
         app.state.view.sidebar_rect = Rect::new(0, 0, 4, 20);
@@ -3774,8 +3776,26 @@ mod tests {
         assert_eq!(app.state.mode, Mode::Terminal);
 
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
-        assert_eq!(app.state.mode, Mode::RenameAgent);
-        assert_eq!(app.state.rename_pane_target, Some(pane));
+        assert_eq!(app.state.mode, Mode::RenameTab);
+        assert_eq!(app.state.rename_tab_target, Some((0, 0)));
+    }
+
+    #[test]
+    fn agent_double_click_opens_tab_rename_not_agent_rename() {
+        let (mut app, pane) = app_with_single_agent();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
+        let sidebar = app.state.view.sidebar_rect;
+        let row = (sidebar.y..sidebar.y + sidebar.height)
+            .find(|&r| app.state.agent_detail_target_at(r).map(|(_, _, p)| p) == Some(pane))
+            .expect("agent row visible in expanded panel");
+        let col = sidebar.x + 1;
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+
+        assert_eq!(app.state.mode, Mode::RenameTab);
+        assert_ne!(app.state.mode, Mode::RenameAgent);
+        assert_eq!(app.state.rename_tab_target, Some((0, 0)));
     }
 
     #[test]

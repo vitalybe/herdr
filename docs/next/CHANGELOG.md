@@ -12,6 +12,7 @@
 - Added `herdr terminal session control` for bridge processes that need live ANSI frames plus input, resize, scroll, release, and takeover authority.
 
 ### Changed
+- Double-clicking an agent in the sidebar now renames its tab (matching the Tabs section) instead of renaming the agent.
 - Clicking a space now returns to that workspace's latest active tab instead of a separately tracked home tab.
 - Bumped the client/server protocol version to 15 for socket API placement mutation event and response compatibility.
 

@@ -375,6 +375,15 @@ pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::Pan
     state.mode = Mode::RenamePane;
 }
 
+/// Open the agent rename modal (`Mode::RenameAgent`). No longer reachable from
+/// the TUI double-click (which now renames the tab), but retained to keep the
+/// `Mode::RenameAgent` commit path (and the enum variant it constructs) alive
+/// alongside the live `herdr agent rename` API/CLI flow. Currently exercised
+/// only by tests.
+#[allow(
+    dead_code,
+    reason = "keeps Mode::RenameAgent + its commit path constructed; TUI entry now renames the tab"
+)]
 pub(super) fn open_rename_agent(
     state: &mut AppState,
     ws_idx: usize,

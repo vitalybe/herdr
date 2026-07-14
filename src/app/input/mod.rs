@@ -451,7 +451,7 @@ impl App {
             return false;
         }
 
-        let Some((ws_idx, _tab_idx, pane_id)) = self
+        let Some((ws_idx, tab_idx, pane_id)) = self
             .state
             .agent_detail_target_at(mouse.row)
             .or_else(|| self.state.collapsed_agent_detail_target_at(mouse.row))
@@ -469,8 +469,9 @@ impl App {
             .is_some_and(|last| last.is_double_click_for(click))
         {
             self.last_agent_row_click = None;
+            // Double-clicking an agent renames its tab, matching the Tabs section.
             self.focus_pane_internal_via_api(ws_idx, pane_id);
-            modal::open_rename_agent(&mut self.state, ws_idx, pane_id);
+            modal::open_rename_tab(&mut self.state, ws_idx, tab_idx);
             return true;
         }
 

@@ -1976,19 +1976,21 @@ mod tests {
     }
 
     #[test]
-    fn double_clicking_agent_row_opens_rename_in_manual_mode() {
+    fn double_clicking_agent_row_opens_tab_rename_in_manual_mode() {
         let mut app = app_with_two_agents();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
         let order = manual_order_pane_ids(&app);
         let target_pane = order[0];
         let row = agent_row_for(&app, target_pane, false);
 
-        // First click focuses; second quick click on the same row opens rename.
+        // First click focuses; second quick click on the same row opens the tab
+        // rename (agent double-click renames the agent's tab).
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, row));
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, row));
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, row));
 
-        assert_eq!(app.state.mode, Mode::RenameAgent);
+        assert_eq!(app.state.mode, Mode::RenameTab);
+        assert_eq!(app.state.rename_tab_target, Some((0, 0)));
         assert!(app.state.agent_press.is_none());
     }
 

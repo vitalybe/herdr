@@ -879,6 +879,13 @@ impl App {
         let pane_id_aliases = crate::persist::handoff_pane_aliases(snapshot, &workspaces);
 
         app.no_session = false;
+        // App::new was called with no_session=true, so load_plugin_registry
+        // returned an empty registry. A handed-off server owns session state
+        // (it persists plugins via save_plugin_registry), so reload the real
+        // plugin registry from disk now that no_session is cleared. Without
+        // this the imported server comes up with zero plugins even though
+        // plugins.json is intact.
+        app.state.installed_plugins = load_plugin_registry(false);
         let now = Instant::now();
         if background_update_check_enabled(app.no_session, app.update_version_check_enabled) {
             app.next_auto_update_check = app
@@ -4718,6 +4725,112 @@ last_pane = "prefix+tab"
         assert_eq!(
             &input[events[1].start..events[1].start + events[1].len],
             b"a"
+        );
+    }
+
+    // A handed-off server owns the session (it persists plugins via
+    // save_plugin_registry), so it must also load plugins.json on startup.
+    // Regression for the bug where new_from_handoff left installed_plugins
+    // empty because App::new was called with no_session=true.
+    #[cfg(unix)]
+    #[test]
+    fn handoff_constructed_app_loads_plugin_registry() {
+        let _guard = config_env_lock().lock().unwrap();
+
+        // Isolate config/state dirs under a temp XDG root so we control where
+        // plugins.json is read from.
+        let path = temp_config_path("handoff-plugin-registry");
+        let root = path.parent().unwrap().to_path_buf();
+        let config_home = root.join("config");
+        let state_home = root.join("state");
+        let original_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+        let original_xdg_state_home = std::env::var_os("XDG_STATE_HOME");
+        let original_session = std::env::var_os(crate::session::SESSION_ENV_VAR);
+        let original_socket = std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR);
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        std::env::set_var("XDG_STATE_HOME", &state_home);
+        // Force the default (unnamed) session so data_dir resolves to config_dir.
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
+
+        // Seed a populated plugin registry exactly where the server reads it.
+        let registry_path = crate::session::data_dir().join("plugins.json");
+        let plugin = crate::api::schema::InstalledPluginInfo {
+            plugin_id: "example.handoff".to_string(),
+            name: "Handoff Plugin".to_string(),
+            version: "0.1.0".to_string(),
+            min_herdr_version: crate::build_info::BASE_VERSION.to_string(),
+            description: None,
+            manifest_path: root
+                .join("example.handoff/herdr-plugin.toml")
+                .display()
+                .to_string(),
+            plugin_root: root.join("example.handoff").display().to_string(),
+            enabled: true,
+            platforms: None,
+            build: vec![],
+            actions: vec![],
+            events: vec![],
+            panes: vec![],
+            link_handlers: vec![],
+            source: Default::default(),
+            warnings: vec![],
+        };
+        crate::persist::plugin_registry::save_to_path(
+            &registry_path,
+            std::slice::from_ref(&plugin),
+        )
+        .expect("seed plugin registry");
+
+        // Build an app via the handoff-import path with an empty snapshot
+        // (no panes, so no PTYs are spawned).
+        let snapshot = crate::persist::SessionSnapshot {
+            version: 0,
+            workspaces: vec![],
+            active: None,
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            sidebar_pane_section_split: None,
+            collapsed_space_keys: Default::default(),
+            agent_manual_order: None,
+            pane_section_order: None,
+        };
+        let mut imports = std::collections::HashMap::new();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = App::new_from_handoff(
+            &Config::default(),
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+            &snapshot,
+            &mut imports,
+        )
+        .expect("handoff app construction");
+
+        // Restore env before asserting so a failure can't leak global state.
+        match original_xdg_config_home {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        restore_xdg_state_home(original_xdg_state_home);
+        match original_session {
+            Some(v) => std::env::set_var(crate::session::SESSION_ENV_VAR, v),
+            None => std::env::remove_var(crate::session::SESSION_ENV_VAR),
+        }
+        match original_socket {
+            Some(v) => std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, v),
+            None => std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+
+        // The handed-off server owns the session and must have loaded the
+        // on-disk plugin registry. On the pre-fix code this map is empty.
+        assert!(!app.no_session);
+        assert!(
+            app.state.installed_plugins.contains_key("example.handoff"),
+            "handoff-constructed app should load the on-disk plugin registry, got {:?}",
+            app.state.installed_plugins.keys().collect::<Vec<_>>()
         );
     }
 }

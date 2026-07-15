@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use crate::api::schema::{
     AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
-    AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitParams, EmptyParams, Method,
-    PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
+    AgentSendKeysParams, AgentSetParentParams, AgentStartParams, AgentTarget, AgentWaitParams,
+    EmptyParams, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -22,6 +22,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "send-keys" => agent_send_keys(&args[1..]),
         "prompt" => agent_prompt(&args[1..]),
         "rename" => agent_rename(&args[1..]),
+        "set-parent" => agent_set_parent(&args[1..]),
         "focus" => agent_focus(&args[1..]),
         "wait" => agent_wait(&args[1..]),
         "attach" => agent_attach(&args[1..]),
@@ -826,6 +827,21 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
     super::print_response(&response)
 }
 
+fn agent_set_parent(args: &[String]) -> std::io::Result<i32> {
+    if args.len() != 2 {
+        eprintln!("usage: herdr agent set-parent <target> <parent>");
+        return Ok(2);
+    }
+
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:set-parent".into(),
+        method: Method::AgentSetParent(AgentSetParentParams {
+            target: args[0].clone(),
+            parent: args[1].clone(),
+        }),
+    })?)
+}
+
 fn agent_send_keys(args: &[String]) -> std::io::Result<i32> {
     if args.len() < 2 {
         eprintln!("usage: herdr agent send-keys <target> <key> [key ...]");
@@ -913,6 +929,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent send-keys <target> <key> [key ...]");
     eprintln!("  herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent rename <target> <name>|--clear");
+    eprintln!("  herdr agent set-parent <target> <parent>");
     eprintln!("  herdr agent focus <target>");
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
@@ -932,4 +949,21 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
         eprintln!("{err}");
         2
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_set_parent;
+
+    #[test]
+    fn set_parent_requires_two_positional_args() {
+        // No args, a single arg, and too many args all fail usage before any
+        // request is sent, returning the usage exit code.
+        assert_eq!(agent_set_parent(&[]).unwrap(), 2);
+        assert_eq!(agent_set_parent(&["w1:p1".into()]).unwrap(), 2);
+        assert_eq!(
+            agent_set_parent(&["w1:p1".into(), "w1:p2".into(), "extra".into()]).unwrap(),
+            2
+        );
+    }
 }

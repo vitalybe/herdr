@@ -142,6 +142,141 @@ impl App {
             })
     }
 
+    /// Assign or change the parent of an already-running agent. Mirrors the
+    /// spawn-time `--parent` path: the parent link is stored as a stable
+    /// [`crate::pane::PaneParentRef`] (parent workspace id + public pane number)
+    /// so it persists and survives the pane-id remap on restore. This never
+    /// clears a parent; setting a parent on an agent that already has one just
+    /// replaces it.
+    pub(super) fn set_agent_parent(
+        &mut self,
+        target: &str,
+        parent: &str,
+    ) -> Result<crate::api::schema::AgentInfo, AgentSetParentError> {
+        let child = self
+            .resolve_terminal_target(target)
+            .map_err(AgentSetParentError::Child)?;
+        let parent_resolved = self
+            .resolve_terminal_target(parent)
+            .map_err(AgentSetParentError::Parent)?;
+
+        // Both ends must be agent panes. The child is required because the parent
+        // link is only meaningful in the agents-panel tree; the parent mirrors
+        // the `agent start --parent` requirement that a parent be an agent pane.
+        if !self.pane_is_agent(child.ws_idx, child.pane_id) {
+            return Err(AgentSetParentError::ChildNotAgent {
+                target: target.to_string(),
+            });
+        }
+        if !self.pane_is_agent(parent_resolved.ws_idx, parent_resolved.pane_id) {
+            return Err(AgentSetParentError::ParentNotAgent {
+                target: parent.to_string(),
+            });
+        }
+
+        // An agent cannot be its own parent.
+        if child.ws_idx == parent_resolved.ws_idx && child.pane_id == parent_resolved.pane_id {
+            return Err(AgentSetParentError::SelfParent);
+        }
+
+        // Reject cycles: the new parent must not be the child itself or any
+        // descendant of the child. Walking up the parent chain from the proposed
+        // parent, a cycle exists iff we reach the child.
+        if self.parent_chain_contains(
+            parent_resolved.ws_idx,
+            parent_resolved.pane_id,
+            child.ws_idx,
+            child.pane_id,
+        ) {
+            return Err(AgentSetParentError::Cycle {
+                target: target.to_string(),
+                parent: parent.to_string(),
+            });
+        }
+
+        // Build the stable ref for the parent pane, exactly as spawn does.
+        let parent_ws = self
+            .state
+            .workspaces
+            .get(parent_resolved.ws_idx)
+            .ok_or_else(|| {
+                AgentSetParentError::Parent(TerminalTargetError::NotFound {
+                    target: parent.to_string(),
+                })
+            })?;
+        let pane_number = parent_ws
+            .public_pane_number(parent_resolved.pane_id)
+            .ok_or_else(|| {
+                AgentSetParentError::Parent(TerminalTargetError::NotFound {
+                    target: parent.to_string(),
+                })
+            })?;
+        let parent_ref = crate::pane::PaneParentRef {
+            workspace_id: parent_ws.id.clone(),
+            pane_number,
+        };
+
+        let pane_state = self
+            .state
+            .workspaces
+            .get_mut(child.ws_idx)
+            .and_then(|ws| ws.pane_state_mut(child.pane_id))
+            .ok_or_else(|| {
+                AgentSetParentError::Child(TerminalTargetError::NotFound {
+                    target: target.to_string(),
+                })
+            })?;
+        pane_state.parent = Some(parent_ref);
+        self.state.mark_session_dirty();
+
+        self.agent_info(child.ws_idx, child.pane_id).ok_or_else(|| {
+            AgentSetParentError::Child(TerminalTargetError::NotFound {
+                target: target.to_string(),
+            })
+        })
+    }
+
+    /// True when the pane at `(ws_idx, pane_id)` is backed by an agent terminal.
+    fn pane_is_agent(&self, ws_idx: usize, pane_id: crate::layout::PaneId) -> bool {
+        self.state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane_id))
+            .and_then(|pane| self.state.terminals.get(&pane.attached_terminal_id))
+            .is_some_and(|terminal| terminal.is_agent_terminal())
+    }
+
+    /// Walk the parent chain upward from `(start_ws, start_pane)`, including the
+    /// start pane itself, and report whether it reaches `(needle_ws,
+    /// needle_pane)`. A visited set guards against any pre-existing cycle in the
+    /// stored links so the walk always terminates.
+    fn parent_chain_contains(
+        &self,
+        start_ws: usize,
+        start_pane: crate::layout::PaneId,
+        needle_ws: usize,
+        needle_pane: crate::layout::PaneId,
+    ) -> bool {
+        let mut current = Some((start_ws, start_pane));
+        let mut visited = std::collections::HashSet::new();
+        while let Some((ws_idx, pane_id)) = current {
+            if ws_idx == needle_ws && pane_id == needle_pane {
+                return true;
+            }
+            if !visited.insert((ws_idx, pane_id)) {
+                break;
+            }
+            current = self
+                .state
+                .workspaces
+                .get(ws_idx)
+                .and_then(|ws| ws.pane_state(pane_id))
+                .and_then(|pane| pane.parent.as_ref())
+                .and_then(|parent| self.state.resolve_pane_parent(parent));
+        }
+        false
+    }
+
     pub(super) fn start_agent(
         &mut self,
         params: AgentStartParams,
@@ -358,6 +493,40 @@ impl App {
         }
     }
 
+    pub(super) fn agent_set_parent_error_body(
+        &self,
+        err: AgentSetParentError,
+    ) -> crate::api::schema::ErrorBody {
+        match err {
+            AgentSetParentError::Child(err) => self.agent_target_error_body(err),
+            AgentSetParentError::Parent(TerminalTargetError::NotFound { target }) => {
+                crate::api::schema::ErrorBody {
+                    code: "agent_parent_not_found".into(),
+                    message: format!("agent parent target {target} not found"),
+                }
+            }
+            AgentSetParentError::Parent(err) => self.agent_target_error_body(err),
+            AgentSetParentError::ChildNotAgent { target } => crate::api::schema::ErrorBody {
+                code: "agent_set_parent_target_not_agent".into(),
+                message: format!("agent target {target} is not an agent pane"),
+            },
+            AgentSetParentError::ParentNotAgent { target } => crate::api::schema::ErrorBody {
+                code: "agent_set_parent_parent_not_agent".into(),
+                message: format!("agent parent target {target} is not an agent pane"),
+            },
+            AgentSetParentError::SelfParent => crate::api::schema::ErrorBody {
+                code: "agent_set_parent_self".into(),
+                message: "an agent cannot be its own parent".into(),
+            },
+            AgentSetParentError::Cycle { target, parent } => crate::api::schema::ErrorBody {
+                code: "agent_set_parent_cycle".into(),
+                message: format!(
+                    "cannot set parent of {target} to {parent}: it is a descendant of {target}, which would create a cycle"
+                ),
+            },
+        }
+    }
+
     pub(super) fn agent_info(
         &self,
         ws_idx: usize,
@@ -464,6 +633,24 @@ pub(super) enum AgentRenameError {
     DuplicateName {
         name: String,
         candidates: Vec<crate::api::schema::AgentInfo>,
+    },
+}
+
+pub(super) enum AgentSetParentError {
+    /// The child target failed to resolve (not found or ambiguous).
+    Child(TerminalTargetError),
+    /// The parent target failed to resolve (not found or ambiguous).
+    Parent(TerminalTargetError),
+    ChildNotAgent {
+        target: String,
+    },
+    ParentNotAgent {
+        target: String,
+    },
+    SelfParent,
+    Cycle {
+        target: String,
+        parent: String,
     },
 }
 

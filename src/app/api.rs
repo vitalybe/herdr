@@ -1071,6 +1071,9 @@ impl App {
             Method::AgentViewClear(params) => {
                 return self.handle_agent_view_clear(request.id, params)
             }
+            Method::AgentSetParent(params) => {
+                return self.handle_agent_set_parent(request.id, params);
+            }
             Method::AgentStart(params) => return self.handle_agent_start(request.id, params),
             Method::AgentPrompt(params) => return self.handle_agent_prompt(request.id, params),
             Method::AgentWait(_) => {

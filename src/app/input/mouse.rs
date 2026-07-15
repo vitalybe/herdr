@@ -6,8 +6,8 @@ use tracing::warn;
 use crate::{
     app::state::{
         AgentPanelSort, AgentPressState, AppState, ContextMenuKind, ContextMenuState, DragState,
-        DragTarget, ManualEntryRef, MenuListState, Mode, RightClickPassthroughGesture,
-        TabPressState, TabSectionPressState, ViewLayout, WorkspacePressState,
+        DragTarget, ManualEntryRef, MenuListState, Mode, PaneSectionPressState,
+        RightClickPassthroughGesture, TabPressState, ViewLayout, WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
     selection::Selection,
@@ -33,12 +33,6 @@ pub(super) enum MouseAction {
     FocusTab {
         tab_idx: usize,
     },
-    /// Activate a tab in a specific workspace, used by the sidebar Tabs section
-    /// (which can span spaces).
-    FocusTabInWorkspace {
-        ws_idx: usize,
-        tab_idx: usize,
-    },
     FocusPane {
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
@@ -57,8 +51,8 @@ pub(super) enum MouseAction {
         source: ManualEntryRef,
         insert_idx: usize,
     },
-    MoveTabSectionEntry {
-        source: crate::app::state::TabRef,
+    MovePaneSectionEntry {
+        source: crate::app::state::PaneSectionRef,
         insert_idx: usize,
     },
     SetSplitRatio {
@@ -607,25 +601,25 @@ impl AppState {
                     }
 
                     if let Some(target) =
-                        self.tab_section_scrollbar_target_at(mouse.column, mouse.row)
+                        self.pane_section_scrollbar_target_at(mouse.column, mouse.row)
                     {
                         match target {
                             ScrollbarClickTarget::Thumb { grab_row_offset } => {
                                 self.drag = Some(DragState {
-                                    target: DragTarget::TabSectionScrollbar { grab_row_offset },
+                                    target: DragTarget::PaneSectionScrollbar { grab_row_offset },
                                 });
                             }
                             ScrollbarClickTarget::Track { offset_from_bottom } => {
-                                self.set_tab_section_offset_from_bottom(offset_from_bottom);
+                                self.set_pane_section_offset_from_bottom(offset_from_bottom);
                             }
                         }
                         return None;
                     }
 
-                    if let Some(entry) = self.tab_section_ref_at_row(mouse.row) {
+                    if let Some(entry) = self.pane_section_ref_at_row(mouse.row) {
                         // Record a press so a drag can promote to a reorder. On
                         // release without a drag, the row activates its tab.
-                        self.tab_section_press = Some(TabSectionPressState {
+                        self.pane_section_press = Some(PaneSectionPressState {
                             entry,
                             start_col: mouse.column,
                             start_row: mouse.row,
@@ -761,16 +755,16 @@ impl AppState {
                 let workspace_drop_index = self.workspace_drop_index_at_row(mouse.row);
                 let tab_drop_index = self.tab_drop_index_at(mouse.column, mouse.row);
                 let agent_drop_index = self.agent_panel_drop_index_at_row(mouse.row);
-                let tab_section_drop_index = self.tab_section_drop_index_at_row(mouse.row);
+                let pane_section_drop_index = self.pane_section_drop_index_at_row(mouse.row);
                 if self.drag.is_none() {
-                    if let Some(press) = &self.tab_section_press {
+                    if let Some(press) = &self.pane_section_press {
                         let delta_col = mouse.column.abs_diff(press.start_col);
                         let delta_row = mouse.row.abs_diff(press.start_row);
                         if delta_col.max(delta_row) >= TAB_DRAG_THRESHOLD {
                             self.drag = Some(DragState {
-                                target: DragTarget::TabSectionReorder {
+                                target: DragTarget::PaneSectionReorder {
                                     source: press.entry.clone(),
-                                    insert_idx: tab_section_drop_index,
+                                    insert_idx: pane_section_drop_index,
                                 },
                             });
                         }
@@ -836,16 +830,16 @@ impl AppState {
                 {
                     *insert_idx = agent_drop_index;
                 } else if let Some(DragState {
-                    target: DragTarget::TabSectionReorder { insert_idx, .. },
+                    target: DragTarget::PaneSectionReorder { insert_idx, .. },
                 }) = &mut self.drag
                 {
-                    *insert_idx = tab_section_drop_index;
+                    *insert_idx = pane_section_drop_index;
                 } else if let Some(drag) = &self.drag {
                     match &drag.target {
                         DragTarget::WorkspaceReorder { .. }
                         | DragTarget::TabReorder { .. }
                         | DragTarget::AgentReorder { .. }
-                        | DragTarget::TabSectionReorder { .. } => {}
+                        | DragTarget::PaneSectionReorder { .. } => {}
                         DragTarget::WorkspaceListScrollbar { grab_row_offset } => {
                             if let Some(offset_from_bottom) =
                                 self.workspace_list_offset_for_drag_row(mouse.row, *grab_row_offset)
@@ -860,11 +854,11 @@ impl AppState {
                                 self.set_agent_panel_offset_from_bottom(offset_from_bottom);
                             }
                         }
-                        DragTarget::TabSectionScrollbar { grab_row_offset } => {
+                        DragTarget::PaneSectionScrollbar { grab_row_offset } => {
                             if let Some(offset_from_bottom) =
-                                self.tab_section_offset_for_drag_row(mouse.row, *grab_row_offset)
+                                self.pane_section_offset_for_drag_row(mouse.row, *grab_row_offset)
                             {
-                                self.set_tab_section_offset_from_bottom(offset_from_bottom);
+                                self.set_pane_section_offset_from_bottom(offset_from_bottom);
                             }
                         }
                         DragTarget::PaneSplit {
@@ -962,7 +956,7 @@ impl AppState {
                 let workspace_press = self.workspace_press.take();
                 let tab_press = self.tab_press.take();
                 let agent_press = self.agent_press.take();
-                let tab_section_press = self.tab_section_press.take();
+                let pane_section_press = self.pane_section_press.take();
                 match self.drag.take() {
                     Some(DragState {
                         target:
@@ -1004,12 +998,12 @@ impl AppState {
                     }
                     Some(DragState {
                         target:
-                            DragTarget::TabSectionReorder {
+                            DragTarget::PaneSectionReorder {
                                 source,
                                 insert_idx: Some(insert_idx),
                             },
                     }) => {
-                        return Some(MouseAction::MoveTabSectionEntry { source, insert_idx });
+                        return Some(MouseAction::MovePaneSectionEntry { source, insert_idx });
                     }
                     Some(_) => {}
                     None => {
@@ -1041,12 +1035,15 @@ impl AppState {
                                 }
                             }
                         }
-                        if let Some(press) = tab_section_press {
-                            // A plain click on a Tabs-section row activates that tab
-                            // in its workspace (which may be a different space).
-                            if let Some((ws_idx, tab_idx)) = self.resolve_tab_ref(&press.entry) {
+                        if let Some(press) = pane_section_press {
+                            // A plain click on a Panes-section row focuses that pane
+                            // in its workspace (which may be a different space),
+                            // switching workspace and tab as needed.
+                            if let Some((ws_idx, pane_id)) =
+                                self.resolve_pane_section_ref(&press.entry)
+                            {
                                 self.mode = Mode::Terminal;
-                                return Some(MouseAction::FocusTabInWorkspace { ws_idx, tab_idx });
+                                return Some(MouseAction::FocusPane { ws_idx, pane_id });
                             }
                         }
                     }

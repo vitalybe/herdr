@@ -31,21 +31,6 @@ impl Tab {
         })
     }
 
-    /// True when this tab is an agent tab: it has at least one pane attached to
-    /// an agent terminal and no non-agent panes. A tab that mixes agent and
-    /// non-agent panes is not an agent tab. The agent's current state (idle,
-    /// working, or blocked) does not matter.
-    pub fn is_agent_tab(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
-        let mut saw_agent = false;
-        for pane in self.panes.values() {
-            match terminals.get(&pane.attached_terminal_id) {
-                Some(terminal) if terminal.is_agent_terminal() => saw_agent = true,
-                _ => return false,
-            }
-        }
-        saw_agent
-    }
-
     fn pane_details(
         &self,
         terminals: &HashMap<TerminalId, TerminalState>,
@@ -114,6 +99,36 @@ impl Workspace {
 
     pub fn has_working_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
         self.tabs.iter().any(|tab| tab.has_working_pane(terminals))
+    }
+
+    /// Non-agent panes in natural display order (tabs x panes), each paired with
+    /// its containing tab index, `PaneId`, and stable public pane number. A pane
+    /// is "non-agent" when its attached terminal is not an agent terminal (or has
+    /// no resolved terminal). Panes without a public number are skipped. Used to
+    /// build and reconcile the client-only sidebar Panes section.
+    pub fn non_agent_panes(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> Vec<(usize, PaneId, usize)> {
+        let mut out = Vec::new();
+        for (tab_idx, tab) in self.tabs.iter().enumerate() {
+            for pane_id in tab.layout.pane_ids() {
+                let Some(pane) = tab.panes.get(&pane_id) else {
+                    continue;
+                };
+                let is_agent = terminals
+                    .get(&pane.attached_terminal_id)
+                    .is_some_and(|terminal| terminal.is_agent_terminal());
+                if is_agent {
+                    continue;
+                }
+                let Some(pane_number) = self.public_pane_number(pane_id) else {
+                    continue;
+                };
+                out.push((tab_idx, pane_id, pane_number));
+            }
+        }
+        out
     }
 
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
@@ -211,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn is_agent_tab_requires_all_panes_to_be_agents() {
+    fn non_agent_panes_excludes_agent_panes() {
         let mut ws = Workspace::test_new("test");
         let id2 = ws.test_split(Direction::Horizontal);
         let root_id = ws.tabs[0]
@@ -222,31 +237,29 @@ mod tests {
             .unwrap();
 
         let mut terminals = HashMap::new();
-        let mut root_terminal = terminal_for_pane(&ws, root_id);
-        root_terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+        // Root is a plain shell pane; the split is an agent pane.
+        let root_terminal = terminal_for_pane(&ws, root_id);
         terminals.insert(root_terminal.id.clone(), root_terminal);
-        let second_terminal = terminal_for_pane(&ws, id2);
-        terminals.insert(second_terminal.id.clone(), second_terminal);
+        let mut agent_terminal = terminal_for_pane(&ws, id2);
+        agent_terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
+        terminals.insert(agent_terminal.id.clone(), agent_terminal);
 
-        // One agent pane, one plain shell pane: mixed, so not an agent tab.
-        assert!(!ws.tabs[0].is_agent_tab(&terminals));
-
-        // Both panes are agents: agent tab.
-        terminals
-            .get_mut(ws.terminal_id(id2).unwrap())
-            .unwrap()
-            .set_detected_state(Some(Agent::Pi), AgentState::Working);
-        assert!(ws.tabs[0].is_agent_tab(&terminals));
+        let non_agent = ws.non_agent_panes(&terminals);
+        assert_eq!(non_agent.len(), 1);
+        assert_eq!(non_agent[0].1, root_id);
+        assert_eq!(non_agent[0].2, ws.public_pane_number(root_id).unwrap());
     }
 
     #[test]
-    fn is_agent_tab_false_without_any_agent() {
+    fn non_agent_panes_includes_all_plain_shell_panes() {
         let ws = Workspace::test_new("test");
         let root = ws.tabs[0].root_pane;
         let mut terminals = HashMap::new();
         let terminal = terminal_for_pane(&ws, root);
         terminals.insert(terminal.id.clone(), terminal);
-        assert!(!ws.tabs[0].is_agent_tab(&terminals));
+        let non_agent = ws.non_agent_panes(&terminals);
+        assert_eq!(non_agent.len(), 1);
+        assert_eq!(non_agent[0].1, root);
     }
 
     #[test]

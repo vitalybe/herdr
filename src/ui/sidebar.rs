@@ -16,10 +16,10 @@ use crate::terminal::TerminalRuntimeRegistry;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
-/// Header rows above the Tabs-section body: a divider rule plus the title.
-const TABS_SECTION_HEADER_ROWS: u16 = 2;
-/// Content height of a single Tabs-section row: tab name line + space name line.
-const TAB_SECTION_ROW_HEIGHT: u16 = 2;
+/// Header rows above the Panes-section body: a divider rule plus the title.
+const PANE_SECTION_HEADER_ROWS: u16 = 2;
+/// Content height of a single Panes-section row: pane name line + space name line.
+const PANE_SECTION_ROW_HEIGHT: u16 = 2;
 
 /// Fixed dark grey used for the space (workspace) name on an agent row's second
 /// line. Resolved through `parse_color_checked` so it matches the `darkgrey`
@@ -199,153 +199,160 @@ pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect
 
 /// Partition the sidebar content height into three stacked bands
 /// (Spaces / Tabs / Agents). `spaces_ratio` allocates the Spaces band out of the
-/// total height; `tabs_ratio` then allocates the Tabs band out of the remaining
+/// total height; `pane_section_ratio` then allocates the Panes band out of the remaining
 /// height, leaving the rest for Agents. Reuses the two-band split so the Spaces
 /// band matches the historical geometry exactly.
 ///
-/// When `show_tabs` is false (no non-agent tabs exist) the Tabs band collapses
+/// When `show_pane_section` is false (no non-agent panes exist) the Panes band collapses
 /// to zero height and the Agents band takes the whole region below Spaces, so
 /// agent-only sidebars keep the historical two-band geometry.
 pub(crate) fn expanded_sidebar_sections3(
     area: Rect,
     spaces_ratio: f32,
-    tabs_ratio: f32,
-    show_tabs: bool,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
 ) -> (Rect, Rect, Rect) {
     let (spaces_area, rest) = expanded_sidebar_sections(area, spaces_ratio);
     if rest.width == 0 || rest.height == 0 {
         return (spaces_area, Rect::default(), rest);
     }
-    if !show_tabs {
-        let tabs_area = Rect::new(rest.x, rest.y, rest.width, 0);
-        return (spaces_area, tabs_area, rest);
+    if !show_pane_section {
+        let pane_section_area = Rect::new(rest.x, rest.y, rest.width, 0);
+        return (spaces_area, pane_section_area, rest);
     }
-    let (tabs_h, agents_h) = sidebar_section_heights(rest.height, tabs_ratio);
-    let tabs_area = Rect::new(rest.x, rest.y, rest.width, tabs_h);
-    let agents_area = Rect::new(rest.x, rest.y + tabs_h, rest.width, agents_h);
-    (spaces_area, tabs_area, agents_area)
+    let (pane_section_h, agents_h) = sidebar_section_heights(rest.height, pane_section_ratio);
+    let pane_section_area = Rect::new(rest.x, rest.y, rest.width, pane_section_h);
+    let agents_area = Rect::new(rest.x, rest.y + pane_section_h, rest.width, agents_h);
+    (spaces_area, pane_section_area, agents_area)
 }
 
-/// The draggable divider between the Tabs and Agents bands (divider index 1).
-/// Empty when the Tabs band is collapsed.
-pub(crate) fn sidebar_tabs_section_divider_rect(
+/// The draggable divider between the Panes and Agents bands (divider index 1).
+/// Empty when the Panes band is collapsed.
+pub(crate) fn sidebar_pane_section_divider_rect(
     area: Rect,
     spaces_ratio: f32,
-    tabs_ratio: f32,
-    show_tabs: bool,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
 ) -> Rect {
-    if !show_tabs {
+    if !show_pane_section {
         return Rect::default();
     }
     let (_, rest) = expanded_sidebar_sections(area, spaces_ratio);
     if rest.width == 0 || rest.height < 6 {
         return Rect::default();
     }
-    let (tabs_h, _) = sidebar_section_heights(rest.height, tabs_ratio);
-    Rect::new(rest.x, rest.y + tabs_h, rest.width, 1)
+    let (pane_section_h, _) = sidebar_section_heights(rest.height, pane_section_ratio);
+    Rect::new(rest.x, rest.y + pane_section_h, rest.width, 1)
 }
 
 /// The Agents (detail) band as the third of three stacked sidebar sections.
-pub(crate) fn tabs_agents_detail_rect(
+pub(crate) fn agents_detail_rect(
     area: Rect,
     spaces_ratio: f32,
-    tabs_ratio: f32,
-    show_tabs: bool,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
 ) -> Rect {
-    let (_, _, agents_area) = expanded_sidebar_sections3(area, spaces_ratio, tabs_ratio, show_tabs);
+    let (_, _, agents_area) =
+        expanded_sidebar_sections3(area, spaces_ratio, pane_section_ratio, show_pane_section);
     agents_area
 }
 
-/// The Tabs band as the middle of three stacked sidebar sections.
-pub(crate) fn tab_section_rect(
+/// The Panes band as the middle of three stacked sidebar sections.
+pub(crate) fn pane_section_rect(
     area: Rect,
     spaces_ratio: f32,
-    tabs_ratio: f32,
-    show_tabs: bool,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
 ) -> Rect {
-    let (_, tabs_area, _) = expanded_sidebar_sections3(area, spaces_ratio, tabs_ratio, show_tabs);
-    tabs_area
+    let (_, pane_section_area, _) =
+        expanded_sidebar_sections3(area, spaces_ratio, pane_section_ratio, show_pane_section);
+    pane_section_area
 }
 
-/// Whether the sidebar Tabs section has any entries to show. When false, the
-/// Tabs band collapses and the Agents band keeps the historical geometry.
-pub(crate) fn sidebar_shows_tab_section(app: &AppState) -> bool {
-    !sidebar_tab_entries(app).is_empty()
+/// Whether the sidebar Panes section has any entries to show. When false, the
+/// Panes band collapses and the Agents band keeps the historical geometry.
+pub(crate) fn sidebar_shows_pane_section(app: &AppState) -> bool {
+    !sidebar_pane_section_entries(app).is_empty()
 }
 
-/// Body (scrolling content) region of the Tabs band, below its header rows.
+/// Body (scrolling content) region of the Panes band, below its header rows.
 /// Reserves the rightmost column for the scrollbar when `has_scrollbar`.
-pub(crate) fn tab_section_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
-    if area.width == 0 || area.height <= TABS_SECTION_HEADER_ROWS {
+pub(crate) fn pane_section_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
+    if area.width == 0 || area.height <= PANE_SECTION_HEADER_ROWS {
         return Rect::default();
     }
-    let body_y = area.y.saturating_add(TABS_SECTION_HEADER_ROWS);
+    let body_y = area.y.saturating_add(PANE_SECTION_HEADER_ROWS);
     let body_height = (area.y + area.height).saturating_sub(body_y);
     let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
     Rect::new(area.x, body_y, body_width, body_height)
 }
 
-/// A single non-agent tab surfaced in the Tabs section, resolved from the
-/// client-only [`crate::app::state::TabSectionOrder`].
-pub(crate) struct TabSectionEntry {
+/// A single non-agent pane surfaced in the Panes section, resolved from the
+/// client-only [`crate::app::state::PaneSectionOrder`]. `tab_idx` is the pane's
+/// containing tab (used for the display-name fallback) and `pane_id` addresses
+/// the pane itself for focus and rename.
+pub(crate) struct PaneSectionEntry {
     pub order_idx: usize,
     pub ws_idx: usize,
     pub tab_idx: usize,
+    pub pane_id: crate::layout::PaneId,
 }
 
-/// All non-agent tabs across every workspace, ordered by the client-only Tabs
-/// section ordering. Entries whose tab no longer resolves are skipped.
-pub(crate) fn sidebar_tab_entries(app: &AppState) -> Vec<TabSectionEntry> {
-    let mut lookup: std::collections::HashMap<(&str, usize), (usize, usize)> =
-        std::collections::HashMap::new();
+/// All non-agent panes across every workspace, ordered by the client-only Panes
+/// section ordering. Entries whose pane no longer resolves are skipped.
+pub(crate) fn sidebar_pane_section_entries(app: &AppState) -> Vec<PaneSectionEntry> {
+    let mut lookup: std::collections::HashMap<
+        (&str, usize),
+        (usize, usize, crate::layout::PaneId),
+    > = std::collections::HashMap::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        for (tab_idx, tab) in ws.tabs.iter().enumerate() {
-            if !tab.is_agent_tab(&app.terminals) {
-                lookup.insert((ws.id.as_str(), tab.number), (ws_idx, tab_idx));
-            }
+        for (tab_idx, pane_id, pane_number) in ws.non_agent_panes(&app.terminals) {
+            lookup.insert((ws.id.as_str(), pane_number), (ws_idx, tab_idx, pane_id));
         }
     }
-    app.tab_section_order
+    app.pane_section_order
         .order
         .iter()
         .enumerate()
-        .filter_map(|(order_idx, tab_ref)| {
+        .filter_map(|(order_idx, pane_ref)| {
             lookup
-                .get(&(tab_ref.workspace_id.as_str(), tab_ref.tab_number))
-                .map(|&(ws_idx, tab_idx)| TabSectionEntry {
+                .get(&(pane_ref.workspace_id.as_str(), pane_ref.pane_number))
+                .map(|&(ws_idx, tab_idx, pane_id)| PaneSectionEntry {
                     order_idx,
                     ws_idx,
                     tab_idx,
+                    pane_id,
                 })
         })
         .collect()
 }
 
-/// Visible-row layout for the Tabs section, walking entries from `scroll` and
+/// Visible-row layout for the Panes section, walking entries from `scroll` and
 /// laying out two-line rows (with a one-row gap) inside `body`. Pure; does not
 /// consult scroll metrics, so it is safe to call from the metrics path.
-fn tab_section_row_areas_in(
+fn pane_section_row_areas_in(
     app: &AppState,
     body: Rect,
     scroll: usize,
-) -> Vec<crate::app::state::TabSectionRowArea> {
+) -> Vec<crate::app::state::PaneSectionRowArea> {
     let mut areas = Vec::new();
     if body.width == 0 || body.height == 0 {
         return areas;
     }
     let body_bottom = body.y + body.height;
     let mut row_y = body.y;
-    for entry in sidebar_tab_entries(app).into_iter().skip(scroll) {
-        if row_y.saturating_add(TAB_SECTION_ROW_HEIGHT) > body_bottom {
+    for entry in sidebar_pane_section_entries(app).into_iter().skip(scroll) {
+        if row_y.saturating_add(PANE_SECTION_ROW_HEIGHT) > body_bottom {
             break;
         }
-        areas.push(crate::app::state::TabSectionRowArea {
+        areas.push(crate::app::state::PaneSectionRowArea {
             ws_idx: entry.ws_idx,
             tab_idx: entry.tab_idx,
+            pane_id: entry.pane_id,
             order_idx: entry.order_idx,
-            rect: Rect::new(body.x, row_y, body.width, TAB_SECTION_ROW_HEIGHT),
+            rect: Rect::new(body.x, row_y, body.width, PANE_SECTION_ROW_HEIGHT),
         });
-        row_y = row_y.saturating_add(TAB_SECTION_ROW_HEIGHT);
+        row_y = row_y.saturating_add(PANE_SECTION_ROW_HEIGHT);
         if row_y < body_bottom {
             row_y = row_y.saturating_add(1);
         }
@@ -353,18 +360,21 @@ fn tab_section_row_areas_in(
     areas
 }
 
-fn tab_section_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
-    let body = tab_section_body_rect(area, false);
-    tab_section_row_areas_in(app, body, scroll).len()
+fn pane_section_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
+    let body = pane_section_body_rect(area, false);
+    pane_section_row_areas_in(app, body, scroll).len()
 }
 
-pub(crate) fn tab_section_scroll_metrics(app: &AppState, area: Rect) -> crate::pane::ScrollMetrics {
-    let total_rows = sidebar_tab_entries(app).len();
-    let scroll = app.tab_section_scroll.min(total_rows.saturating_sub(1));
-    let viewport_rows = tab_section_visible_count(app, area, scroll);
+pub(crate) fn pane_section_scroll_metrics(
+    app: &AppState,
+    area: Rect,
+) -> crate::pane::ScrollMetrics {
+    let total_rows = sidebar_pane_section_entries(app).len();
+    let scroll = app.pane_section_scroll.min(total_rows.saturating_sub(1));
+    let viewport_rows = pane_section_visible_count(app, area, scroll);
     let max_offset_from_bottom = total_rows.saturating_sub(viewport_rows);
     let offset_from_bottom = total_rows
-        .saturating_sub(app.tab_section_scroll)
+        .saturating_sub(app.pane_section_scroll)
         .saturating_sub(viewport_rows);
 
     crate::pane::ScrollMetrics {
@@ -374,9 +384,9 @@ pub(crate) fn tab_section_scroll_metrics(app: &AppState, area: Rect) -> crate::p
     }
 }
 
-pub(crate) fn tab_section_scrollbar_rect(app: &AppState, area: Rect) -> Option<Rect> {
-    let metrics = tab_section_scroll_metrics(app, area);
-    let body = tab_section_body_rect(area, true);
+pub(crate) fn pane_section_scrollbar_rect(app: &AppState, area: Rect) -> Option<Rect> {
+    let metrics = pane_section_scroll_metrics(app, area);
+    let body = pane_section_body_rect(area, true);
     (should_show_scrollbar(metrics) && body.width > 0 && body.height > 0).then_some(Rect::new(
         area.x + area.width.saturating_sub(1),
         body.y,
@@ -385,21 +395,21 @@ pub(crate) fn tab_section_scrollbar_rect(app: &AppState, area: Rect) -> Option<R
     ))
 }
 
-/// Screen placement of the visible Tabs-section rows, honoring the current scroll
+/// Screen placement of the visible Panes-section rows, honoring the current scroll
 /// offset and reserving space for the scrollbar when one is shown.
-pub(crate) fn compute_tab_section_row_areas(
+pub(crate) fn compute_pane_section_row_areas(
     app: &AppState,
     area: Rect,
-) -> Vec<crate::app::state::TabSectionRowArea> {
-    let metrics = tab_section_scroll_metrics(app, area);
-    let body = tab_section_body_rect(area, should_show_scrollbar(metrics));
-    tab_section_row_areas_in(app, body, app.tab_section_scroll)
+) -> Vec<crate::app::state::PaneSectionRowArea> {
+    let metrics = pane_section_scroll_metrics(app, area);
+    let body = pane_section_body_rect(area, should_show_scrollbar(metrics));
+    pane_section_row_areas_in(app, body, app.pane_section_scroll)
 }
 
-/// Row (y) of the drop indicator for a Tabs-section reorder targeting flat
+/// Row (y) of the drop indicator for a Panes-section reorder targeting flat
 /// `insert_idx`, mirroring the agent-panel drop indicator.
-pub(crate) fn tab_section_drop_indicator_row(
-    areas: &[crate::app::state::TabSectionRowArea],
+pub(crate) fn pane_section_drop_indicator_row(
+    areas: &[crate::app::state::PaneSectionRowArea],
     body: Rect,
     insert_idx: usize,
 ) -> Option<u16> {
@@ -1284,23 +1294,42 @@ pub(super) fn render_sidebar(
         buf[(sep_x, y)].set_style(sep_style);
     }
 
-    let (ws_area, tabs_area, detail_area) = expanded_sidebar_sections3(
+    let (ws_area, pane_section_area, detail_area) = expanded_sidebar_sections3(
         area,
         app.sidebar_section_split,
-        app.sidebar_tabs_section_split,
-        sidebar_shows_tab_section(app),
+        app.sidebar_pane_section_split,
+        sidebar_shows_pane_section(app),
     );
 
     render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
-    render_tab_section(app, terminal_runtimes, frame, tabs_area);
+    render_pane_section(app, terminal_runtimes, frame, pane_section_area);
     render_agent_detail(app, terminal_runtimes, frame, detail_area);
     render_sidebar_toggle(app, frame, area, false, p);
 }
 
-/// Render the Tabs section: every non-agent tab across all spaces as a two-line
-/// row (tab name over its space name), ordered by the client-only Tabs-section
-/// order, with a drop indicator during a reorder drag.
-fn render_tab_section(
+/// The display name shown for a Panes-section row: the pane's own effective name
+/// (manual label / terminal title) when it has one, otherwise the containing
+/// tab's name, otherwise a positional fallback.
+fn pane_section_row_name(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    row_pane_id: crate::layout::PaneId,
+    tab_idx: usize,
+) -> String {
+    let pane_name = ws.pane_state(row_pane_id).and_then(|pane| {
+        app.terminals
+            .get(&pane.attached_terminal_id)
+            .and_then(|terminal| terminal.border_label(false))
+    });
+    pane_name
+        .or_else(|| ws.tab_display_name(tab_idx))
+        .unwrap_or_else(|| (tab_idx + 1).to_string())
+}
+
+/// Render the Panes section: every non-agent pane across all spaces as a
+/// two-line row (pane name over its space name), ordered by the client-only
+/// Panes-section order, with a drop indicator during a reorder drag.
+fn render_pane_section(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     frame: &mut Frame,
@@ -1318,37 +1347,36 @@ fn render_tab_section(
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            " tabs",
+            " panes",
             Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
         )])),
         Rect::new(area.x, area.y + 1, area.width, 1),
     );
 
-    let metrics = tab_section_scroll_metrics(app, area);
-    let scrollbar_rect = tab_section_scrollbar_rect(app, area);
-    let body = tab_section_body_rect(area, should_show_scrollbar(metrics));
+    let metrics = pane_section_scroll_metrics(app, area);
+    let scrollbar_rect = pane_section_scrollbar_rect(app, area);
+    let body = pane_section_body_rect(area, should_show_scrollbar(metrics));
     if body == Rect::default() {
         return;
     }
 
     let dragged = match app.drag.as_ref().map(|drag| &drag.target) {
-        Some(crate::app::state::DragTarget::TabSectionReorder { source, .. }) => {
+        Some(crate::app::state::DragTarget::PaneSectionReorder { source, .. }) => {
             Some(source.clone())
         }
         _ => None,
     };
 
-    let areas = &app.view.tab_section_row_areas;
+    let areas = &app.view.pane_section_row_areas;
     let max_width = body.width as usize;
     for row in areas {
         let ws = &app.workspaces[row.ws_idx];
-        let is_active = Some(row.ws_idx) == app.active && ws.active_tab == row.tab_idx;
+        let is_active = Some(row.ws_idx) == app.active
+            && ws.active_tab == row.tab_idx
+            && ws.focused_pane_id() == Some(row.pane_id);
         let is_dragged = dragged.as_ref().is_some_and(|source| {
             source.workspace_id == ws.id
-                && ws
-                    .tabs
-                    .get(row.tab_idx)
-                    .is_some_and(|tab| tab.number == source.tab_number)
+                && ws.public_pane_number(row.pane_id) == Some(source.pane_number)
         });
 
         if is_active || is_dragged {
@@ -1370,13 +1398,11 @@ fn render_tab_section(
         } else {
             Style::default().fg(p.text)
         };
-        let tab_name = ws
-            .tab_display_name(row.tab_idx)
-            .unwrap_or_else(|| (row.tab_idx + 1).to_string());
+        let pane_name = pane_section_row_name(app, ws, row.pane_id, row.tab_idx);
         let space_name = ws.display_name_from(&app.terminals, terminal_runtimes);
         frame.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
-                format!(" {}", truncate_end(&tab_name, max_width.saturating_sub(1))),
+                format!(" {}", truncate_end(&pane_name, max_width.saturating_sub(1))),
                 name_style,
             )])),
             Rect::new(body.x, row.rect.y, body.width, 1),
@@ -1394,13 +1420,13 @@ fn render_tab_section(
     }
 
     if let Some(insert_idx) = match app.drag.as_ref().map(|drag| &drag.target) {
-        Some(crate::app::state::DragTarget::TabSectionReorder {
+        Some(crate::app::state::DragTarget::PaneSectionReorder {
             insert_idx: Some(insert_idx),
             ..
         }) => Some(*insert_idx),
         _ => None,
     } {
-        if let Some(y) = tab_section_drop_indicator_row(areas, body, insert_idx) {
+        if let Some(y) = pane_section_drop_indicator_row(areas, body, insert_idx) {
             let indicator_right = scrollbar_rect
                 .map(|rect| rect.x)
                 .unwrap_or(body.x + body.width);
@@ -2053,7 +2079,7 @@ mod tests {
         );
         assert!(tabs.height >= 3 && agents.height >= 3);
 
-        // With no Tabs entries the Tabs band collapses and Agents keeps the
+        // With no Panes entries the Panes band collapses and Agents keeps the
         // historical two-band geometry.
         let (spaces2, tabs2, agents2) = expanded_sidebar_sections3(area, 0.5, 0.5, false);
         assert_eq!(tabs2.height, 0);
@@ -2062,7 +2088,7 @@ mod tests {
     }
 
     #[test]
-    fn tabs_section_lists_only_non_agent_tabs() {
+    fn pane_section_lists_only_non_agent_tabs() {
         let mut app = AppState::test_new();
         let mut ws = Workspace::test_new("one"); // tab 0: plain
         ws.test_add_tab(Some("agent")); // tab 1: pure agent
@@ -2079,8 +2105,8 @@ mod tests {
         app.active = Some(0);
         app.selected = 0;
 
-        app.reconcile_tab_section_order();
-        let entries: Vec<usize> = sidebar_tab_entries(&app)
+        app.reconcile_pane_section_order();
+        let entries: Vec<usize> = sidebar_pane_section_entries(&app)
             .into_iter()
             .map(|entry| entry.tab_idx)
             .collect();

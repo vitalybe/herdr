@@ -349,26 +349,44 @@ pub(super) fn open_rename_tab(state: &mut AppState, ws_idx: usize, tab_idx: usiz
     state.requested_new_tab_name = None;
     state.rename_pane_target = None;
     state.rename_tab_target = Some((ws_idx, tab_idx));
-    // Keep the renamed tab's row visible in the Tabs section if it is listed.
-    state.ensure_tab_section_row_visible(ws_idx, tab_idx);
     state.set_name_input(name);
     state.name_input_replace_on_type = false;
     state.mode = Mode::RenameTab;
 }
 
 pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::PaneId) {
-    let Some(ws) = state.active.and_then(|i| state.workspaces.get(i)) else {
+    let Some(ws_idx) = state.active else {
+        return;
+    };
+    open_rename_pane_in_workspace(state, ws_idx, pane_id);
+}
+
+/// Open the pane rename modal targeting an explicit `(ws_idx, pane_id)`, which
+/// may be a pane in a non-active workspace (used by the sidebar Panes section,
+/// which lists panes across spaces). The RenamePane commit resolves the pane by
+/// its globally unique id, so it renames the right pane regardless of which
+/// workspace is active.
+pub(super) fn open_rename_pane_in_workspace(
+    state: &mut AppState,
+    ws_idx: usize,
+    pane_id: crate::layout::PaneId,
+) {
+    let Some(ws) = state.workspaces.get(ws_idx) else {
         return;
     };
     let Some(pane) = ws.pane_state(pane_id) else {
         return;
     };
-    let terminal = state.terminals.get(&pane.attached_terminal_id);
+    let manual_label = state
+        .terminals
+        .get(&pane.attached_terminal_id)
+        .and_then(|terminal| terminal.manual_label.clone());
     state.creating_new_tab = false;
     state.requested_new_tab_name = None;
     state.rename_pane_target = Some(pane_id);
     state.rename_tab_target = None;
-    let manual_label = terminal.and_then(|t| t.manual_label.clone());
+    // Keep the renamed pane's row visible in the Panes section if it is listed.
+    state.ensure_pane_section_row_visible(pane_id);
     let replace_on_type = manual_label.is_none();
     state.set_name_input(manual_label.unwrap_or_default());
     state.name_input_replace_on_type = replace_on_type;
@@ -587,15 +605,20 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                     }
                 }
                 Mode::RenamePane => {
-                    if let (Some(ws_idx), Some(pane_id)) = (state.active, state.rename_pane_target)
-                    {
-                        if let Some(ws) = state.workspaces.get(ws_idx) {
-                            if let Some(pane) = ws.pane_state(pane_id) {
-                                let terminal_id = pane.attached_terminal_id.clone();
-                                if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
-                                    terminal.set_manual_label(new_name);
-                                    state.mark_session_dirty();
-                                }
+                    // Resolve the pane by its globally unique id across all
+                    // workspaces, so a rename opened from the sidebar Panes
+                    // section renames the right pane even when it lives in a
+                    // non-active workspace.
+                    if let Some(pane_id) = state.rename_pane_target {
+                        let terminal_id = state
+                            .workspaces
+                            .iter()
+                            .find_map(|ws| ws.pane_state(pane_id))
+                            .map(|pane| pane.attached_terminal_id.clone());
+                        if let Some(terminal_id) = terminal_id {
+                            if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
+                                terminal.set_manual_label(new_name);
+                                state.mark_session_dirty();
                             }
                         }
                     }
@@ -1209,9 +1232,8 @@ impl App {
                 );
             }
             Mode::RenameTab if !new_name.is_empty() => {
-                // Prefer an explicit tab target (e.g. Tabs-section or agent-row
-                // double-click); otherwise rename the active workspace's active
-                // tab.
+                // Prefer an explicit tab target (e.g. an agent-row double-click);
+                // otherwise rename the active workspace's active tab.
                 let target = self.state.rename_tab_target.or_else(|| {
                     self.state
                         .active

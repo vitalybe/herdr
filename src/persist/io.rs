@@ -208,8 +208,8 @@ mod tests {
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
             agent_manual_order: None,
-            sidebar_tabs_section_split: None,
-            tab_section_order: None,
+            sidebar_pane_section_split: None,
+            pane_section_order: None,
         }
     }
 

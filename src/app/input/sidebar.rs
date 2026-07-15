@@ -18,85 +18,93 @@ impl AppState {
         if self.sidebar_collapsed || sidebar.width <= 1 || sidebar.height == 0 {
             return Rect::default();
         }
-        crate::ui::tabs_agents_detail_rect(
+        crate::ui::agents_detail_rect(
             sidebar,
             self.sidebar_section_split,
-            self.sidebar_tabs_section_split,
-            crate::ui::sidebar_shows_tab_section(self),
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
         )
     }
 
-    pub(super) fn tab_section_rect(&self) -> Rect {
+    pub(super) fn pane_section_rect(&self) -> Rect {
         let sidebar = self.view.sidebar_rect;
         if self.sidebar_collapsed || sidebar.width <= 1 || sidebar.height == 0 {
             return Rect::default();
         }
-        crate::ui::tab_section_rect(
+        crate::ui::pane_section_rect(
             sidebar,
             self.sidebar_section_split,
-            self.sidebar_tabs_section_split,
-            crate::ui::sidebar_shows_tab_section(self),
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
         )
     }
 
-    /// Resolve a sidebar row to the Tabs-section row it hits, returning the flat
-    /// order index plus the `(ws_idx, tab_idx)` it points at.
-    pub(super) fn tab_section_row_at(&self, row: u16) -> Option<(usize, usize, usize)> {
-        self.view.tab_section_row_areas.iter().find_map(|area| {
+    /// Resolve a sidebar row to the Panes-section row it hits, returning the flat
+    /// order index plus the `(ws_idx, pane_id)` it points at.
+    pub(super) fn pane_section_row_at(
+        &self,
+        row: u16,
+    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+        self.view.pane_section_row_areas.iter().find_map(|area| {
             (row >= area.rect.y && row < area.rect.y + area.rect.height).then_some((
                 area.order_idx,
                 area.ws_idx,
-                area.tab_idx,
+                area.pane_id,
             ))
         })
     }
 
-    /// Resolve a stable [`crate::app::state::TabRef`] back to its live
-    /// `(ws_idx, tab_idx)`, or `None` if the tab no longer exists.
-    pub(super) fn resolve_tab_ref(
+    /// Resolve a stable [`crate::app::state::PaneSectionRef`] back to its live
+    /// `(ws_idx, pane_id)`, or `None` if the pane no longer exists.
+    pub(super) fn resolve_pane_section_ref(
         &self,
-        tab_ref: &crate::app::state::TabRef,
-    ) -> Option<(usize, usize)> {
+        pane_ref: &crate::app::state::PaneSectionRef,
+    ) -> Option<(usize, crate::layout::PaneId)> {
         let ws_idx = self
             .workspaces
             .iter()
-            .position(|ws| ws.id == tab_ref.workspace_id)?;
-        let tab_idx = self.workspaces[ws_idx]
-            .tabs
+            .position(|ws| ws.id == pane_ref.workspace_id)?;
+        let pane_id = self.workspaces[ws_idx]
+            .public_pane_numbers
             .iter()
-            .position(|tab| tab.number == tab_ref.tab_number)?;
-        Some((ws_idx, tab_idx))
+            .find(|(_, number)| **number == pane_ref.pane_number)
+            .map(|(pane_id, _)| *pane_id)?;
+        Some((ws_idx, pane_id))
     }
 
-    /// Resolve a sidebar row to the stable [`crate::app::state::TabRef`] of the
-    /// Tabs-section row it hits (used to pick up a tab for a reorder drag).
-    pub(super) fn tab_section_ref_at_row(&self, row: u16) -> Option<crate::app::state::TabRef> {
-        let (_, ws_idx, tab_idx) = self.tab_section_row_at(row)?;
+    /// Resolve a sidebar row to the stable [`crate::app::state::PaneSectionRef`]
+    /// of the Panes-section row it hits (used to pick up a pane for a reorder
+    /// drag).
+    pub(super) fn pane_section_ref_at_row(
+        &self,
+        row: u16,
+    ) -> Option<crate::app::state::PaneSectionRef> {
+        let (_, ws_idx, pane_id) = self.pane_section_row_at(row)?;
         let ws = self.workspaces.get(ws_idx)?;
-        let tab = ws.tabs.get(tab_idx)?;
-        Some(crate::app::state::TabRef {
+        let pane_number = ws.public_pane_number(pane_id)?;
+        Some(crate::app::state::PaneSectionRef {
             workspace_id: ws.id.clone(),
-            tab_number: tab.number,
+            pane_number,
         })
     }
 
-    /// Flat drop index for a Tabs-section reorder at sidebar `row`, mirroring the
+    /// Flat drop index for a Panes-section reorder at sidebar `row`, mirroring the
     /// agent-panel drop-index geometry (upper half inserts before, lower half
     /// after; the gap and area below the last row insert at the end).
-    pub(super) fn tab_section_drop_index_at_row(&self, row: u16) -> Option<usize> {
-        let tabs_area = self.tab_section_rect();
+    pub(super) fn pane_section_drop_index_at_row(&self, row: u16) -> Option<usize> {
+        let pane_section_area = self.pane_section_rect();
         let has_scrollbar = crate::ui::should_show_scrollbar(
-            crate::ui::tab_section_scroll_metrics(self, tabs_area),
+            crate::ui::pane_section_scroll_metrics(self, pane_section_area),
         );
-        let body = crate::ui::tab_section_body_rect(tabs_area, has_scrollbar);
+        let body = crate::ui::pane_section_body_rect(pane_section_area, has_scrollbar);
         if body.width == 0 || body.height == 0 {
             return None;
         }
         if row < body.y || row >= body.y + body.height {
             return None;
         }
-        let num_entries = crate::ui::sidebar_tab_entries(self).len();
-        let areas = &self.view.tab_section_row_areas;
+        let num_entries = crate::ui::sidebar_pane_section_entries(self).len();
+        let areas = &self.view.pane_section_row_areas;
         for area in areas {
             let slot_bottom = area.rect.y.saturating_add(area.rect.height);
             if row < slot_bottom {
@@ -266,13 +274,13 @@ impl AppState {
     pub(super) fn scroll_sidebar_band(&mut self, row: u16, delta: i16) {
         let over =
             |area: Rect| area != Rect::default() && row >= area.y && row < area.y + area.height;
-        let tab_area = self.tab_section_rect();
+        let tab_area = self.pane_section_rect();
         let agent_area = self.agent_panel_rect();
         if over(tab_area) {
-            if crate::ui::should_show_scrollbar(crate::ui::tab_section_scroll_metrics(
+            if crate::ui::should_show_scrollbar(crate::ui::pane_section_scroll_metrics(
                 self, tab_area,
             )) {
-                self.scroll_tab_section(delta);
+                self.scroll_pane_section(delta);
             }
         } else if over(agent_area) {
             if crate::ui::should_show_scrollbar(crate::ui::agent_panel_scroll_metrics(
@@ -290,14 +298,14 @@ impl AppState {
         }
     }
 
-    pub(super) fn tab_section_scrollbar_target_at(
+    pub(super) fn pane_section_scrollbar_target_at(
         &self,
         col: u16,
         row: u16,
     ) -> Option<ScrollbarClickTarget> {
-        let area = self.tab_section_rect();
-        let metrics = crate::ui::tab_section_scroll_metrics(self, area);
-        let track = crate::ui::tab_section_scrollbar_rect(self, area)?;
+        let area = self.pane_section_rect();
+        let metrics = crate::ui::pane_section_scroll_metrics(self, area);
+        let track = crate::ui::pane_section_scrollbar_rect(self, area)?;
         if col < track.x
             || col >= track.x + track.width
             || row < track.y
@@ -314,14 +322,14 @@ impl AppState {
         }
     }
 
-    pub(super) fn tab_section_offset_for_drag_row(
+    pub(super) fn pane_section_offset_for_drag_row(
         &self,
         row: u16,
         grab_row_offset: u16,
     ) -> Option<usize> {
-        let area = self.tab_section_rect();
-        let metrics = crate::ui::tab_section_scroll_metrics(self, area);
-        let track = crate::ui::tab_section_scrollbar_rect(self, area)?;
+        let area = self.pane_section_rect();
+        let metrics = crate::ui::pane_section_scroll_metrics(self, area);
+        let track = crate::ui::pane_section_scrollbar_rect(self, area)?;
         Some(crate::ui::scrollbar_offset_from_drag_row(
             metrics,
             track,
@@ -330,24 +338,24 @@ impl AppState {
         ))
     }
 
-    pub(super) fn set_tab_section_offset_from_bottom(&mut self, offset_from_bottom: usize) {
-        let area = self.tab_section_rect();
-        let metrics = crate::ui::tab_section_scroll_metrics(self, area);
-        self.tab_section_scroll = metrics
+    pub(super) fn set_pane_section_offset_from_bottom(&mut self, offset_from_bottom: usize) {
+        let area = self.pane_section_rect();
+        let metrics = crate::ui::pane_section_scroll_metrics(self, area);
+        self.pane_section_scroll = metrics
             .max_offset_from_bottom
             .saturating_sub(offset_from_bottom);
     }
 
-    pub(super) fn scroll_tab_section(&mut self, delta: i16) {
-        let area = self.tab_section_rect();
-        let max_scroll = crate::ui::tab_section_scroll_metrics(self, area).max_offset_from_bottom;
+    pub(super) fn scroll_pane_section(&mut self, delta: i16) {
+        let area = self.pane_section_rect();
+        let max_scroll = crate::ui::pane_section_scroll_metrics(self, area).max_offset_from_bottom;
         if delta.is_negative() {
-            self.tab_section_scroll = self
-                .tab_section_scroll
+            self.pane_section_scroll = self
+                .pane_section_scroll
                 .saturating_sub(delta.unsigned_abs() as usize);
         } else {
-            self.tab_section_scroll = self
-                .tab_section_scroll
+            self.pane_section_scroll = self
+                .pane_section_scroll
                 .saturating_add(delta as usize)
                 .min(max_scroll);
         }
@@ -461,7 +469,7 @@ impl AppState {
     }
 
     /// Return which section divider (if any) sits under the cursor: 0 for the
-    /// Spaces/Tabs divider, 1 for the Tabs/Agents divider.
+    /// Spaces/Panes divider, 1 for the Panes/Agents divider.
     pub(super) fn on_sidebar_section_divider(&self, col: u16, row: u16) -> Option<usize> {
         if self.sidebar_collapsed {
             return None;
@@ -479,11 +487,11 @@ impl AppState {
         )) {
             return Some(0);
         }
-        if hits(crate::ui::sidebar_tabs_section_divider_rect(
+        if hits(crate::ui::sidebar_pane_section_divider_rect(
             self.view.sidebar_rect,
             self.sidebar_section_split,
-            self.sidebar_tabs_section_split,
-            crate::ui::sidebar_shows_tab_section(self),
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
         )) {
             return Some(1);
         }
@@ -503,7 +511,7 @@ impl AppState {
                 self.mark_session_dirty();
             }
             1 => {
-                // The Tabs/Agents divider lives inside the region below the Spaces
+                // The Panes/Agents divider lives inside the region below the Spaces
                 // band; express its ratio relative to that region.
                 let (_, rest) =
                     crate::ui::expanded_sidebar_sections(sidebar, self.sidebar_section_split);
@@ -512,7 +520,7 @@ impl AppState {
                 }
                 let relative_y = row.saturating_sub(rest.y);
                 let ratio = (relative_y as f32) / (rest.height as f32);
-                self.sidebar_tabs_section_split = ratio.clamp(0.1, 0.9);
+                self.sidebar_pane_section_split = ratio.clamp(0.1, 0.9);
                 self.mark_session_dirty();
             }
             _ => {}
@@ -2051,50 +2059,52 @@ mod tests {
     }
 
     #[test]
-    fn tab_section_drop_index_geometry() {
+    fn pane_section_drop_index_geometry() {
         let mut app = app_with_two_tab_rows();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
 
-        let areas = app.state.view.tab_section_row_areas.clone();
+        let areas = app.state.view.pane_section_row_areas.clone();
         assert_eq!(
             areas.len(),
             2,
-            "both plain tabs render as Tabs-section rows"
+            "both plain tabs render as Panes-section rows"
         );
         let first = areas[0].rect;
         let last = areas[1].rect;
 
         // Upper half of the first row inserts before it; lower half after it.
-        assert_eq!(app.state.tab_section_drop_index_at_row(first.y), Some(0));
+        assert_eq!(app.state.pane_section_drop_index_at_row(first.y), Some(0));
         assert_eq!(
             app.state
-                .tab_section_drop_index_at_row(first.y + first.height - 1),
+                .pane_section_drop_index_at_row(first.y + first.height - 1),
             Some(1)
         );
         // The gap row below the last entry inserts at the end.
         assert_eq!(
             app.state
-                .tab_section_drop_index_at_row(last.y + last.height),
+                .pane_section_drop_index_at_row(last.y + last.height),
             Some(2)
         );
     }
 
     #[test]
-    fn tab_row_double_click_opens_tab_rename() {
+    fn pane_row_double_click_opens_pane_rename() {
         let mut app = app_with_two_tab_rows();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
-        let row = app.state.view.tab_section_row_areas[0].rect.y;
+        let area = app.state.view.pane_section_row_areas[0];
+        let row = area.rect.y;
+        let pane_id = area.pane_id;
         let col = 2;
 
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
         assert_eq!(app.state.mode, Mode::Terminal);
-        assert!(app.last_tab_row_click.is_some());
+        assert!(app.last_pane_section_row_click.is_some());
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), col, row));
 
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
-        assert_eq!(app.state.mode, Mode::RenameTab);
-        assert_eq!(app.state.rename_tab_target, Some((0, 0)));
-        assert!(app.last_tab_row_click.is_none());
+        assert_eq!(app.state.mode, Mode::RenamePane);
+        assert_eq!(app.state.rename_pane_target, Some(pane_id));
+        assert!(app.last_pane_section_row_click.is_none());
     }
 
     fn app_with_many_tab_rows(n: usize) -> App {
@@ -2112,37 +2122,46 @@ mod tests {
     }
 
     #[test]
-    fn tab_section_scroll_metrics_report_overflow() {
+    fn pane_section_scroll_metrics_report_overflow() {
         let mut app = app_with_many_tab_rows(8);
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
 
         let metrics =
-            crate::ui::tab_section_scroll_metrics(&app.state, app.state.tab_section_rect());
-        assert_eq!(crate::ui::sidebar_tab_entries(&app.state).len(), 8);
+            crate::ui::pane_section_scroll_metrics(&app.state, app.state.pane_section_rect());
+        assert_eq!(crate::ui::sidebar_pane_section_entries(&app.state).len(), 8);
         assert!(metrics.viewport_rows >= 1 && metrics.viewport_rows < 8);
         assert!(metrics.max_offset_from_bottom > 0);
         assert!(crate::ui::should_show_scrollbar(metrics));
     }
 
     #[test]
-    fn tab_section_hit_test_accounts_for_scroll() {
+    fn pane_section_hit_test_accounts_for_scroll() {
         let mut app = app_with_many_tab_rows(8);
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
         assert!(crate::ui::should_show_scrollbar(
-            crate::ui::tab_section_scroll_metrics(&app.state, app.state.tab_section_rect())
+            crate::ui::pane_section_scroll_metrics(&app.state, app.state.pane_section_rect())
         ));
 
-        // At scroll 0 the top visible row maps to the first tab.
-        let top_y = app.state.view.tab_section_row_areas[0].rect.y;
-        assert_eq!(app.state.tab_section_row_at(top_y), Some((0, 0, 0)));
+        // At scroll 0 the top visible row maps to the first pane.
+        let top_area = app.state.view.pane_section_row_areas[0];
+        assert_eq!(
+            app.state.pane_section_row_at(top_area.rect.y),
+            Some((0, 0, top_area.pane_id))
+        );
 
-        // After scrolling down, the same screen row maps to a later tab, and the
+        // After scrolling down, the same screen row maps to a later pane, and the
         // scroll-aware drop index follows the visible order.
-        app.state.tab_section_scroll = 2;
+        app.state.pane_section_scroll = 2;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        let top = app.state.view.tab_section_row_areas[0];
+        let top = app.state.view.pane_section_row_areas[0];
         assert_eq!(top.order_idx, 2);
-        assert_eq!(app.state.tab_section_row_at(top.rect.y), Some((2, 0, 2)));
-        assert_eq!(app.state.tab_section_drop_index_at_row(top.rect.y), Some(2));
+        assert_eq!(
+            app.state.pane_section_row_at(top.rect.y),
+            Some((2, 0, top.pane_id))
+        );
+        assert_eq!(
+            app.state.pane_section_drop_index_at_row(top.rect.y),
+            Some(2)
+        );
     }
 }

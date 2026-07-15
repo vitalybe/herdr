@@ -307,6 +307,8 @@ pub struct Keybinds {
     pub next_workspace: ActionKeybinds,
     pub previous_agent: ActionKeybinds,
     pub next_agent: ActionKeybinds,
+    pub previous_pane: ActionKeybinds,
+    pub next_pane: ActionKeybinds,
     pub focus_agent: Vec<IndexedKeybind>,
     pub new_tab: ActionKeybinds,
     pub rename_tab: ActionKeybinds,
@@ -470,6 +472,8 @@ impl Config {
             next_workspace: empty_action!(),
             previous_agent: empty_action!(),
             next_agent: empty_action!(),
+            previous_pane: empty_action!(),
+            next_pane: empty_action!(),
             focus_agent: Vec::new(),
             new_tab: empty_action!(),
             rename_tab: empty_action!(),
@@ -597,6 +601,8 @@ impl Config {
             apply_action!(keybinds.next_workspace, next_workspace, source);
             apply_action!(keybinds.previous_agent, previous_agent, source);
             apply_action!(keybinds.next_agent, next_agent, source);
+            apply_action!(keybinds.previous_pane, previous_pane, source);
+            apply_action!(keybinds.next_pane, next_pane, source);
             apply_indexed!(
                 keybinds.focus_agent,
                 focus_agent,
@@ -1542,6 +1548,57 @@ next_tab = "prefix+n"
     fn back_and_forth_keybinds_are_unset_by_default() {
         let kb = Config::default().keybinds();
         assert!(kb.last_pane.bindings.is_empty());
+    }
+
+    #[test]
+    fn pane_section_nav_keybinds_are_unset_by_default() {
+        let kb = Config::default().keybinds();
+        assert!(kb.previous_pane.bindings.is_empty());
+        assert!(kb.next_pane.bindings.is_empty());
+    }
+
+    #[test]
+    fn pane_section_nav_keybinds_parse_from_config() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+previous_pane = "ctrl+shift+up"
+next_pane = "ctrl+shift+down"
+"#,
+        )
+        .unwrap();
+        let kb = config.keybinds();
+        assert_eq!(
+            binding_triggers(&kb.previous_pane),
+            vec![BindingTrigger::Direct((
+                KeyCode::Up,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ))]
+        );
+        assert_eq!(
+            binding_triggers(&kb.next_pane),
+            vec![BindingTrigger::Direct((
+                KeyCode::Down,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ))]
+        );
+    }
+
+    #[test]
+    fn unknown_keybinding_field_is_ignored_not_rejected() {
+        // An unknown/future binding name must not fail the whole config load, so
+        // adding keys such as `next_pane` stays safe on binaries that predate
+        // them: older binaries silently ignore the field.
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+some_future_binding = "ctrl+shift+f10"
+next_tab = "prefix+n"
+"#,
+        )
+        .expect("unknown keys should be ignored, not rejected");
+        let kb = config.keybinds();
+        assert_eq!(kb.next_tab.prefix_rhs_label().as_deref(), Some("n"));
     }
 
     #[test]

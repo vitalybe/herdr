@@ -9,6 +9,7 @@
 - Added `herdr api schema` to inspect the bundled socket API schema, with `--json` for the full JSON Schema document and `--output PATH` for file output.
 - Added `herdr terminal session observe` for read-only live ANSI terminal streams that bridge processes can consume as newline-delimited JSON.
 - Added `herdr terminal session control` for bridge processes that need live ANSI frames plus input, resize, scroll, release, and takeover authority.
+- Added optional `keys.previous_pane` and `keys.next_pane` bindings for cycling focus through the sidebar panes section. They are unset by default.
 
 ### Changed
 - Double-clicking an agent in the sidebar now renames its tab (matching the Tabs section) instead of renaming the agent.

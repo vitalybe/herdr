@@ -1590,6 +1590,69 @@ impl AppState {
         self.focus_agent_entry(target_idx);
     }
 
+    pub fn next_pane(&mut self) {
+        self.cycle_pane_section_entry(true);
+    }
+
+    pub fn previous_pane(&mut self) {
+        self.cycle_pane_section_entry(false);
+    }
+
+    /// Non-agent panes in Panes-section order (line-splits excluded), used for
+    /// keyboard cycling so navigation follows exactly what the section shows.
+    /// Mirrors [`Self::visible_agent_targets`].
+    fn pane_section_targets(&self) -> Vec<(usize, crate::layout::PaneId)> {
+        crate::ui::sidebar_pane_section_entries(self)
+            .into_iter()
+            .map(|entry| (entry.ws_idx, entry.pane_id))
+            .collect()
+    }
+
+    /// Focus the Panes-section entry at `idx`, switching workspace and tab as a
+    /// click on that row would, and scroll it into view. Mirrors
+    /// [`Self::focus_agent_entry`].
+    fn focus_pane_section_entry(&mut self, idx: usize) -> bool {
+        let targets = self.pane_section_targets();
+        let Some(&(ws_idx, pane_id)) = targets.get(idx) else {
+            return false;
+        };
+
+        if self.active == Some(ws_idx) && self.workspaces[ws_idx].focused_pane_id() == Some(pane_id)
+        {
+            self.ensure_pane_section_row_visible(pane_id);
+            return true;
+        }
+
+        if self.focus_pane_in_workspace(ws_idx, pane_id) {
+            self.ensure_pane_section_row_visible(pane_id);
+            return true;
+        }
+        false
+    }
+
+    fn cycle_pane_section_entry(&mut self, forward: bool) {
+        let targets = self.pane_section_targets();
+        if targets.is_empty() {
+            return;
+        }
+
+        let focused = self
+            .active
+            .and_then(|idx| self.workspaces.get(idx))
+            .and_then(crate::workspace::Workspace::focused_pane_id);
+        let current_idx =
+            focused.and_then(|pane_id| targets.iter().position(|(_, target)| *target == pane_id));
+        let target_idx = match (current_idx, forward) {
+            (Some(idx), true) => (idx + 1) % targets.len(),
+            (Some(0), false) => targets.len() - 1,
+            (Some(idx), false) => idx - 1,
+            (None, true) => 0,
+            (None, false) => targets.len() - 1,
+        };
+
+        self.focus_pane_section_entry(target_idx);
+    }
+
     /// Ensure the agent-panel row for `pane_id` is scrolled into view, mapping the
     /// pane to its row index in the full (agents + line-splits) row list.
     pub(crate) fn ensure_agent_panel_pane_visible(&mut self, pane_id: crate::layout::PaneId) {
@@ -3927,6 +3990,107 @@ mod tests {
         state.previous_agent();
         assert_eq!(state.active, Some(0));
         assert_eq!(state.workspaces[0].focused_pane_id(), Some(first_second));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn next_pane_cycles_pane_section_entries_with_wrap() {
+        // Two workspaces: ws0 has a split tab (two non-agent panes), ws1 has one.
+        let mut first = Workspace::test_new("one");
+        let first_root = first.tabs[0].root_pane;
+        first.test_split(Direction::Horizontal);
+        first.tabs[0].layout.focus_pane(first_root);
+        let second = Workspace::test_new("two");
+
+        let mut state = AppState::test_new();
+        state.workspaces = vec![first, second];
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.selected = 0;
+        state.mode = Mode::Terminal;
+        state.reconcile_pane_section_order();
+
+        // Drive cycling against whatever order the Panes section shows.
+        let order: Vec<(usize, crate::layout::PaneId)> =
+            crate::ui::sidebar_pane_section_entries(&state)
+                .iter()
+                .map(|entry| (entry.ws_idx, entry.pane_id))
+                .collect();
+        assert_eq!(order.len(), 3, "two panes in ws0 plus one in ws1");
+
+        // Anchor focus on the first section entry.
+        state.focus_pane_in_workspace(order[0].0, order[0].1);
+        assert_eq!(state.active, Some(order[0].0));
+        assert_eq!(
+            state.workspaces[order[0].0].focused_pane_id(),
+            Some(order[0].1)
+        );
+
+        state.next_pane();
+        assert_eq!(state.active, Some(order[1].0));
+        assert_eq!(
+            state.workspaces[order[1].0].focused_pane_id(),
+            Some(order[1].1)
+        );
+
+        state.next_pane();
+        assert_eq!(state.active, Some(order[2].0));
+        assert_eq!(
+            state.workspaces[order[2].0].focused_pane_id(),
+            Some(order[2].1)
+        );
+
+        // Forward from the last entry wraps to the first.
+        state.next_pane();
+        assert_eq!(state.active, Some(order[0].0));
+        assert_eq!(
+            state.workspaces[order[0].0].focused_pane_id(),
+            Some(order[0].1)
+        );
+
+        // Backward from the first entry wraps to the last.
+        state.previous_pane();
+        assert_eq!(state.active, Some(order[2].0));
+        assert_eq!(
+            state.workspaces[order[2].0].focused_pane_id(),
+            Some(order[2].1)
+        );
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn pane_section_nav_is_noop_when_section_empty() {
+        // The workspace's only pane is an agent, so the Panes section is empty.
+        let mut state = app_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        mark_agent(&mut state, 0, 0, root);
+        state.reconcile_pane_section_order();
+        assert!(crate::ui::sidebar_pane_section_entries(&state).is_empty());
+
+        state.next_pane();
+        assert_eq!(state.active, Some(0));
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(root));
+
+        state.previous_pane();
+        assert_eq!(state.active, Some(0));
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(root));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn pane_section_nav_with_single_entry_keeps_focus() {
+        let mut state = app_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        state.reconcile_pane_section_order();
+        assert_eq!(crate::ui::sidebar_pane_section_entries(&state).len(), 1);
+
+        state.next_pane();
+        assert_eq!(state.active, Some(0));
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(root));
+
+        state.previous_pane();
+        assert_eq!(state.active, Some(0));
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(root));
         state.assert_invariants_for_test();
     }
 

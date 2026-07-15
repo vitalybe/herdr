@@ -192,12 +192,16 @@ Optional actions are unset by default. Bind them with `prefix+` for prefix-mode 
 previous_workspace = "prefix+shift+left"
 next_workspace = "prefix+shift+right"
 last_pane = "prefix+tab"
+previous_pane = "ctrl+shift+up"
+next_pane = "ctrl+shift+down"
 open_worktree = "prefix+shift+o"
 remove_worktree = "prefix+alt+d"
 next_tab = ["prefix+n", "ctrl+alt+]"]
 ```
 
 `last_pane` switches back to the last focused pane across workspaces and tabs. It is unset by default because the tmux-style pane binding `prefix+l` is already used for pane-right focus.
+
+`previous_pane` and `next_pane` cycle focus through the sidebar panes section, one entry per non-agent pane across all spaces. Focusing an entry switches to that pane's space and tab, exactly like clicking the row. Cycling wraps around and skips line-split dividers. They are unset by default; bind them with a modified chord such as `ctrl+shift+up` and `ctrl+shift+down`.
 
 `remote_image_paste` is only active in `herdr --remote`. It is the local-client shortcut that sends a local clipboard image to the remote pane. Set it to an empty string to disable the raw-key shortcut; terminal paste-image signals still work when the outer terminal sends them.
 

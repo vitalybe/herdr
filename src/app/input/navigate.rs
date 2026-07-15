@@ -216,6 +216,20 @@ impl App {
                     leave_navigate_mode(&mut self.state);
                 }
             }
+            NavigateAction::PreviousPane => {
+                if let Some((_idx, ws_idx, pane_id)) = self.relative_pane_section_entry(false) {
+                    self.focus_pane_internal_via_api(ws_idx, pane_id);
+                    self.state.ensure_pane_section_row_visible(pane_id);
+                    leave_navigate_mode(&mut self.state);
+                }
+            }
+            NavigateAction::NextPane => {
+                if let Some((_idx, ws_idx, pane_id)) = self.relative_pane_section_entry(true) {
+                    self.focus_pane_internal_via_api(ws_idx, pane_id);
+                    self.state.ensure_pane_section_row_visible(pane_id);
+                    leave_navigate_mode(&mut self.state);
+                }
+            }
             NavigateAction::NewTab => {
                 if self.state.active.is_some() {
                     if self.state.prompt_new_tab_name {
@@ -668,6 +682,37 @@ impl App {
 
     fn relative_agent_entry(&self, forward: bool) -> Option<(usize, usize, crate::layout::PaneId)> {
         let entries = crate::ui::agent_panel_entries(&self.state);
+        if entries.is_empty() {
+            return None;
+        }
+        let focused = self
+            .state
+            .active
+            .and_then(|idx| self.state.workspaces.get(idx))
+            .and_then(crate::workspace::Workspace::focused_pane_id);
+        let current_idx = entries
+            .iter()
+            .position(|entry| Some(entry.pane_id) == focused)
+            .unwrap_or(0);
+        let next_idx = if forward {
+            (current_idx + 1) % entries.len()
+        } else if current_idx == 0 {
+            entries.len() - 1
+        } else {
+            current_idx - 1
+        };
+        let target = entries.get(next_idx)?;
+        Some((next_idx, target.ws_idx, target.pane_id))
+    }
+
+    /// Target entry when cycling the sidebar panes section forward/backward from
+    /// the focused pane. Mirrors [`Self::relative_agent_entry`] for the Panes
+    /// section (non-agent panes, line-splits excluded).
+    fn relative_pane_section_entry(
+        &self,
+        forward: bool,
+    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+        let entries = crate::ui::sidebar_pane_section_entries(&self.state);
         if entries.is_empty() {
             return None;
         }
@@ -1224,6 +1269,8 @@ pub(crate) enum NavigateAction {
     NextWorkspace,
     PreviousAgent,
     NextAgent,
+    PreviousPane,
+    NextPane,
     NewTab,
     RenameTab,
     PreviousTab,
@@ -1329,6 +1376,8 @@ fn action_for_key(
         (&kb.next_workspace, NavigateAction::NextWorkspace),
         (&kb.previous_agent, NavigateAction::PreviousAgent),
         (&kb.next_agent, NavigateAction::NextAgent),
+        (&kb.previous_pane, NavigateAction::PreviousPane),
+        (&kb.next_pane, NavigateAction::NextPane),
         (&kb.new_tab, NavigateAction::NewTab),
         (&kb.rename_tab, NavigateAction::RenameTab),
         (&kb.previous_tab, NavigateAction::PreviousTab),
@@ -1484,6 +1533,14 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::NextAgent => {
             state.next_agent();
+            leave_navigate_mode(state);
+        }
+        NavigateAction::PreviousPane => {
+            state.previous_pane();
+            leave_navigate_mode(state);
+        }
+        NavigateAction::NextPane => {
+            state.next_pane();
             leave_navigate_mode(state);
         }
         NavigateAction::NewTab => {
@@ -2253,6 +2310,19 @@ navigate_pane_right = "ctrl+l"
         );
 
         assert_eq!(action, Some(NavigateAction::NextAgent));
+    }
+
+    #[test]
+    fn terminal_direct_pane_section_shortcut_maps_to_navigation_action() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds.next_pane = crate::config::ActionKeybinds::direct("ctrl+shift+down");
+
+        let action = terminal_direct_navigation_action(
+            &state,
+            TerminalKey::new(KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        );
+
+        assert_eq!(action, Some(NavigateAction::NextPane));
     }
 
     #[test]

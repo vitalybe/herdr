@@ -1655,25 +1655,31 @@ fn render_line_split_row(frame: &mut Frame, body: Rect, y: u16, name: &str, p: &
     if width == 0 {
         return;
     }
-    let style = Style::default().fg(p.surface_dim);
+    let dash_style = Style::default().fg(p.surface_dim);
+    // The split name uses the same color as the workspace name in agent rows so
+    // the label stays legible; the surrounding rule stays subtly dim.
+    let name_style = Style::default().fg(agent_row_space_color());
     let trimmed = name.trim();
-    let text = if trimmed.is_empty() {
-        "─".repeat(width)
+    let line = if trimmed.is_empty() {
+        Line::from(Span::styled("─".repeat(width), dash_style))
     } else {
-        let label = format!("── {trimmed} ");
-        let label_width = display_width(&label);
-        if label_width >= width {
-            truncate_end(&label, width)
+        let prefix = "── ";
+        let label = format!("{trimmed} ");
+        let used = display_width(prefix) + display_width(&label);
+        if used >= width {
+            Line::from(Span::styled(
+                truncate_end(&format!("{prefix}{label}"), width),
+                name_style,
+            ))
         } else {
-            let mut text = label;
-            text.push_str(&"─".repeat(width - label_width));
-            text
+            Line::from(vec![
+                Span::styled(prefix.to_string(), dash_style),
+                Span::styled(label, name_style),
+                Span::styled("─".repeat(width - used), dash_style),
+            ])
         }
     };
-    frame.render_widget(
-        Paragraph::new(Span::styled(text, style)),
-        Rect::new(body.x, y, body.width, 1),
-    );
+    frame.render_widget(Paragraph::new(line), Rect::new(body.x, y, body.width, 1));
 }
 
 fn render_agent_detail(

@@ -1695,14 +1695,20 @@ fn pane_section_row_name(
     row_pane_id: crate::layout::PaneId,
     tab_idx: usize,
 ) -> String {
+    let tab_name = ws
+        .tab_display_name(tab_idx)
+        .unwrap_or_else(|| (tab_idx + 1).to_string());
     let pane_name = ws.pane_state(row_pane_id).and_then(|pane| {
         app.terminals
             .get(&pane.attached_terminal_id)
             .and_then(|terminal| terminal.border_label(false))
     });
-    pane_name
-        .or_else(|| ws.tab_display_name(tab_idx))
-        .unwrap_or_else(|| (tab_idx + 1).to_string())
+    // When the pane has its own name, show both "<pane> • <tab>"; otherwise the
+    // tab name stands alone.
+    match pane_name {
+        Some(pane_name) => format!("{pane_name} • {tab_name}"),
+        None => tab_name,
+    }
 }
 
 /// Render the Panes section: every non-agent pane across all spaces as a

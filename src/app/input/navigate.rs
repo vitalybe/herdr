@@ -324,6 +324,10 @@ impl App {
                     leave_navigate_mode(&mut self.state);
                 }
             }
+            NavigateAction::UndoClose => {
+                self.state.request_undo_close = true;
+                leave_navigate_mode(&mut self.state);
+            }
             NavigateAction::RenamePane => {
                 if let Some(pane_id) = self
                     .state
@@ -1425,6 +1429,7 @@ pub(crate) enum NavigateAction {
     MoveTabPrevious,
     MoveTabNext,
     CloseTab,
+    UndoClose,
     RenamePane,
     FocusPaneLeft,
     FocusPaneDown,
@@ -1572,6 +1577,7 @@ fn non_indexed_action_for_key(
         (&kb.move_tab_previous, NavigateAction::MoveTabPrevious),
         (&kb.move_tab_next, NavigateAction::MoveTabNext),
         (&kb.close_tab, NavigateAction::CloseTab),
+        (&kb.undo_close, NavigateAction::UndoClose),
         (&kb.rename_pane, NavigateAction::RenamePane),
         (&kb.edit_scrollback, NavigateAction::EditScrollback),
         (&kb.copy_mode, NavigateAction::CopyMode),
@@ -1784,6 +1790,10 @@ pub(super) fn execute_navigate_action_in_context(
             if !state.close_tab() {
                 leave_navigate_mode(state);
             }
+        }
+        NavigateAction::UndoClose => {
+            state.request_undo_close = true;
+            leave_navigate_mode(state);
         }
         NavigateAction::RenamePane => {
             if let Some(pane_id) = state

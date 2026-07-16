@@ -1006,6 +1006,7 @@ mod tests {
                 g: 20,
                 b: 20,
             }),
+            ..Default::default()
         };
         let _ = terminal_id;
         app

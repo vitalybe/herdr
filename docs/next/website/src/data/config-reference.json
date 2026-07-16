@@ -680,6 +680,12 @@
           "description": "Close the active tab."
         },
         {
+          "key": "keys.undo_close",
+          "type": "keybinding",
+          "default": "\"prefix+u\"",
+          "description": "Reopen the most recently closed tab or workspace."
+        },
+        {
           "key": "keys.rename_pane",
           "type": "keybinding",
           "default": "\"prefix+shift+p\"",

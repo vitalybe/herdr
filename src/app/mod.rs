@@ -27,6 +27,7 @@ mod tab_bar_status;
 mod terminal_targets;
 mod terminal_titles;
 mod theme_sync;
+mod undo_close;
 mod window_title;
 mod worktrees;
 
@@ -564,6 +565,8 @@ impl App {
             detach_requested: false,
             request_new_workspace: false,
             request_new_tab: false,
+            request_undo_close: false,
+            closed_entries: Vec::new(),
             request_new_linked_worktree: None,
             request_open_existing_worktree: None,
             request_new_workspace_cwd: None,
@@ -1019,6 +1022,13 @@ impl App {
                     },
                 );
                 needs_render = true;
+            }
+
+            if self.state.request_undo_close {
+                self.state.request_undo_close = false;
+                if self.undo_last_close() {
+                    needs_render = true;
+                }
             }
 
             if let Some(ws_idx) = self.state.request_new_linked_worktree.take() {
@@ -6645,6 +6655,7 @@ last_pane = "prefix+tab"
             enabled: true,
             platforms: None,
             build: vec![],
+            startup: vec![],
             actions: vec![],
             events: vec![],
             panes: vec![],
@@ -6667,10 +6678,7 @@ last_pane = "prefix+tab"
             selected: 0,
             sidebar_width: None,
             sidebar_section_split: None,
-            sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
-            agent_manual_order: None,
-            pane_section_order: None,
         };
         let mut imports = std::collections::HashMap::new();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

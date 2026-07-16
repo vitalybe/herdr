@@ -273,6 +273,7 @@ impl App {
             return encode_success(id, ResponseResult::Ok {});
         }
 
+        self.state.capture_closed_tab(ws_idx, tab_idx);
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return tab_not_found(id, &target.tab_id);
         };

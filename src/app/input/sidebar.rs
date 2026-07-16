@@ -2174,6 +2174,29 @@ mod tests {
     }
 
     #[test]
+    fn clicking_agent_line_split_toggles_collapse() {
+        use crate::app::state::{line_split_collapse_key, LineSplitSection};
+        let mut app = app_with_two_agents();
+        let split = app
+            .state
+            .agent_manual_order
+            .new_line_split("scheduled".to_string(), 0);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let sidebar = app.state.view.sidebar_rect;
+        let split_row = (sidebar.y..sidebar.y + sidebar.height)
+            .find(|&r| app.state.agent_panel_line_split_at_row(r) == Some(split))
+            .expect("line-split row present");
+        let key = line_split_collapse_key(LineSplitSection::Agents, split);
+
+        // A plain click (no drag) on the line-split row collapses it.
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, split_row));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, split_row));
+        assert!(app.state.collapsed_line_split_keys.contains(&key));
+        assert!(app.state.agent_press.is_none());
+    }
+
+    #[test]
     fn clicking_sort_toggle_cycles_spaces_priority_manual() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![Workspace::test_new("one")];
@@ -2321,6 +2344,34 @@ mod tests {
         );
         // A left-click on a split row is a focus no-op (no pane resolved).
         assert!(app.state.pane_section_row_at(split_row.rect.y).is_none());
+    }
+
+    #[test]
+    fn clicking_pane_section_line_split_toggles_collapse() {
+        use crate::app::state::{line_split_collapse_key, LineSplitSection, PaneSectionRowContent};
+        let mut app = app_with_two_tab_rows();
+        let split = app
+            .state
+            .pane_section_order
+            .new_line_split("scheduled".to_string(), 0);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
+
+        let split_row = app
+            .state
+            .view
+            .pane_section_row_areas
+            .iter()
+            .find(|area| matches!(area.content, PaneSectionRowContent::LineSplit { .. }))
+            .expect("split row present")
+            .rect
+            .y;
+        let key = line_split_collapse_key(LineSplitSection::Panes, split);
+
+        // A plain click (no drag) on the line-split row collapses it.
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, split_row));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, split_row));
+        assert!(app.state.collapsed_line_split_keys.contains(&key));
+        assert!(app.state.pane_section_press.is_none());
     }
 
     #[test]

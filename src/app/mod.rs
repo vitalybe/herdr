@@ -472,6 +472,7 @@ impl App {
             sidebar_pane_section_split,
             collapsed_space_keys,
             collapsed_agent_keys,
+            collapsed_line_split_keys,
             agent_manual_order,
             pane_section_order,
         ) = if no_session {
@@ -483,6 +484,7 @@ impl App {
                 state::SidebarWidthSource::ConfigDefault,
                 0.5_f32,
                 0.5_f32,
+                std::collections::HashSet::new(),
                 std::collections::HashSet::new(),
                 std::collections::HashSet::new(),
                 state::AgentManualOrder::default(),
@@ -525,6 +527,7 @@ impl App {
                     snap.sidebar_pane_section_split.unwrap_or(0.5),
                     snap.collapsed_space_keys,
                     snap.collapsed_agent_keys,
+                    snap.collapsed_line_split_keys,
                     state::AgentManualOrder::default(),
                     state::PaneSectionOrder::default(),
                 )
@@ -548,6 +551,7 @@ impl App {
                     snap.sidebar_pane_section_split.unwrap_or(0.5),
                     snap.collapsed_space_keys,
                     snap.collapsed_agent_keys,
+                    snap.collapsed_line_split_keys,
                     agent_manual_order,
                     pane_section_order,
                 )
@@ -561,6 +565,7 @@ impl App {
                 state::SidebarWidthSource::ConfigDefault,
                 0.5_f32,
                 0.5_f32,
+                std::collections::HashSet::new(),
                 std::collections::HashSet::new(),
                 std::collections::HashSet::new(),
                 state::AgentManualOrder::default(),
@@ -659,6 +664,7 @@ impl App {
             worktree_directory,
             collapsed_space_keys,
             collapsed_agent_keys,
+            collapsed_line_split_keys,
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -947,6 +953,7 @@ impl App {
         }
         app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
         app.state.collapsed_agent_keys = snapshot.collapsed_agent_keys.clone();
+        app.state.collapsed_line_split_keys = snapshot.collapsed_line_split_keys.clone();
         app.state.agent_manual_order = restore_agent_manual_order(snapshot, &app.state.workspaces);
         app.state.pane_section_order = restore_pane_section_order(snapshot, &app.state.workspaces);
         app.state.mode = if app.state.active.is_some() {
@@ -4151,6 +4158,7 @@ mod tests {
             app.state.sidebar_pane_section_split,
             app.state.collapsed_space_keys.clone(),
             app.state.collapsed_agent_keys.clone(),
+            app.state.collapsed_line_split_keys.clone(),
             app.state
                 .agent_manual_order
                 .to_public_keys(&app.state.workspaces),
@@ -5116,6 +5124,7 @@ last_pane = "prefix+tab"
             sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
             collapsed_agent_keys: Default::default(),
+            collapsed_line_split_keys: Default::default(),
             agent_manual_order: None,
             pane_section_order: None,
         };

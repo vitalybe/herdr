@@ -1373,6 +1373,23 @@ impl AppState {
     /// the flat manual order. The `insert_idx` is a slot in the current order
     /// (before removal), clamped to bounds. Cross-workspace moves are allowed.
     /// Client-only presentation state, PTY-free. Returns true when the order
+    /// Toggle the collapsed state of a line-split divider. A collapsed line-split
+    /// hides every row in its segment (down to the next line-split or the end of
+    /// its section). Persisted like the other collapse sets.
+    pub(crate) fn toggle_line_split_collapse(
+        &mut self,
+        section: crate::app::state::LineSplitSection,
+        id: crate::app::state::LineSplitId,
+    ) {
+        let key = crate::app::state::line_split_collapse_key(section, id);
+        if self.collapsed_line_split_keys.contains(&key) {
+            self.collapsed_line_split_keys.remove(&key);
+        } else {
+            self.collapsed_line_split_keys.insert(key);
+        }
+        self.mark_session_dirty();
+    }
+
     /// changed.
     pub(crate) fn move_agent_entry(
         &mut self,
@@ -3644,6 +3661,30 @@ mod tests {
     use crate::detect::{Agent, AgentState};
     use crate::workspace::Workspace;
     use ratatui::layout::Direction;
+
+    #[test]
+    fn toggle_line_split_collapse_flips_and_persists_key() {
+        use crate::app::state::{line_split_collapse_key, LineSplitId, LineSplitSection};
+        let mut state = AppState::test_new();
+        let id = LineSplitId(7);
+        let key = line_split_collapse_key(LineSplitSection::Agents, id);
+
+        assert!(!state.collapsed_line_split_keys.contains(&key));
+        state.toggle_line_split_collapse(LineSplitSection::Agents, id);
+        assert!(state.collapsed_line_split_keys.contains(&key));
+        state.toggle_line_split_collapse(LineSplitSection::Agents, id);
+        assert!(!state.collapsed_line_split_keys.contains(&key));
+    }
+
+    #[test]
+    fn line_split_collapse_key_is_namespaced_by_section() {
+        use crate::app::state::{line_split_collapse_key, LineSplitId, LineSplitSection};
+        let id = LineSplitId(3);
+        assert_ne!(
+            line_split_collapse_key(LineSplitSection::Agents, id),
+            line_split_collapse_key(LineSplitSection::Panes, id)
+        );
+    }
 
     fn app_with_workspaces(names: &[&str]) -> AppState {
         let mut state = AppState::test_new();

@@ -929,6 +929,17 @@ pub(crate) enum LineSplitSection {
     Panes,
 }
 
+/// Stable persistence key for a line-split's collapsed state. Line-split ids are
+/// per-section counters that can collide across sections, so the key is namespaced
+/// by section. Mirrors the string-keyed collapse sets used for spaces and agents.
+pub(crate) fn line_split_collapse_key(section: LineSplitSection, id: LineSplitId) -> String {
+    let prefix = match section {
+        LineSplitSection::Agents => "agents",
+        LineSplitSection::Panes => "panes",
+    };
+    format!("{prefix}:{}", id.0)
+}
+
 /// A single entry in the manual agent ordering. Either an agent pane or a
 /// user-created named line-split divider, interleaved in one flat vector.
 #[derive(Debug, Clone)]
@@ -1826,6 +1837,11 @@ pub struct AppState {
     /// collapsed in the agents panel. Client-only TUI presentation state,
     /// persisted like [`AppState::collapsed_space_keys`].
     pub collapsed_agent_keys: std::collections::HashSet<String>,
+    /// Keys (see [`line_split_collapse_key`]) of named line-split dividers the
+    /// user has collapsed. A collapsed line-split hides every row in its segment
+    /// (down to the next line-split or the end of the section). Client-only TUI
+    /// presentation state, persisted like [`AppState::collapsed_agent_keys`].
+    pub collapsed_line_split_keys: std::collections::HashSet<String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -2253,6 +2269,7 @@ impl AppState {
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             collapsed_space_keys: std::collections::HashSet::new(),
             collapsed_agent_keys: std::collections::HashSet::new(),
+            collapsed_line_split_keys: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,

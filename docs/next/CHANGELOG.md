@@ -11,6 +11,7 @@
 - Added `herdr terminal session observe` for read-only live ANSI terminal streams that bridge processes can consume as newline-delimited JSON.
 - Added `herdr terminal session control` for bridge processes that need live ANSI frames plus input, resize, scroll, release, and takeover authority.
 - Added optional `keys.previous_pane` and `keys.next_pane` bindings for cycling focus through the sidebar panes section. They are unset by default.
+- Sidebar line-split dividers in the agents panel and panes section are now collapsible: each shows an arrow and the number of items in its group, and clicking the divider hides or reveals everything down to the next divider. The collapsed state is remembered across restarts.
 
 ### Changed
 - The sidebar panes section now shows a single row when a tab has several panes with the same name, instead of one identical-looking row per pane. Panes with different names, or with no name of their own, still each get a row.

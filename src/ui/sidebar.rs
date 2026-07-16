@@ -10,8 +10,8 @@ use super::scrollbar::{render_scrollbar, should_show_scrollbar};
 use super::status::{agent_icon, state_dot, state_label, state_label_color};
 use super::text::{display_width, display_width_u16, truncate_end};
 use crate::app::state::{
-    AgentPanelSort, LineSplitId, ManualEntry, Palette, PaneManualEntry as ManualPaneEntry,
-    SidebarSectionCollapse,
+    line_split_collapse_key, AgentPanelSort, LineSplitId, LineSplitSection, ManualEntry, Palette,
+    PaneManualEntry as ManualPaneEntry, SidebarSectionCollapse,
 };
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
@@ -197,7 +197,16 @@ pub(crate) struct AgentPanelEntry {
 /// presentation state.
 pub(crate) enum AgentPanelRow {
     Agent(AgentPanelEntry),
-    LineSplit { id: LineSplitId, name: String },
+    LineSplit {
+        id: LineSplitId,
+        name: String,
+        /// Number of agent rows in this line-split's segment (down to the next
+        /// line-split or the end). Shown as `(N)` and equals the count hidden
+        /// when the line-split is collapsed.
+        count: usize,
+        /// True when the user has collapsed this line-split, hiding its segment.
+        collapsed: bool,
+    },
 }
 
 impl AgentPanelRow {
@@ -571,6 +580,12 @@ pub(crate) enum PaneSectionRow {
         order_idx: usize,
         id: LineSplitId,
         name: String,
+        /// Number of pane rows in this line-split's segment (down to the next
+        /// line-split or the end). Shown as `(N)` and equals the count hidden
+        /// when the line-split is collapsed.
+        count: usize,
+        /// True when the user has collapsed this line-split, hiding its segment.
+        collapsed: bool,
     },
 }
 
@@ -606,7 +621,7 @@ pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
             lookup.insert((ws.id.as_str(), pane_number), (ws_idx, tab_idx, pane_id));
         }
     }
-    let rows: Vec<PaneSectionRow> = app
+    let base: Vec<PaneSectionRow> = app
         .pane_section_order
         .order
         .iter()
@@ -626,10 +641,13 @@ pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
                 order_idx,
                 id: *id,
                 name: name.clone(),
+                count: 0,
+                collapsed: false,
             }),
         })
         .collect();
-    dedupe_same_name_tab_panes(app, rows)
+    let deduped = dedupe_same_name_tab_panes(app, base);
+    apply_pane_line_split_collapse(app, deduped)
 }
 
 /// The pane's own effective name (manual label / terminal title), independent of
@@ -670,6 +688,62 @@ fn dedupe_same_name_tab_panes(app: &AppState, rows: Vec<PaneSectionRow>) -> Vec<
                 }
             }
             PaneSectionRow::LineSplit { .. } => true,
+        })
+        .collect()
+}
+
+/// Annotate each Panes-section line-split with its segment pane count and
+/// collapsed flag, and drop the pane rows in a collapsed line-split's segment. A
+/// segment runs from a line-split down to the next line-split (or the end). Pure.
+fn apply_pane_line_split_collapse(
+    app: &AppState,
+    rows: Vec<PaneSectionRow>,
+) -> Vec<PaneSectionRow> {
+    let n = rows.len();
+    let mut meta: Vec<Option<(usize, bool)>> = vec![None; n];
+    let mut hide = vec![false; n];
+    let mut i = 0;
+    while i < n {
+        if let PaneSectionRow::LineSplit { id, .. } = &rows[i] {
+            let collapsed = app
+                .collapsed_line_split_keys
+                .contains(&line_split_collapse_key(LineSplitSection::Panes, *id));
+            let mut count = 0;
+            let mut j = i + 1;
+            while j < n && matches!(rows[j], PaneSectionRow::Pane(_)) {
+                count += 1;
+                if collapsed {
+                    hide[j] = true;
+                }
+                j += 1;
+            }
+            meta[i] = Some((count, collapsed));
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+
+    rows.into_iter()
+        .enumerate()
+        .filter(|(idx, _)| !hide[*idx])
+        .map(|(idx, row)| match row {
+            PaneSectionRow::LineSplit {
+                order_idx,
+                id,
+                name,
+                ..
+            } => {
+                let (count, collapsed) = meta[idx].unwrap_or((0, false));
+                PaneSectionRow::LineSplit {
+                    order_idx,
+                    id,
+                    name,
+                    count,
+                    collapsed,
+                }
+            }
+            other => other,
         })
         .collect()
 }
@@ -994,7 +1068,56 @@ fn agent_panel_rows_with_runtimes(
     terminal_runtimes: Option<&TerminalRuntimeRegistry>,
 ) -> Vec<AgentPanelRow> {
     let base = base_agent_panel_rows(app, terminal_runtimes);
-    flatten_agent_tree(app, base)
+    let tree = flatten_agent_tree(app, base);
+    apply_agent_line_split_collapse(app, tree)
+}
+
+/// Annotate each line-split with its segment agent count and collapsed flag, and
+/// drop the agent rows in a collapsed line-split's segment. A segment runs from a
+/// line-split down to the next line-split (or the end). Pure.
+fn apply_agent_line_split_collapse(app: &AppState, rows: Vec<AgentPanelRow>) -> Vec<AgentPanelRow> {
+    let n = rows.len();
+    // For each line-split index, its segment agent count and collapsed flag.
+    let mut meta: Vec<Option<(usize, bool)>> = vec![None; n];
+    let mut hide = vec![false; n];
+    let mut i = 0;
+    while i < n {
+        if let AgentPanelRow::LineSplit { id, .. } = &rows[i] {
+            let collapsed = app
+                .collapsed_line_split_keys
+                .contains(&line_split_collapse_key(LineSplitSection::Agents, *id));
+            let mut count = 0;
+            let mut j = i + 1;
+            while j < n && matches!(rows[j], AgentPanelRow::Agent(_)) {
+                count += 1;
+                if collapsed {
+                    hide[j] = true;
+                }
+                j += 1;
+            }
+            meta[i] = Some((count, collapsed));
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+
+    rows.into_iter()
+        .enumerate()
+        .filter(|(idx, _)| !hide[*idx])
+        .map(|(idx, row)| match row {
+            AgentPanelRow::LineSplit { id, name, .. } => {
+                let (count, collapsed) = meta[idx].unwrap_or((0, false));
+                AgentPanelRow::LineSplit {
+                    id,
+                    name,
+                    count,
+                    collapsed,
+                }
+            }
+            other => other,
+        })
+        .collect()
 }
 
 /// The flat, sort-driven base ordering of agent rows, before tree grouping.
@@ -1025,6 +1148,8 @@ fn base_agent_panel_rows(
                 rows.push(AgentPanelRow::LineSplit {
                     id: *id,
                     name: name.clone(),
+                    count: 0,
+                    collapsed: false,
                 });
             }
         }
@@ -2052,17 +2177,22 @@ fn render_pane_section(
         _ => None,
     };
 
-    // Line-split names live in the flat order; index them by order slot so the
-    // (name-less, Copy) row areas can render their label.
-    let split_names: std::collections::HashMap<usize, String> = sidebar_pane_section_rows(app)
-        .into_iter()
-        .filter_map(|row| match row {
-            PaneSectionRow::LineSplit {
-                order_idx, name, ..
-            } => Some((order_idx, name)),
-            PaneSectionRow::Pane(_) => None,
-        })
-        .collect();
+    // Line-split labels and collapse state live in the flat order; index them by
+    // order slot so the (name-less, Copy) row areas can render their rule.
+    let split_meta: std::collections::HashMap<usize, (String, usize, bool)> =
+        sidebar_pane_section_rows(app)
+            .into_iter()
+            .filter_map(|row| match row {
+                PaneSectionRow::LineSplit {
+                    order_idx,
+                    name,
+                    count,
+                    collapsed,
+                    ..
+                } => Some((order_idx, (name, count, collapsed))),
+                PaneSectionRow::Pane(_) => None,
+            })
+            .collect();
 
     let areas = &app.view.pane_section_row_areas;
     let max_width = body.width as usize;
@@ -2131,11 +2261,11 @@ fn render_pane_section(
                         buf[(x, row.rect.y)].set_style(Style::default().bg(p.surface1));
                     }
                 }
-                let name = split_names
+                let (name, count, collapsed) = split_meta
                     .get(&row.order_idx)
-                    .map(String::as_str)
-                    .unwrap_or("");
-                render_line_split_row(frame, body, row.rect.y, name, p);
+                    .map(|(name, count, collapsed)| (name.as_str(), *count, *collapsed))
+                    .unwrap_or(("", 0, false));
+                render_line_split_row(frame, body, row.rect.y, name, collapsed, count, p);
             }
         }
     }
@@ -2369,9 +2499,18 @@ fn render_workspace_list(
     }
 }
 
-/// Draw a named line-split divider as a full-width rule with the name embedded,
-/// e.g. `── scheduled ──────`. An empty name renders a plain rule.
-fn render_line_split_row(frame: &mut Frame, body: Rect, y: u16, name: &str, p: &Palette) {
+/// Draw a named line-split divider as a full-width rule with a collapse arrow,
+/// the name, and the segment item count embedded, e.g. `── ▾ scheduled (2) ──`.
+/// An empty name still shows the arrow and count, e.g. `── ▸ (0) ──`.
+fn render_line_split_row(
+    frame: &mut Frame,
+    body: Rect,
+    y: u16,
+    name: &str,
+    collapsed: bool,
+    count: usize,
+    p: &Palette,
+) {
     let width = body.width as usize;
     if width == 0 {
         return;
@@ -2380,25 +2519,36 @@ fn render_line_split_row(frame: &mut Frame, body: Rect, y: u16, name: &str, p: &
     // The split name uses the same color as the workspace name in agent rows so
     // the label stays legible; the surrounding rule stays subtly dim.
     let name_style = Style::default().fg(agent_row_space_color());
+    let arrow_style = Style::default().fg(p.accent);
+    let count_style = Style::default().fg(p.overlay0);
     let trimmed = name.trim();
-    let line = if trimmed.is_empty() {
-        Line::from(Span::styled("─".repeat(width), dash_style))
+
+    let prefix = "── ";
+    let arrow = if collapsed { "▸ " } else { "▾ " };
+    let name_text = if trimmed.is_empty() {
+        String::new()
     } else {
-        let prefix = "── ";
-        let label = format!("{trimmed} ");
-        let used = display_width(prefix) + display_width(&label);
-        if used >= width {
-            Line::from(Span::styled(
-                truncate_end(&format!("{prefix}{label}"), width),
-                name_style,
-            ))
-        } else {
-            Line::from(vec![
-                Span::styled(prefix.to_string(), dash_style),
-                Span::styled(label, name_style),
-                Span::styled("─".repeat(width - used), dash_style),
-            ])
-        }
+        format!("{trimmed} ")
+    };
+    let count_text = format!("({count}) ");
+    let used = display_width(prefix)
+        + display_width(arrow)
+        + display_width(&name_text)
+        + display_width(&count_text);
+
+    let line = if used >= width {
+        Line::from(Span::styled(
+            truncate_end(&format!("{prefix}{arrow}{name_text}{count_text}"), width),
+            name_style,
+        ))
+    } else {
+        Line::from(vec![
+            Span::styled(prefix.to_string(), dash_style),
+            Span::styled(arrow.to_string(), arrow_style),
+            Span::styled(name_text, name_style),
+            Span::styled(count_text, count_style),
+            Span::styled("─".repeat(width - used), dash_style),
+        ])
     };
     frame.render_widget(Paragraph::new(line), Rect::new(body.x, y, body.width, 1));
 }
@@ -2507,8 +2657,13 @@ fn render_agent_detail(
                     line_y += 1;
                 }
             }
-            AgentPanelRow::LineSplit { name, .. } => {
-                render_line_split_row(frame, body, area_row.y, name, p);
+            AgentPanelRow::LineSplit {
+                name,
+                count,
+                collapsed,
+                ..
+            } => {
+                render_line_split_row(frame, body, area_row.y, name, *collapsed, *count, p);
             }
         }
     }
@@ -3260,6 +3415,46 @@ mod tests {
     }
 
     #[test]
+    fn pane_section_line_split_reports_segment_count() {
+        let mut app = pane_section_app_with_two_panes();
+        // Line-split at the top; both panes fall in its segment.
+        let id = app
+            .pane_section_order
+            .new_line_split("group".to_string(), 0);
+
+        let rows = sidebar_pane_section_rows(&app);
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(
+            &rows[0],
+            PaneSectionRow::LineSplit { id: row_id, count, collapsed, .. }
+                if *row_id == id && *count == 2 && !*collapsed
+        ));
+    }
+
+    #[test]
+    fn pane_section_collapsed_line_split_hides_its_segment() {
+        let mut app = pane_section_app_with_two_panes();
+        let id = app
+            .pane_section_order
+            .new_line_split("group".to_string(), 0);
+        app.collapsed_line_split_keys
+            .insert(crate::app::state::line_split_collapse_key(
+                crate::app::state::LineSplitSection::Panes,
+                id,
+            ));
+
+        let rows = sidebar_pane_section_rows(&app);
+        // Only the line-split row remains; its two segment panes are hidden.
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(
+            &rows[0],
+            PaneSectionRow::LineSplit { count, collapsed, .. } if *count == 2 && *collapsed
+        ));
+        // Enumeration used for focus/keyboard nav also excludes hidden panes.
+        assert!(sidebar_pane_section_entries(&app).is_empty());
+    }
+
+    #[test]
     fn pane_section_row_areas_use_variable_heights_for_splits() {
         use crate::app::state::PaneSectionRowContent;
         let mut app = pane_section_app_with_two_panes();
@@ -3362,6 +3557,11 @@ mod tests {
         assert!(
             split_line.contains("─"),
             "line-split should be drawn as a rule: {split_line:?}"
+        );
+        // Split at the top: both panes fall in its segment, shown as ▾ … (2).
+        assert!(
+            split_line.contains('▾') && split_line.contains("(2)"),
+            "expected arrow and count on line-split: {split_line:?}"
         );
     }
 
@@ -3482,9 +3682,48 @@ mod tests {
         assert!(matches!(rows[0], AgentPanelRow::Agent(_)));
         assert!(matches!(
             &rows[1],
-            AgentPanelRow::LineSplit { id: row_id, name } if *row_id == id && name == "scheduled"
+            AgentPanelRow::LineSplit { id: row_id, name, .. } if *row_id == id && name == "scheduled"
         ));
         assert!(matches!(rows[2], AgentPanelRow::Agent(_)));
+    }
+
+    #[test]
+    fn agent_panel_line_split_reports_segment_count() {
+        let mut app = manual_app_with_two_agents();
+        // Line-split at the top; both agents fall in its segment.
+        let id = app
+            .agent_manual_order
+            .new_line_split("group".to_string(), 0);
+
+        let rows = agent_panel_rows(&app);
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(
+            &rows[0],
+            AgentPanelRow::LineSplit { id: row_id, count, collapsed, .. }
+                if *row_id == id && *count == 2 && !*collapsed
+        ));
+    }
+
+    #[test]
+    fn agent_panel_collapsed_line_split_hides_its_segment() {
+        let mut app = manual_app_with_two_agents();
+        let id = app
+            .agent_manual_order
+            .new_line_split("group".to_string(), 0);
+        app.collapsed_line_split_keys
+            .insert(crate::app::state::line_split_collapse_key(
+                crate::app::state::LineSplitSection::Agents,
+                id,
+            ));
+
+        let rows = agent_panel_rows(&app);
+        // Only the line-split row remains; its two segment agents are hidden, and
+        // the count still reflects the two hidden agents.
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(
+            &rows[0],
+            AgentPanelRow::LineSplit { count, collapsed, .. } if *count == 2 && *collapsed
+        ));
     }
 
     #[test]
@@ -3524,13 +3763,10 @@ mod tests {
     #[test]
     fn named_line_split_renders_rule_with_name() {
         let mut app = manual_app_with_two_agents();
+        // Split at the top; both agents fall in its segment, so the count is 2.
         app.agent_manual_order
             .new_line_split("scheduled".to_string(), 0);
         let rendered = render_agent_panel_to_backend(&app);
-        assert!(
-            rendered.contains("scheduled"),
-            "expected named line-split, got:\n{rendered}"
-        );
         let split_line = rendered
             .lines()
             .find(|line| line.contains("scheduled"))
@@ -3539,21 +3775,48 @@ mod tests {
             split_line.contains("─"),
             "line-split should be drawn as a rule: {split_line:?}"
         );
+        // Expanded splits show the ▾ glyph and the segment item count.
+        assert!(
+            split_line.contains('▾') && split_line.contains("(2)"),
+            "expected arrow and count on line-split: {split_line:?}"
+        );
     }
 
     #[test]
-    fn empty_line_split_renders_plain_rule() {
+    fn empty_line_split_still_shows_arrow_and_count() {
         let mut app = manual_app_with_two_agents();
         app.agent_manual_order.new_line_split(String::new(), 0);
         let rendered = render_agent_panel_to_backend(&app);
-        // The first body row is the empty line-split: a run of rule characters.
+        // The empty (name-less) line-split still renders the arrow, the count for
+        // its segment, and the surrounding rule.
         assert!(
             rendered
                 .lines()
-                .any(|line| line.trim_end().chars().count() >= 10
-                    && line.chars().all(|ch| ch == '─' || ch == ' ')
-                    && line.contains("─")),
-            "expected a plain rule row, got:\n{rendered}"
+                .any(|line| line.contains('▾') && line.contains("(2)") && line.contains("─")),
+            "expected arrow + count rule row, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn collapsed_line_split_renders_collapsed_arrow() {
+        let mut app = manual_app_with_two_agents();
+        let id = app
+            .agent_manual_order
+            .new_line_split("scheduled".to_string(), 0);
+        app.collapsed_line_split_keys
+            .insert(crate::app::state::line_split_collapse_key(
+                crate::app::state::LineSplitSection::Agents,
+                id,
+            ));
+        let rendered = render_agent_panel_to_backend(&app);
+        let split_line = rendered
+            .lines()
+            .find(|line| line.contains("scheduled"))
+            .expect("line-split row present");
+        // Collapsed splits use the ▸ glyph and still report the hidden count.
+        assert!(
+            split_line.contains('▸') && split_line.contains("(2)"),
+            "expected collapsed arrow and count: {split_line:?}"
         );
     }
 

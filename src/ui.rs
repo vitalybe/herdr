@@ -79,10 +79,11 @@ pub(crate) use self::{
         pane_section_rect, pane_section_row_index_of_pane, pane_section_scroll_metrics,
         pane_section_scrollbar_rect, pane_section_split_button_rect,
         sidebar_pane_section_divider_rect, sidebar_pane_section_entries,
-        sidebar_section_divider_rect, sidebar_shows_pane_section, workspace_drop_indicator_row,
-        workspace_list_entries, workspace_list_entries_expanded, workspace_list_rect,
-        workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
-        AgentPanelRow, AgentPanelRowArea, WorkspaceListEntry, AGENT_TREE_INDENT,
+        sidebar_section_divider_rect, sidebar_section_header_toggle_rect,
+        sidebar_shows_pane_section, workspace_drop_indicator_row, workspace_list_entries,
+        workspace_list_entries_expanded, workspace_list_rect, workspace_list_scroll_metrics,
+        workspace_list_scrollbar_rect, workspace_parent_group_state, AgentPanelRow,
+        AgentPanelRowArea, SidebarBand, WorkspaceListEntry, AGENT_TREE_INDENT,
     },
 };
 pub(crate) use self::{
@@ -223,6 +224,7 @@ fn compute_view_internal(
             app.sidebar_section_split,
             app.sidebar_pane_section_split,
             sidebar_shows_pane_section(app),
+            app.sidebar_section_collapse(),
         );
         let max_agent_scroll = agent_panel_scroll_metrics(app, detail_area).max_offset_from_bottom;
         app.agent_panel_scroll = app.agent_panel_scroll.min(max_agent_scroll);
@@ -231,6 +233,7 @@ fn compute_view_internal(
             app.sidebar_section_split,
             app.sidebar_pane_section_split,
             sidebar_shows_pane_section(app),
+            app.sidebar_section_collapse(),
         );
         let max_tab_scroll =
             pane_section_scroll_metrics(app, pane_section_area).max_offset_from_bottom;
@@ -256,6 +259,7 @@ fn compute_view_internal(
             app.sidebar_section_split,
             app.sidebar_pane_section_split,
             sidebar_shows_pane_section(app),
+            app.sidebar_section_collapse(),
         );
         compute_pane_section_row_areas(app, pane_section_area)
     };

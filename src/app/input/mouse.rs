@@ -569,6 +569,15 @@ impl AppState {
                         return None;
                     }
 
+                    // A band header's collapse/expand toggle takes priority over
+                    // any body interaction in that band.
+                    if let Some(band) =
+                        self.sidebar_section_header_toggle_at(mouse.column, mouse.row)
+                    {
+                        self.toggle_sidebar_section(band);
+                        return None;
+                    }
+
                     let new_button = self.sidebar_new_button_rect();
                     let on_new_button = mouse.row >= new_button.y
                         && mouse.row < new_button.y + new_button.height

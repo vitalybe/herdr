@@ -11,6 +11,7 @@ use super::status::{agent_icon, state_dot, state_label, state_label_color};
 use super::text::{display_width, display_width_u16, truncate_end};
 use crate::app::state::{
     AgentPanelSort, LineSplitId, ManualEntry, Palette, PaneManualEntry as ManualPaneEntry,
+    SidebarSectionCollapse,
 };
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
@@ -20,6 +21,8 @@ const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 /// Header rows above the Panes-section body: a divider rule plus the title.
 const PANE_SECTION_HEADER_ROWS: u16 = 2;
+/// Rows a collapsed sidebar band occupies: just its title/toggle row.
+const COLLAPSED_SECTION_ROWS: u16 = 1;
 /// Content height of a single Panes-section row: pane name line + space name line.
 const PANE_SECTION_ROW_HEIGHT: u16 = 2;
 
@@ -270,6 +273,34 @@ pub(crate) fn expanded_sidebar_sections3(
     spaces_ratio: f32,
     pane_section_ratio: f32,
     show_pane_section: bool,
+    collapse: SidebarSectionCollapse,
+) -> (Rect, Rect, Rect) {
+    // Panes collapse only matters when the Panes band is present at all.
+    let pane_collapsed = collapse.panes && show_pane_section;
+    if !collapse.spaces && !pane_collapsed && !collapse.agents {
+        return expanded_sidebar_sections3_uncollapsed(
+            area,
+            spaces_ratio,
+            pane_section_ratio,
+            show_pane_section,
+        );
+    }
+    collapsible_sidebar_sections3(
+        area,
+        spaces_ratio,
+        pane_section_ratio,
+        show_pane_section,
+        collapse,
+    )
+}
+
+/// The historical (no-band-collapsed) three-band split. Kept as the fast path so
+/// the default geometry is byte-for-byte identical to before section collapse.
+fn expanded_sidebar_sections3_uncollapsed(
+    area: Rect,
+    spaces_ratio: f32,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
 ) -> (Rect, Rect, Rect) {
     let (spaces_area, rest) = expanded_sidebar_sections(area, spaces_ratio);
     if rest.width == 0 || rest.height == 0 {
@@ -282,6 +313,90 @@ pub(crate) fn expanded_sidebar_sections3(
     let (pane_section_h, agents_h) = sidebar_section_heights(rest.height, pane_section_ratio);
     let pane_section_area = Rect::new(rest.x, rest.y, rest.width, pane_section_h);
     let agents_area = Rect::new(rest.x, rest.y + pane_section_h, rest.width, agents_h);
+    (spaces_area, pane_section_area, agents_area)
+}
+
+/// Three-band split when at least one band is collapsed. Each collapsed present
+/// band takes a single header row; the remaining height is shared between the
+/// still-expanded bands using the same ratio math as the uncollapsed layout.
+fn collapsible_sidebar_sections3(
+    area: Rect,
+    spaces_ratio: f32,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
+    collapse: SidebarSectionCollapse,
+) -> (Rect, Rect, Rect) {
+    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
+    if content.width == 0 || content.height == 0 {
+        return (Rect::default(), Rect::default(), Rect::default());
+    }
+
+    let cs = collapse.spaces;
+    let cp = collapse.panes && show_pane_section;
+    let ca = collapse.agents;
+    let h = COLLAPSED_SECTION_ROWS;
+
+    let mut reserved = 0u16;
+    if cs {
+        reserved = reserved.saturating_add(h);
+    }
+    if cp {
+        reserved = reserved.saturating_add(h);
+    }
+    if ca {
+        reserved = reserved.saturating_add(h);
+    }
+    let remaining = content.height.saturating_sub(reserved);
+
+    let s_exp = !cs;
+    let p_exp = show_pane_section && !cp;
+    let a_exp = !ca;
+
+    let (mut hs, mut hp, mut ha) = (
+        if cs { h } else { 0 },
+        if cp { h } else { 0 },
+        if ca { h } else { 0 },
+    );
+    match (s_exp, p_exp, a_exp) {
+        // A single expanded band takes all the remaining height.
+        (true, false, false) => hs = remaining,
+        (false, true, false) => hp = remaining,
+        (false, false, true) => ha = remaining,
+        // Two expanded bands split the remaining height by the ratio that
+        // separated them in the uncollapsed layout.
+        (true, true, false) => {
+            let (a, b) = sidebar_section_heights(remaining, spaces_ratio);
+            hs = a;
+            hp = b;
+        }
+        (true, false, true) => {
+            let (a, b) = sidebar_section_heights(remaining, spaces_ratio);
+            hs = a;
+            ha = b;
+        }
+        (false, true, true) => {
+            let (a, b) = sidebar_section_heights(remaining, pane_section_ratio);
+            hp = a;
+            ha = b;
+        }
+        // No band collapsed is handled by the fast path; all bands collapsed
+        // leaves the freed height unused below the stacked headers.
+        (true, true, true) | (false, false, false) => {}
+    }
+
+    let x = content.x;
+    let w = content.width;
+    let mut y = content.y;
+    let spaces_area = Rect::new(x, y, w, hs);
+    y = y.saturating_add(hs);
+    let pane_section_area = if show_pane_section {
+        let r = Rect::new(x, y, w, hp);
+        y = y.saturating_add(hp);
+        r
+    } else {
+        Rect::new(x, y, w, 0)
+    };
+    let agents_area = Rect::new(x, y, w, ha);
     (spaces_area, pane_section_area, agents_area)
 }
 
@@ -310,9 +425,15 @@ pub(crate) fn agents_detail_rect(
     spaces_ratio: f32,
     pane_section_ratio: f32,
     show_pane_section: bool,
+    collapse: SidebarSectionCollapse,
 ) -> Rect {
-    let (_, _, agents_area) =
-        expanded_sidebar_sections3(area, spaces_ratio, pane_section_ratio, show_pane_section);
+    let (_, _, agents_area) = expanded_sidebar_sections3(
+        area,
+        spaces_ratio,
+        pane_section_ratio,
+        show_pane_section,
+        collapse,
+    );
     agents_area
 }
 
@@ -322,10 +443,94 @@ pub(crate) fn pane_section_rect(
     spaces_ratio: f32,
     pane_section_ratio: f32,
     show_pane_section: bool,
+    collapse: SidebarSectionCollapse,
 ) -> Rect {
-    let (_, pane_section_area, _) =
-        expanded_sidebar_sections3(area, spaces_ratio, pane_section_ratio, show_pane_section);
+    let (_, pane_section_area, _) = expanded_sidebar_sections3(
+        area,
+        spaces_ratio,
+        pane_section_ratio,
+        show_pane_section,
+        collapse,
+    );
     pane_section_area
+}
+
+/// One of the three stacked sidebar bands, used to place and hit-test the
+/// per-band collapse/expand toggle in the band header.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SidebarBand {
+    Spaces,
+    Panes,
+    Agents,
+}
+
+impl SidebarBand {
+    fn title(self) -> &'static str {
+        match self {
+            SidebarBand::Spaces => "spaces",
+            SidebarBand::Panes => "panes",
+            SidebarBand::Agents => "agents",
+        }
+    }
+}
+
+/// Expand/collapse glyph shown before a band title (`▾` expanded, `▸` collapsed).
+fn section_toggle_glyph(collapsed: bool) -> &'static str {
+    if collapsed {
+        "▸"
+    } else {
+        "▾"
+    }
+}
+
+/// The clickable region of a band's collapse/expand toggle: the glyph plus the
+/// title word on the header's title row. Spaces titles sit on the band's first
+/// row; the Panes/Agents titles sit one row below their divider rule (or on the
+/// first row when the band is collapsed to a single row).
+pub(crate) fn sidebar_section_header_toggle_rect(
+    area: Rect,
+    band: SidebarBand,
+    collapsed: bool,
+) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return Rect::default();
+    }
+    let title_y = if collapsed {
+        area.y
+    } else {
+        match band {
+            SidebarBand::Spaces => area.y,
+            SidebarBand::Panes | SidebarBand::Agents => area.y.saturating_add(1),
+        }
+    };
+    if title_y >= area.y.saturating_add(area.height) {
+        return Rect::default();
+    }
+    // "▾ " (glyph + space) plus the title word.
+    let width = (2 + band.title().chars().count() as u16).min(area.width);
+    Rect::new(area.x, title_y, width, 1)
+}
+
+/// Render a collapsed band as a single header row: `▸ title ─────`, the trailing
+/// rule doubling as the separator to the band below.
+fn render_collapsed_section_header(frame: &mut Frame, area: Rect, band: SidebarBand, p: &Palette) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let prefix = format!("{} {} ", section_toggle_glyph(true), band.title());
+    let used = display_width_u16(&prefix);
+    let mut spans = vec![Span::styled(
+        prefix,
+        Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+    )];
+    if area.width > used {
+        let rule = "─".repeat((area.width - used) as usize);
+        spans.push(Span::styled(rule, Style::default().fg(p.surface_dim)));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
 }
 
 /// Whether the sidebar Panes section has any entries to show. When false, the
@@ -1134,7 +1339,13 @@ pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], i
 }
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
-    let ws_area = workspace_list_rect(area, app.sidebar_section_split);
+    let ws_area = workspace_list_rect(
+        area,
+        app.sidebar_section_split,
+        app.sidebar_pane_section_split,
+        sidebar_shows_pane_section(app),
+        app.sidebar_section_collapse(),
+    );
     let body = workspace_list_body_rect(ws_area, false);
     if body.height == 0 {
         return requested;
@@ -1260,8 +1471,20 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     entries
 }
 
-pub(crate) fn workspace_list_rect(area: Rect, split_ratio: f32) -> Rect {
-    let (ws_area, _) = expanded_sidebar_sections(area, split_ratio);
+pub(crate) fn workspace_list_rect(
+    area: Rect,
+    spaces_ratio: f32,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
+    collapse: SidebarSectionCollapse,
+) -> Rect {
+    let (ws_area, _, _) = expanded_sidebar_sections3(
+        area,
+        spaces_ratio,
+        pane_section_ratio,
+        show_pane_section,
+        collapse,
+    );
     ws_area
 }
 
@@ -1393,7 +1616,13 @@ pub(crate) fn compute_workspace_list_areas(
     app: &AppState,
     area: Rect,
 ) -> (Vec<crate::app::state::WorkspaceCardArea>, Vec<()>) {
-    let ws_area = workspace_list_rect(area, app.sidebar_section_split);
+    let ws_area = workspace_list_rect(
+        area,
+        app.sidebar_section_split,
+        app.sidebar_pane_section_split,
+        sidebar_shows_pane_section(app),
+        app.sidebar_section_collapse(),
+    );
     if ws_area == Rect::default() {
         return (Vec::new(), Vec::new());
     }
@@ -1673,16 +1902,33 @@ pub(super) fn render_sidebar(
         buf[(sep_x, y)].set_style(sep_style);
     }
 
+    let collapse = app.sidebar_section_collapse();
+    let show_pane_section = sidebar_shows_pane_section(app);
     let (ws_area, pane_section_area, detail_area) = expanded_sidebar_sections3(
         area,
         app.sidebar_section_split,
         app.sidebar_pane_section_split,
-        sidebar_shows_pane_section(app),
+        show_pane_section,
+        collapse,
     );
 
-    render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
-    render_pane_section(app, terminal_runtimes, frame, pane_section_area);
-    render_agent_detail(app, terminal_runtimes, frame, detail_area);
+    if collapse.spaces {
+        render_collapsed_section_header(frame, ws_area, SidebarBand::Spaces, p);
+    } else {
+        render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
+    }
+    if show_pane_section {
+        if collapse.panes {
+            render_collapsed_section_header(frame, pane_section_area, SidebarBand::Panes, p);
+        } else {
+            render_pane_section(app, terminal_runtimes, frame, pane_section_area);
+        }
+    }
+    if collapse.agents {
+        render_collapsed_section_header(frame, detail_area, SidebarBand::Agents, p);
+    } else {
+        render_agent_detail(app, terminal_runtimes, frame, detail_area);
+    }
     render_sidebar_toggle(app, frame, area, false, p);
 }
 
@@ -1734,7 +1980,7 @@ fn render_pane_section(
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            " panes",
+            format!("{} panes", section_toggle_glyph(false)),
             Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
         )])),
         Rect::new(area.x, area.y + 1, area.width, 1),
@@ -1904,7 +2150,7 @@ fn render_workspace_list(
     if area.height > 0 {
         frame.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
-                " spaces",
+                format!("{} spaces", section_toggle_glyph(false)),
                 Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
             )])),
             Rect::new(area.x, area.y, area.width, 1),
@@ -2137,7 +2383,7 @@ fn render_agent_detail(
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            " agents",
+            format!("{} agents", section_toggle_glyph(false)),
             Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
         )])),
         Rect::new(area.x, area.y + 1, area.width, 1),
@@ -2713,7 +2959,8 @@ mod tests {
     #[test]
     fn three_section_split_partitions_full_height_without_overlap() {
         let area = Rect::new(0, 0, 26, 40);
-        let (spaces, tabs, agents) = expanded_sidebar_sections3(area, 0.5, 0.5, true);
+        let (spaces, tabs, agents) =
+            expanded_sidebar_sections3(area, 0.5, 0.5, true, SidebarSectionCollapse::default());
         // Contiguous, non-overlapping, and covering the whole content height.
         assert_eq!(spaces.y, 0);
         assert_eq!(tabs.y, spaces.y + spaces.height);
@@ -2728,10 +2975,82 @@ mod tests {
 
         // With no Panes entries the Panes band collapses and Agents keeps the
         // historical two-band geometry.
-        let (spaces2, tabs2, agents2) = expanded_sidebar_sections3(area, 0.5, 0.5, false);
+        let (spaces2, tabs2, agents2) =
+            expanded_sidebar_sections3(area, 0.5, 0.5, false, SidebarSectionCollapse::default());
         assert_eq!(tabs2.height, 0);
         assert_eq!(spaces2, spaces);
         assert_eq!(agents2, expanded_sidebar_sections(area, 0.5).1);
+    }
+
+    #[test]
+    fn collapsing_a_band_reserves_one_row_and_grows_the_others() {
+        let area = Rect::new(0, 0, 26, 40);
+        let collapse = SidebarSectionCollapse {
+            spaces: true,
+            panes: false,
+            agents: false,
+        };
+        let (spaces, panes, agents) = expanded_sidebar_sections3(area, 0.5, 0.5, true, collapse);
+        assert_eq!(spaces.height, COLLAPSED_SECTION_ROWS);
+        assert_eq!(spaces.y, 0);
+        assert_eq!(panes.y, spaces.y + spaces.height);
+        assert_eq!(agents.y, panes.y + panes.height);
+        assert_eq!(agents.y + agents.height, 40, "bands cover the full height");
+        assert!(
+            panes.height > 3 && agents.height > 3,
+            "freed rows go to the expanded bands"
+        );
+    }
+
+    #[test]
+    fn collapsing_every_band_stacks_single_header_rows() {
+        let area = Rect::new(0, 0, 26, 40);
+        let collapse = SidebarSectionCollapse {
+            spaces: true,
+            panes: true,
+            agents: true,
+        };
+        let (spaces, panes, agents) = expanded_sidebar_sections3(area, 0.5, 0.5, true, collapse);
+        assert_eq!((spaces.height, panes.height, agents.height), (1, 1, 1));
+        assert_eq!(spaces.y, 0);
+        assert_eq!(panes.y, 1);
+        assert_eq!(agents.y, 2);
+    }
+
+    #[test]
+    fn pane_collapse_is_ignored_without_a_pane_band() {
+        let area = Rect::new(0, 0, 26, 40);
+        let with_flag = expanded_sidebar_sections3(
+            area,
+            0.5,
+            0.5,
+            false,
+            SidebarSectionCollapse {
+                spaces: false,
+                panes: true,
+                agents: false,
+            },
+        );
+        let baseline =
+            expanded_sidebar_sections3(area, 0.5, 0.5, false, SidebarSectionCollapse::default());
+        assert_eq!(with_flag, baseline);
+    }
+
+    #[test]
+    fn section_header_toggle_rect_lands_on_the_title_row() {
+        let area = Rect::new(0, 0, 20, 10);
+        assert_eq!(
+            sidebar_section_header_toggle_rect(area, SidebarBand::Spaces, false).y,
+            area.y
+        );
+        assert_eq!(
+            sidebar_section_header_toggle_rect(area, SidebarBand::Panes, false).y,
+            area.y + 1
+        );
+        // A collapsed band renders its title on its single row.
+        let collapsed = sidebar_section_header_toggle_rect(area, SidebarBand::Agents, true);
+        assert_eq!(collapsed.y, area.y);
+        assert!(collapsed.width >= 2);
     }
 
     #[test]
@@ -2828,6 +3147,7 @@ mod tests {
             app.sidebar_section_split,
             app.sidebar_pane_section_split,
             sidebar_shows_pane_section(app),
+            app.sidebar_section_collapse(),
         );
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
             .expect("test terminal should initialize");
@@ -2845,6 +3165,42 @@ mod tests {
             lines.push(line);
         }
         lines.join("\n")
+    }
+
+    fn render_full_sidebar_to_lines(app: &mut AppState, area: Rect) -> Vec<String> {
+        crate::ui::compute_view(app, area);
+        let sidebar_rect = app.view.sidebar_rect;
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
+            .expect("test terminal should initialize");
+        let runtimes = TerminalRuntimeRegistry::new();
+        terminal
+            .draw(|frame| render_sidebar(app, &runtimes, frame, sidebar_rect))
+            .expect("sidebar should render");
+        let buffer = terminal.backend().buffer().clone();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn collapsed_band_renders_arrow_header_and_keeps_others_expanded() {
+        let mut app = pane_section_app_with_two_panes();
+        app.spaces_section_collapsed = true;
+        let area = Rect::new(0, 0, 106, 30);
+        let lines = render_full_sidebar_to_lines(&mut app, area);
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("▸ spaces"),
+            "collapsed spaces band shows a collapsed toggle header: {joined:?}"
+        );
+        assert!(
+            joined.contains("▾ agents"),
+            "an expanded band shows an expand toggle header: {joined:?}"
+        );
     }
 
     #[test]

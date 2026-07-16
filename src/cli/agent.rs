@@ -454,9 +454,23 @@ fn agent_get(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
-fn agent_children(args: &[String]) -> std::io::Result<i32> {
-    const USAGE: &str = "usage: herdr agent children <target> [--recursive] [--json]";
+const AGENT_CHILDREN_USAGE: &str =
+    "usage: herdr agent children [target] [--recursive] [--json]  (target defaults to $HERDR_PANE_ID)";
 
+enum AgentChildrenOutcome {
+    Run {
+        target: String,
+        recursive: bool,
+        json: bool,
+    },
+    Help,
+    Usage,
+}
+
+/// Parse `agent children` args, defaulting the target to the caller's pane
+/// (`env_pane_id`, from `$HERDR_PANE_ID`) when no target is given so the command
+/// can be run from inside a pane without repeating its id.
+fn resolve_agent_children(args: &[String], env_pane_id: Option<&str>) -> AgentChildrenOutcome {
     let mut target = None;
     let mut recursive = false;
     let mut json = false;
@@ -473,17 +487,17 @@ fn agent_children(args: &[String]) -> std::io::Result<i32> {
                 index += 1;
             }
             "help" | "--help" | "-h" => {
-                eprintln!("{USAGE}");
-                return Ok(0);
+                eprintln!("{AGENT_CHILDREN_USAGE}");
+                return AgentChildrenOutcome::Help;
             }
             other if other.starts_with('-') => {
                 eprintln!("unknown option: {other}");
-                return Ok(2);
+                return AgentChildrenOutcome::Usage;
             }
             other => {
                 if target.is_some() {
-                    eprintln!("{USAGE}");
-                    return Ok(2);
+                    eprintln!("{AGENT_CHILDREN_USAGE}");
+                    return AgentChildrenOutcome::Usage;
                 }
                 target = Some(other.to_owned());
                 index += 1;
@@ -491,9 +505,33 @@ fn agent_children(args: &[String]) -> std::io::Result<i32> {
         }
     }
 
+    let target = target
+        .or_else(|| env_pane_id.map(str::to_owned))
+        .filter(|value| !value.trim().is_empty());
     let Some(target) = target else {
-        eprintln!("{USAGE}");
-        return Ok(2);
+        eprintln!("{AGENT_CHILDREN_USAGE}");
+        return AgentChildrenOutcome::Usage;
+    };
+
+    AgentChildrenOutcome::Run {
+        target,
+        recursive,
+        json,
+    }
+}
+
+fn agent_children(args: &[String]) -> std::io::Result<i32> {
+    let env_pane_id = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let (target, recursive, json) = match resolve_agent_children(args, env_pane_id.as_deref()) {
+        AgentChildrenOutcome::Run {
+            target,
+            recursive,
+            json,
+        } => (target, recursive, json),
+        AgentChildrenOutcome::Help => return Ok(0),
+        AgentChildrenOutcome::Usage => return Ok(2),
     };
 
     let response = super::send_request(&Request {
@@ -994,7 +1032,7 @@ fn print_agent_help() {
     eprintln!("herdr agent commands:");
     eprintln!("  herdr agent list");
     eprintln!("  herdr agent get <target>");
-    eprintln!("  herdr agent children <target> [--recursive] [--json]");
+    eprintln!("  herdr agent children [target] [--recursive] [--json]");
     eprintln!("  herdr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]");
     eprintln!("  herdr agent send-keys <target> <key> [key ...]");
     eprintln!("  herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
@@ -1023,7 +1061,7 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_children, agent_set_parent};
+    use super::{agent_set_parent, resolve_agent_children, AgentChildrenOutcome};
 
     #[test]
     fn set_parent_requires_two_positional_args() {
@@ -1038,17 +1076,59 @@ mod tests {
     }
 
     #[test]
-    fn children_rejects_missing_target_and_extra_args() {
-        // Missing target, unknown flag, and a second positional all fail usage
-        // before any request is sent, returning the usage exit code.
-        assert_eq!(agent_children(&[]).unwrap(), 2);
-        assert_eq!(
-            agent_children(&["w1:p1".into(), "--nope".into()]).unwrap(),
-            2
-        );
-        assert_eq!(
-            agent_children(&["w1:p1".into(), "w1:p2".into()]).unwrap(),
-            2
-        );
+    fn children_rejects_unknown_flag_and_extra_positional() {
+        // Unknown flag and a second positional both fail usage.
+        assert!(matches!(
+            resolve_agent_children(&["w1:p1".into(), "--nope".into()], None),
+            AgentChildrenOutcome::Usage
+        ));
+        assert!(matches!(
+            resolve_agent_children(&["w1:p1".into(), "w1:p2".into()], None),
+            AgentChildrenOutcome::Usage
+        ));
+    }
+
+    #[test]
+    fn children_requires_target_when_no_env_pane() {
+        // With no target and no $HERDR_PANE_ID, usage fails.
+        assert!(matches!(
+            resolve_agent_children(&[], None),
+            AgentChildrenOutcome::Usage
+        ));
+    }
+
+    #[test]
+    fn children_defaults_target_to_env_pane() {
+        // No positional target falls back to the caller's pane; flags still parse.
+        let outcome = resolve_agent_children(&["--recursive".into()], Some("w14:pC"));
+        match outcome {
+            AgentChildrenOutcome::Run {
+                target,
+                recursive,
+                json,
+            } => {
+                assert_eq!(target, "w14:pC");
+                assert!(recursive);
+                assert!(!json);
+            }
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn children_explicit_target_overrides_env_pane() {
+        let outcome = resolve_agent_children(&["w1:p1".into(), "--json".into()], Some("w14:pC"));
+        match outcome {
+            AgentChildrenOutcome::Run {
+                target,
+                recursive,
+                json,
+            } => {
+                assert_eq!(target, "w1:p1");
+                assert!(!recursive);
+                assert!(json);
+            }
+            _ => panic!("expected Run"),
+        }
     }
 }

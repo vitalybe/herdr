@@ -606,7 +606,8 @@ pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
             lookup.insert((ws.id.as_str(), pane_number), (ws_idx, tab_idx, pane_id));
         }
     }
-    app.pane_section_order
+    let rows: Vec<PaneSectionRow> = app
+        .pane_section_order
         .order
         .iter()
         .enumerate()
@@ -626,6 +627,49 @@ pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
                 id: *id,
                 name: name.clone(),
             }),
+        })
+        .collect();
+    dedupe_same_name_tab_panes(app, rows)
+}
+
+/// The pane's own effective name (manual label / terminal title), independent of
+/// its containing tab. `None` when the pane has no name of its own.
+fn pane_section_pane_own_name(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    pane_id: crate::layout::PaneId,
+) -> Option<String> {
+    ws.pane_state(pane_id)
+        .and_then(|pane| {
+            app.terminals
+                .get(&pane.attached_terminal_id)
+                .and_then(|terminal| terminal.border_label(false))
+        })
+        .filter(|label| !label.trim().is_empty())
+}
+
+/// Drop redundant Panes-section pane rows: when the same tab contributes several
+/// panes that share the same pane name, keep only the first in display order. A
+/// pane with no name of its own, or a name unique within its tab, is always kept,
+/// so panes stay visible whenever they can be told apart. Line-splits pass
+/// through. Pure, client-only presentation filtering.
+fn dedupe_same_name_tab_panes(app: &AppState, rows: Vec<PaneSectionRow>) -> Vec<PaneSectionRow> {
+    let mut seen: std::collections::HashSet<(usize, usize, String)> =
+        std::collections::HashSet::new();
+    rows.into_iter()
+        .filter(|row| match row {
+            PaneSectionRow::Pane(entry) => {
+                let Some(ws) = app.workspaces.get(entry.ws_idx) else {
+                    return true;
+                };
+                match pane_section_pane_own_name(app, ws, entry.pane_id) {
+                    // First pane with this (tab, name) is kept; later duplicates drop.
+                    Some(name) => seen.insert((entry.ws_idx, entry.tab_idx, name)),
+                    // Unnamed panes are never treated as duplicates.
+                    None => true,
+                }
+            }
+            PaneSectionRow::LineSplit { .. } => true,
         })
         .collect()
 }
@@ -1944,11 +1988,7 @@ fn pane_section_row_name(
     let tab_name = ws
         .tab_display_name(tab_idx)
         .unwrap_or_else(|| (tab_idx + 1).to_string());
-    let pane_name = ws.pane_state(row_pane_id).and_then(|pane| {
-        app.terminals
-            .get(&pane.attached_terminal_id)
-            .and_then(|terminal| terminal.border_label(false))
-    });
+    let pane_name = pane_section_pane_own_name(app, ws, row_pane_id);
     // When the pane has its own name, show both "<pane> • <tab>"; otherwise the
     // tab name stands alone.
     match pane_name {
@@ -3111,6 +3151,112 @@ mod tests {
             PaneSectionRow::LineSplit { id: row_id, name, .. } if *row_id == id && name == "scheduled"
         ));
         assert!(matches!(rows[2], PaneSectionRow::Pane(_)));
+    }
+
+    /// One workspace whose single tab holds two non-agent panes, reconciled into
+    /// the Panes section. Returns the two pane ids in registration order.
+    fn pane_section_app_two_panes_same_tab(
+    ) -> (AppState, crate::layout::PaneId, crate::layout::PaneId) {
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("one");
+        let first = ws.tabs[0].root_pane;
+        let second = ws.test_split(ratatui::layout::Direction::Horizontal);
+        app.workspaces = vec![ws];
+        app.ensure_test_terminals();
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = crate::app::Mode::Terminal;
+        app.reconcile_pane_section_order();
+        (app, first, second)
+    }
+
+    fn set_pane_label(app: &mut AppState, pane: crate::layout::PaneId, label: &str) {
+        let terminal_id = app
+            .workspaces
+            .iter()
+            .find_map(|ws| {
+                ws.tabs
+                    .iter()
+                    .find_map(|tab| tab.panes.get(&pane))
+                    .map(|p| p.attached_terminal_id.clone())
+            })
+            .expect("pane has a terminal");
+        app.terminals
+            .get_mut(&terminal_id)
+            .expect("terminal exists")
+            .set_manual_label(label.to_string());
+    }
+
+    #[test]
+    fn pane_section_dedupes_same_name_panes_in_same_tab() {
+        let (mut app, first, second) = pane_section_app_two_panes_same_tab();
+        set_pane_label(&mut app, first, "server");
+        set_pane_label(&mut app, second, "server");
+
+        let entries = sidebar_pane_section_entries(&app);
+        assert_eq!(
+            entries.len(),
+            1,
+            "same-name panes in one tab collapse to a single row"
+        );
+        assert_eq!(entries[0].pane_id, first, "the first pane in order is kept");
+    }
+
+    #[test]
+    fn pane_section_keeps_differently_named_panes_in_same_tab() {
+        let (mut app, first, second) = pane_section_app_two_panes_same_tab();
+        set_pane_label(&mut app, first, "server");
+        set_pane_label(&mut app, second, "logs");
+
+        assert_eq!(
+            sidebar_pane_section_entries(&app).len(),
+            2,
+            "panes with different names stay visible"
+        );
+    }
+
+    #[test]
+    fn pane_section_keeps_panes_when_only_one_is_named() {
+        let (mut app, first, _second) = pane_section_app_two_panes_same_tab();
+        set_pane_label(&mut app, first, "server");
+        // The second pane is left unnamed.
+
+        assert_eq!(
+            sidebar_pane_section_entries(&app).len(),
+            2,
+            "an unnamed pane is never treated as a duplicate"
+        );
+    }
+
+    #[test]
+    fn pane_section_keeps_unnamed_panes_in_same_tab() {
+        let (app, _first, _second) = pane_section_app_two_panes_same_tab();
+        // Neither pane has its own name; they fall back to the tab name but both
+        // remain, since dedup only applies to shared explicit names.
+        assert_eq!(
+            sidebar_pane_section_entries(&app).len(),
+            2,
+            "unnamed panes are not deduped"
+        );
+    }
+
+    #[test]
+    fn pane_section_keeps_same_name_panes_in_different_tabs() {
+        let mut app = pane_section_app_with_two_panes();
+        let panes: Vec<_> = sidebar_pane_section_entries(&app)
+            .into_iter()
+            .map(|entry| entry.pane_id)
+            .collect();
+        assert_eq!(panes.len(), 2);
+        for pane in &panes {
+            set_pane_label(&mut app, *pane, "server");
+        }
+
+        assert_eq!(
+            sidebar_pane_section_entries(&app).len(),
+            2,
+            "dedup is per-tab; the same name in different tabs stays visible"
+        );
     }
 
     #[test]

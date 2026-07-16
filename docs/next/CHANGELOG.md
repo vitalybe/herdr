@@ -13,6 +13,7 @@
 - Added optional `keys.previous_pane` and `keys.next_pane` bindings for cycling focus through the sidebar panes section. They are unset by default.
 
 ### Changed
+- The sidebar panes section now shows a single row when a tab has several panes with the same name, instead of one identical-looking row per pane. Panes with different names, or with no name of their own, still each get a row.
 - Double-clicking an agent in the sidebar now renames its tab (matching the Tabs section) instead of renaming the agent.
 - Clicking a space now returns to that workspace's latest active tab instead of a separately tracked home tab.
 - Bumped the client/server protocol version to 15 for socket API placement mutation event and response compatibility.

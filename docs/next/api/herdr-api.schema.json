@@ -809,7 +809,7 @@
               "type": "string"
             },
             "parent": {
-              "description": "Public pane id (e.g. `\"w1:p2\"`) of this pane's parent agent, when it was\nstarted as a child with `--parent`. Absent for root agents.",
+              "description": "Public pane id (e.g. `\"w1:p2\"`) of this pane's parent agent, when it was\nrecorded as a child with `agent set-parent`. Absent for root agents.",
               "type": [
                 "string",
                 "null"
@@ -1229,6 +1229,23 @@
     },
     "request": {
       "$defs": {
+        "AgentChildrenParams": {
+          "properties": {
+            "recursive": {
+              "default": false,
+              "description": "When true, return the whole descendant subtree in preorder (children,\ntheir children, and so on); otherwise return only the direct children.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target of the agent whose children to list (terminal id, public pane id\nlike `\"w1:p2\"`, or agent name).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
         "AgentPromptParams": {
           "properties": {
             "target": {
@@ -1336,6 +1353,23 @@
           "required": [
             "target",
             "keys"
+          ],
+          "type": "object"
+        },
+        "AgentSetParentParams": {
+          "properties": {
+            "parent": {
+              "description": "Target of the agent to record as `target`'s parent, resolved with the\nsame rules. Assigns or changes the parent link; it never clears it.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target of the agent whose parent is being set (terminal id, public pane\nid like `\"w1:p2\"`, or agent name).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "parent"
           ],
           "type": "object"
         },
@@ -4949,6 +4983,22 @@
         {
           "properties": {
             "method": {
+              "const": "agent.children",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentChildrenParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.read",
               "type": "string"
             },
@@ -5034,6 +5084,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentViewClearParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.set_parent",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentSetParentParams"
             }
           },
           "required": [
@@ -6175,7 +6241,7 @@
               "type": "string"
             },
             "parent": {
-              "description": "Public pane id (e.g. `\"w1:p2\"`) of this agent's parent, when it was\nstarted as a child with `--parent`. Absent for root agents.",
+              "description": "Public pane id (e.g. `\"w1:p2\"`) of this agent's parent, when it was\nrecorded as a child with `agent set-parent`. Absent for root agents.",
               "type": [
                 "string",
                 "null"
@@ -7457,7 +7523,7 @@
               "type": "string"
             },
             "parent": {
-              "description": "Public pane id (e.g. `\"w1:p2\"`) of this pane's parent agent, when it was\nstarted as a child with `--parent`. Absent for root agents.",
+              "description": "Public pane id (e.g. `\"w1:p2\"`) of this pane's parent agent, when it was\nrecorded as a child with `agent set-parent`. Absent for root agents.",
               "type": [
                 "string",
                 "null"

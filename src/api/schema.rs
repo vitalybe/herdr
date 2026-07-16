@@ -107,6 +107,8 @@ pub enum Method {
     AgentList(EmptyParams),
     #[serde(rename = "agent.get")]
     AgentGet(AgentTarget),
+    #[serde(rename = "agent.children")]
+    AgentChildren(AgentChildrenParams),
     #[serde(rename = "agent.read")]
     AgentRead(AgentReadParams),
     #[serde(rename = "agent.explain")]

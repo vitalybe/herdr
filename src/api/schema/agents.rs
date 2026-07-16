@@ -171,6 +171,17 @@ pub struct AgentSetParentParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentChildrenParams {
+    /// Target of the agent whose children to list (terminal id, public pane id
+    /// like `"w1:p2"`, or agent name).
+    pub target: String,
+    /// When true, return the whole descendant subtree in preorder (children,
+    /// their children, and so on); otherwise return only the direct children.
+    #[serde(default)]
+    pub recursive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentStartParams {
     pub name: String,
     pub kind: String,
@@ -230,7 +241,7 @@ pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
     /// Public pane id (e.g. `"w1:p2"`) of this agent's parent, when it was
-    /// started as a child with `--parent`. Absent for root agents.
+    /// recorded as a child with `agent set-parent`. Absent for root agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     pub revision: u64,

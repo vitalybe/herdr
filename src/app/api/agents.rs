@@ -3,8 +3,8 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use crate::api::schema::{
-    AgentPromptParams, AgentRenameParams, AgentSendKeysParams, AgentSetParentParams,
-    AgentStartParams, AgentTarget, PaneReadResult, ResponseResult,
+    AgentChildrenParams, AgentInfo, AgentPromptParams, AgentRenameParams, AgentSendKeysParams,
+    AgentSetParentParams, AgentStartParams, AgentTarget, PaneReadResult, ResponseResult,
 };
 use crate::app::App;
 
@@ -30,6 +30,21 @@ impl App {
         };
 
         encode_success(id, ResponseResult::AgentInfo { agent })
+    }
+
+    pub(super) fn handle_agent_children(
+        &mut self,
+        id: String,
+        params: AgentChildrenParams,
+    ) -> String {
+        let agent = match self.agent_info_for_target(&params.target) {
+            Ok(agent) => agent,
+            Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
+        };
+
+        let all = self.collect_agent_infos();
+        let agents = collect_agent_children(&all, &agent.pane_id, params.recursive);
+        encode_success(id, ResponseResult::AgentList { agents })
     }
 
     pub(super) fn handle_agent_focus(&mut self, id: String, target: AgentTarget) -> String {
@@ -315,6 +330,123 @@ fn agent_not_found(id: String, target: &str) -> String {
         "agent_not_found",
         format!("agent target {target} not found"),
     )
+}
+
+/// Collect the agents whose parent is `parent_pane_id`. With `recursive`, the
+/// whole descendant subtree is returned in preorder (each child immediately
+/// followed by its own subtree); otherwise only the direct children. Children
+/// keep the order they appear in `all`. A visited set guards against malformed
+/// cyclic parent links.
+fn collect_agent_children(
+    all: &[AgentInfo],
+    parent_pane_id: &str,
+    recursive: bool,
+) -> Vec<AgentInfo> {
+    let mut out = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    append_agent_children(all, parent_pane_id, recursive, &mut out, &mut visited);
+    out
+}
+
+fn append_agent_children(
+    all: &[AgentInfo],
+    parent_pane_id: &str,
+    recursive: bool,
+    out: &mut Vec<AgentInfo>,
+    visited: &mut std::collections::HashSet<String>,
+) {
+    for agent in all {
+        if agent.parent.as_deref() != Some(parent_pane_id) {
+            continue;
+        }
+        if !visited.insert(agent.pane_id.clone()) {
+            continue;
+        }
+        out.push(agent.clone());
+        if recursive {
+            append_agent_children(all, &agent.pane_id, recursive, out, visited);
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_children_tests {
+    use super::collect_agent_children;
+    use crate::api::schema::{AgentInfo, AgentStatus};
+
+    fn agent(pane_id: &str, parent: Option<&str>) -> AgentInfo {
+        AgentInfo {
+            terminal_id: format!("term_{pane_id}"),
+            name: None,
+            agent: None,
+            title: None,
+            display_agent: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Unknown,
+            screen_detection_skipped: false,
+            state_labels: std::collections::HashMap::new(),
+            tokens: std::collections::HashMap::new(),
+            agent_session: None,
+            workspace_id: "w1".into(),
+            tab_id: "w1:1".into(),
+            pane_id: pane_id.into(),
+            focused: false,
+            launch_pending: false,
+            interactive_ready: true,
+            state_change_seq: 0,
+            cwd: None,
+            foreground_cwd: None,
+            parent: parent.map(|value| value.into()),
+            revision: 0,
+        }
+    }
+
+    fn pane_ids(agents: &[AgentInfo]) -> Vec<&str> {
+        agents.iter().map(|agent| agent.pane_id.as_str()).collect()
+    }
+
+    // Tree: parent p1 has children p2, p3; p2 has grandchild p4; p5 is a root.
+    fn tree() -> Vec<AgentInfo> {
+        vec![
+            agent("w1:p1", None),
+            agent("w1:p2", Some("w1:p1")),
+            agent("w1:p4", Some("w1:p2")),
+            agent("w1:p3", Some("w1:p1")),
+            agent("w1:p5", None),
+        ]
+    }
+
+    #[test]
+    fn direct_children_only_in_source_order() {
+        let all = tree();
+        let children = collect_agent_children(&all, "w1:p1", false);
+        assert_eq!(pane_ids(&children), vec!["w1:p2", "w1:p3"]);
+    }
+
+    #[test]
+    fn recursive_children_are_preorder() {
+        let all = tree();
+        let children = collect_agent_children(&all, "w1:p1", true);
+        // p2, then p2's subtree (p4), then p3.
+        assert_eq!(pane_ids(&children), vec!["w1:p2", "w1:p4", "w1:p3"]);
+    }
+
+    #[test]
+    fn leaf_and_root_without_children_return_empty() {
+        let all = tree();
+        assert!(collect_agent_children(&all, "w1:p4", true).is_empty());
+        assert!(collect_agent_children(&all, "w1:p5", true).is_empty());
+    }
+
+    #[test]
+    fn cyclic_parent_links_do_not_recurse_forever() {
+        // p1 -> p2 -> p1 forms a cycle. Collection must terminate, visiting each
+        // node at most once (p2 as p1's child, then p1 as p2's child).
+        let all = vec![agent("w1:p1", Some("w1:p2")), agent("w1:p2", Some("w1:p1"))];
+        let children = collect_agent_children(&all, "w1:p1", true);
+        assert_eq!(pane_ids(&children), vec!["w1:p2", "w1:p1"]);
+    }
 }
 
 #[cfg(test)]

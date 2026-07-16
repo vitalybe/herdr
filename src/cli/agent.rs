@@ -1,9 +1,10 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
-    AgentSendKeysParams, AgentSetParentParams, AgentStartParams, AgentTarget, AgentWaitParams,
-    EmptyParams, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
+    AgentChildrenParams, AgentPromptParams, AgentPromptWaitOptions, AgentReadParams,
+    AgentRenameParams, AgentSendKeysParams, AgentSetParentParams, AgentStartParams, AgentTarget,
+    AgentWaitParams, EmptyParams, Method, PaneProcessInfoParams, PaneTarget, ReadFormat,
+    ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -18,6 +19,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
     match subcommand {
         "list" => agent_list(&args[1..]),
         "get" => agent_get(&args[1..]),
+        "children" => agent_children(&args[1..]),
         "read" => agent_read(&args[1..]),
         "send-keys" => agent_send_keys(&args[1..]),
         "prompt" => agent_prompt(&args[1..]),
@@ -450,6 +452,73 @@ fn agent_get(args: &[String]) -> std::io::Result<i32> {
             target: target.clone(),
         }),
     })?)
+}
+
+fn agent_children(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr agent children <target> [--recursive] [--json]";
+
+    let mut target = None;
+    let mut recursive = false;
+    let mut json = false;
+
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--recursive" => {
+                recursive = true;
+                index += 1;
+            }
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "help" | "--help" | "-h" => {
+                eprintln!("{USAGE}");
+                return Ok(0);
+            }
+            other if other.starts_with('-') => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
+            other => {
+                if target.is_some() {
+                    eprintln!("{USAGE}");
+                    return Ok(2);
+                }
+                target = Some(other.to_owned());
+                index += 1;
+            }
+        }
+    }
+
+    let Some(target) = target else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+
+    let response = super::send_request(&Request {
+        id: "cli:agent:children".into(),
+        method: Method::AgentChildren(AgentChildrenParams { target, recursive }),
+    })?;
+
+    if json {
+        return super::print_response(&response);
+    }
+
+    if response.get("error").is_some() {
+        eprintln!("{}", serde_json::to_string(&response).unwrap());
+        return Ok(1);
+    }
+
+    // Default output: one public pane id per child, ready for shell loops.
+    if let Some(agents) = response["result"]["agents"].as_array() {
+        for agent in agents {
+            if let Some(pane_id) = agent["pane_id"].as_str() {
+                println!("{pane_id}");
+            }
+        }
+    }
+    Ok(0)
 }
 
 fn agent_focus(args: &[String]) -> std::io::Result<i32> {
@@ -925,6 +994,7 @@ fn print_agent_help() {
     eprintln!("herdr agent commands:");
     eprintln!("  herdr agent list");
     eprintln!("  herdr agent get <target>");
+    eprintln!("  herdr agent children <target> [--recursive] [--json]");
     eprintln!("  herdr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]");
     eprintln!("  herdr agent send-keys <target> <key> [key ...]");
     eprintln!("  herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
@@ -953,7 +1023,7 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::agent_set_parent;
+    use super::{agent_children, agent_set_parent};
 
     #[test]
     fn set_parent_requires_two_positional_args() {
@@ -963,6 +1033,21 @@ mod tests {
         assert_eq!(agent_set_parent(&["w1:p1".into()]).unwrap(), 2);
         assert_eq!(
             agent_set_parent(&["w1:p1".into(), "w1:p2".into(), "extra".into()]).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn children_rejects_missing_target_and_extra_args() {
+        // Missing target, unknown flag, and a second positional all fail usage
+        // before any request is sent, returning the usage exit code.
+        assert_eq!(agent_children(&[]).unwrap(), 2);
+        assert_eq!(
+            agent_children(&["w1:p1".into(), "--nope".into()]).unwrap(),
+            2
+        );
+        assert_eq!(
+            agent_children(&["w1:p1".into(), "w1:p2".into()]).unwrap(),
             2
         );
     }

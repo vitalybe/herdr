@@ -627,6 +627,7 @@ impl App {
             previous_pane_focus: None,
             last_agent_focus: None,
             last_pane_section_focus: None,
+            pending_agent_reparent: None,
             selected,
             mode,
             should_quit: false,
@@ -1795,6 +1796,9 @@ impl App {
             }
             Mode::ConfirmClose => {
                 self.handle_confirm_close_key_via_api(key_event);
+            }
+            Mode::ConfirmAgentReparent => {
+                self.handle_agent_reparent_key_via_api(key_event);
             }
             Mode::ContextMenu => {
                 self.handle_context_menu_key_via_api(key_event);

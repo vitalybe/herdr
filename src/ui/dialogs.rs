@@ -826,6 +826,94 @@ pub(crate) fn confirm_close_button_rects(inner: Rect) -> (Rect, Rect) {
     (rects[0], rects[1])
 }
 
+pub(crate) fn agent_reparent_popup_rect(area: Rect) -> Option<Rect> {
+    centered_popup_rect(area, 64, 6)
+}
+
+pub(crate) fn agent_reparent_button_rects(inner: Rect) -> (Rect, Rect) {
+    confirm_close_button_rects(inner)
+}
+
+pub(super) fn render_confirm_agent_reparent_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    use crate::app::state::AgentReparentAction;
+
+    super::dim_background(frame, area);
+
+    let Some(pending) = app.pending_agent_reparent.as_ref() else {
+        return;
+    };
+    let Some(popup) = agent_reparent_popup_rect(area) else {
+        return;
+    };
+
+    let (title, child_part, rel_part) = match &pending.action {
+        AgentReparentAction::SetParent { .. } => (
+            "Set agent parent?",
+            pending.child_label.clone(),
+            format!(" → child of {}", pending.parent_label),
+        ),
+        AgentReparentAction::ClearParent => (
+            "Remove agent parent?",
+            pending.child_label.clone(),
+            format!(" → detach from {}", pending.parent_label),
+        ),
+    };
+
+    let accent = app.palette.blue;
+    let title_line = Line::from(vec![Span::styled(
+        format!(" {title}"),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+    )]);
+    let detail_line = Line::from(vec![
+        Span::styled(
+            format!(" {child_part}"),
+            Style::default()
+                .fg(app.palette.text)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(rel_part, Style::default().fg(app.palette.overlay0)),
+    ]);
+
+    let Some(inner) = render_panel_shell(frame, popup, accent, app.palette.panel_bg) else {
+        return;
+    };
+
+    if inner.height >= 3 {
+        let rows = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas::<4>(inner);
+
+        frame.render_widget(Paragraph::new(title_line), rows[0]);
+        frame.render_widget(Paragraph::new(detail_line), rows[1]);
+
+        let (confirm_rect, cancel_rect) = agent_reparent_button_rects(inner);
+        render_action_button(
+            frame,
+            confirm_rect,
+            Some("↵"),
+            "confirm",
+            Style::default()
+                .fg(panel_contrast_fg(&app.palette))
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
+        );
+        render_action_button(
+            frame,
+            cancel_rect,
+            Some("esc"),
+            "cancel",
+            Style::default()
+                .fg(app.palette.text)
+                .bg(app.palette.surface0)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{

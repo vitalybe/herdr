@@ -970,6 +970,45 @@ pub(super) fn confirm_close_cancel(state: &mut AppState) {
     state.mode = Mode::Navigate;
 }
 
+pub(super) fn open_agent_reparent_confirm(
+    state: &mut AppState,
+    pending: crate::app::state::PendingAgentReparent,
+) {
+    state.pending_agent_reparent = Some(pending);
+    state.mode = Mode::ConfirmAgentReparent;
+}
+
+fn agent_reparent_restore_mode(state: &mut AppState, return_mode: Mode) {
+    // Never restore back into the modal itself; fall back to the neutral mode.
+    state.mode = match return_mode {
+        Mode::ConfirmAgentReparent => {
+            if state.active.is_some() {
+                Mode::Terminal
+            } else {
+                Mode::Navigate
+            }
+        }
+        other => other,
+    };
+}
+
+pub(super) fn agent_reparent_accept(state: &mut AppState) {
+    if let Some(pending) = state.pending_agent_reparent.take() {
+        state.apply_agent_reparent(&pending);
+        agent_reparent_restore_mode(state, pending.return_mode);
+    } else {
+        leave_modal(state);
+    }
+}
+
+pub(super) fn agent_reparent_cancel(state: &mut AppState) {
+    if let Some(pending) = state.pending_agent_reparent.take() {
+        agent_reparent_restore_mode(state, pending.return_mode);
+    } else {
+        leave_modal(state);
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn handle_confirm_close_key(state: &mut AppState, key: KeyEvent) {
     match modal_action_from_key(&key, CONFIRM_CLOSE_ACTIONS) {
@@ -1444,6 +1483,14 @@ impl App {
                 self.confirm_close_accept_via_api();
             }
             Some(ModalAction::Cancel) => confirm_close_cancel(&mut self.state),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn handle_agent_reparent_key_via_api(&mut self, key: KeyEvent) {
+        match modal_action_from_key(&key, CONFIRM_CLOSE_ACTIONS) {
+            Some(ModalAction::Confirm) => agent_reparent_accept(&mut self.state),
+            Some(ModalAction::Cancel) => agent_reparent_cancel(&mut self.state),
             _ => {}
         }
     }
@@ -2198,6 +2245,45 @@ mod tests {
 
         assert!(state.workspaces.is_empty());
         assert_eq!(state.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn agent_reparent_modal_open_accept_cancel_lifecycle() {
+        use crate::app::state::{AgentReparentAction, PendingAgentReparent};
+
+        let mut state = state_with_workspaces(&["one"]);
+        state.ensure_test_terminals();
+        state.mode = Mode::Terminal;
+        let child = state.workspaces[0].tabs[0].root_pane;
+
+        let pending = PendingAgentReparent {
+            child_ws: 0,
+            child_pane: child,
+            child_label: "child".into(),
+            parent_label: "parent".into(),
+            action: AgentReparentAction::ClearParent,
+            return_mode: Mode::Terminal,
+        };
+
+        // Open enters the modal and stores the pending op.
+        open_agent_reparent_confirm(&mut state, pending.clone());
+        assert_eq!(state.mode, Mode::ConfirmAgentReparent);
+        assert!(state.pending_agent_reparent.is_some());
+        state.assert_invariants_for_test();
+
+        // Cancel restores the return mode and drops the pending op.
+        agent_reparent_cancel(&mut state);
+        assert_eq!(state.mode, Mode::Terminal);
+        assert!(state.pending_agent_reparent.is_none());
+        state.assert_invariants_for_test();
+
+        // Accept also clears the pending op and restores the mode.
+        open_agent_reparent_confirm(&mut state, pending);
+        assert_eq!(state.mode, Mode::ConfirmAgentReparent);
+        agent_reparent_accept(&mut state);
+        assert_eq!(state.mode, Mode::Terminal);
+        assert!(state.pending_agent_reparent.is_none());
+        state.assert_invariants_for_test();
     }
 
     fn manual_state_with_line_split(name: &str) -> (AppState, crate::app::state::LineSplitId) {

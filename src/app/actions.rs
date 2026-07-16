@@ -1439,6 +1439,254 @@ impl AppState {
         pos.unwrap_or(order.len())
     }
 
+    /// True when the pane at `(ws_idx, pane_id)` is backed by an agent terminal.
+    pub(crate) fn pane_is_agent(&self, ws_idx: usize, pane_id: crate::layout::PaneId) -> bool {
+        self.workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane_id))
+            .and_then(|pane| self.terminals.get(&pane.attached_terminal_id))
+            .is_some_and(|terminal| terminal.is_agent_terminal())
+    }
+
+    /// Live parent pane of the agent at `(ws_idx, pane_id)`, resolved from its
+    /// stable parent link. `None` for roots or when the parent no longer exists.
+    fn agent_parent_pane(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<(usize, crate::layout::PaneId)> {
+        self.workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane_id))
+            .and_then(|pane| pane.parent.as_ref())
+            .and_then(|parent| self.resolve_pane_parent(parent))
+    }
+
+    /// Walk the parent chain upward from `(start_ws, start_pane)`, including the
+    /// start pane itself, and report whether it reaches `(needle_ws,
+    /// needle_pane)`. A visited set guards against pre-existing cycles so the
+    /// walk always terminates. Used to reject reparent operations that would
+    /// create a cycle.
+    fn agent_parent_chain_contains(
+        &self,
+        start_ws: usize,
+        start_pane: crate::layout::PaneId,
+        needle_ws: usize,
+        needle_pane: crate::layout::PaneId,
+    ) -> bool {
+        let mut current = Some((start_ws, start_pane));
+        let mut visited = std::collections::HashSet::new();
+        while let Some((ws_idx, pane_id)) = current {
+            if ws_idx == needle_ws && pane_id == needle_pane {
+                return true;
+            }
+            if !visited.insert((ws_idx, pane_id)) {
+                break;
+            }
+            current = self.agent_parent_pane(ws_idx, pane_id);
+        }
+        false
+    }
+
+    /// Classify a manual-mode agent drag drop into a pending reparent operation,
+    /// if any. Returns `Some` only when the drop should change the dragged
+    /// agent's parent (attach under a parent whose children band the drop lands
+    /// in, or detach to the top level); returns `None` for a plain reorder (no
+    /// parent change), for line-splits, or for invalid targets (self/cycle).
+    ///
+    /// `tree_insert_idx` is the insertion slot in visible tree-row space, as
+    /// produced by the drop indicator. Attaching requires the target parent to
+    /// already have visible children (they form the drop band); a childless
+    /// agent has no band to drop into, so it can never gain its first child by
+    /// dragging.
+    pub(crate) fn agent_reparent_intent_for_drop(
+        &self,
+        source: crate::app::state::ManualEntryRef,
+        tree_insert_idx: usize,
+    ) -> Option<crate::app::state::PendingAgentReparent> {
+        use crate::app::state::{AgentReparentAction, ManualEntryRef, PendingAgentReparent};
+        use crate::ui::AgentPanelRow;
+
+        let source_pane = match source {
+            ManualEntryRef::Pane(pane_id) => pane_id,
+            ManualEntryRef::LineSplit(_) => return None,
+        };
+
+        let rows = crate::ui::agent_panel_rows(self);
+
+        // Locate the dragged agent row and its (contiguous) subtree span so we
+        // can skip it when scanning for the drop's neighbour.
+        let source_idx = rows.iter().position(
+            |row| matches!(row, AgentPanelRow::Agent(entry) if entry.pane_id == source_pane),
+        )?;
+        let source_entry = match &rows[source_idx] {
+            AgentPanelRow::Agent(entry) => entry,
+            AgentPanelRow::LineSplit { .. } => return None,
+        };
+        let source_ws = source_entry.ws_idx;
+        let source_depth = source_entry.depth;
+        let source_label = source_entry.primary_label.clone();
+        // Subtree end: first later row at depth <= source depth.
+        let mut subtree_end = rows.len();
+        for (idx, row) in rows.iter().enumerate().skip(source_idx + 1) {
+            let depth = match row {
+                AgentPanelRow::Agent(entry) => entry.depth,
+                AgentPanelRow::LineSplit { .. } => 0,
+            };
+            if depth <= source_depth {
+                subtree_end = idx;
+                break;
+            }
+        }
+        let is_in_source_subtree = |idx: usize| idx >= source_idx && idx < subtree_end;
+
+        // The row the dragged item would land after, ignoring its own subtree.
+        let mut prev: Option<&AgentPanelRow> = None;
+        for idx in (0..tree_insert_idx.min(rows.len())).rev() {
+            if is_in_source_subtree(idx) {
+                continue;
+            }
+            prev = Some(&rows[idx]);
+            break;
+        }
+
+        // Determine the enclosing parent of the drop slot.
+        let target_parent: Option<(usize, crate::layout::PaneId)> = match prev {
+            Some(AgentPanelRow::Agent(entry)) if entry.has_children && !entry.collapsed => {
+                // Dropped right after an expanded parent: becomes its first child.
+                Some((entry.ws_idx, entry.pane_id))
+            }
+            Some(AgentPanelRow::Agent(entry)) if entry.depth >= 1 => {
+                // Dropped among a parent's children: attach to that parent.
+                entry
+                    .parent_pane
+                    .map(|parent_pane| (entry.ws_idx, parent_pane))
+            }
+            _ => None,
+        };
+
+        let current_parent = self.agent_parent_pane(source_ws, source_pane);
+        if target_parent == current_parent {
+            return None;
+        }
+
+        match target_parent {
+            Some((parent_ws, parent_pane)) => {
+                // Reject self-parenting and cycles.
+                if parent_ws == source_ws && parent_pane == source_pane {
+                    return None;
+                }
+                if self.agent_parent_chain_contains(parent_ws, parent_pane, source_ws, source_pane)
+                {
+                    return None;
+                }
+                let parent_label = rows.iter().find_map(|row| match row {
+                    AgentPanelRow::Agent(entry)
+                        if entry.ws_idx == parent_ws && entry.pane_id == parent_pane =>
+                    {
+                        Some(entry.primary_label.clone())
+                    }
+                    _ => None,
+                })?;
+                Some(PendingAgentReparent {
+                    child_ws: source_ws,
+                    child_pane: source_pane,
+                    child_label: source_label,
+                    parent_label,
+                    action: AgentReparentAction::SetParent {
+                        parent_ws,
+                        parent_pane,
+                    },
+                    return_mode: self.mode,
+                })
+            }
+            None => {
+                // Detach only makes sense when the agent currently has a parent.
+                let (parent_ws, parent_pane) = current_parent?;
+                let parent_label = rows
+                    .iter()
+                    .find_map(|row| match row {
+                        AgentPanelRow::Agent(entry)
+                            if entry.ws_idx == parent_ws && entry.pane_id == parent_pane =>
+                        {
+                            Some(entry.primary_label.clone())
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                Some(PendingAgentReparent {
+                    child_ws: source_ws,
+                    child_pane: source_pane,
+                    child_label: source_label,
+                    parent_label,
+                    action: AgentReparentAction::ClearParent,
+                    return_mode: self.mode,
+                })
+            }
+        }
+    }
+
+    /// Apply a confirmed reparent: set or clear the dragged agent's stable parent
+    /// link. Re-validates agent-ness and cycles defensively in case state moved
+    /// since the drop. Returns true when the link changed.
+    pub(crate) fn apply_agent_reparent(
+        &mut self,
+        pending: &crate::app::state::PendingAgentReparent,
+    ) -> bool {
+        use crate::app::state::AgentReparentAction;
+
+        if !self.pane_is_agent(pending.child_ws, pending.child_pane) {
+            return false;
+        }
+
+        let new_parent_ref = match pending.action {
+            AgentReparentAction::SetParent {
+                parent_ws,
+                parent_pane,
+            } => {
+                if !self.pane_is_agent(parent_ws, parent_pane) {
+                    return false;
+                }
+                if parent_ws == pending.child_ws && parent_pane == pending.child_pane {
+                    return false;
+                }
+                if self.agent_parent_chain_contains(
+                    parent_ws,
+                    parent_pane,
+                    pending.child_ws,
+                    pending.child_pane,
+                ) {
+                    return false;
+                }
+                let Some(parent_ws_ref) = self.workspaces.get(parent_ws) else {
+                    return false;
+                };
+                let Some(pane_number) = parent_ws_ref.public_pane_number(parent_pane) else {
+                    return false;
+                };
+                Some(crate::pane::PaneParentRef {
+                    workspace_id: parent_ws_ref.id.clone(),
+                    pane_number,
+                })
+            }
+            AgentReparentAction::ClearParent => None,
+        };
+
+        let Some(pane_state) = self
+            .workspaces
+            .get_mut(pending.child_ws)
+            .and_then(|ws| ws.pane_state_mut(pending.child_pane))
+        else {
+            return false;
+        };
+        if pane_state.parent == new_parent_ref {
+            return false;
+        }
+        pane_state.parent = new_parent_ref;
+        self.mark_session_dirty();
+        true
+    }
+
     /// Reconcile the client-only Panes-section order with the live set of
     /// non-agent panes across all workspaces. Called from the compute_view
     /// mutation phase so render stays pure.
@@ -3339,6 +3587,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::state::{AgentReparentAction, ManualEntryRef};
     use crate::detect::{Agent, AgentState};
     use crate::workspace::Workspace;
     use ratatui::layout::Direction;
@@ -4174,6 +4423,143 @@ mod tests {
         assert!(state.focus_agent_entry(1));
         assert_eq!(state.workspaces[0].focused_pane_id(), Some(top2));
         state.assert_invariants_for_test();
+    }
+
+    // Visible tree order for app_with_agent_subtree_and_sibling:
+    //   0 parent (expanded, has children)
+    //   1 child_a (depth 1)
+    //   2 child_b (depth 1)
+    //   3 top2   (depth 0, childless)
+
+    #[test]
+    fn drop_among_children_attaches_to_that_parent() {
+        let (state, parent, _child_a, _child_b, top2) = app_with_agent_subtree_and_sibling();
+        // Drop top2 between child_a and child_b (tree slot 2).
+        let intent = state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(top2), 2)
+            .expect("drop among children yields a reparent");
+        assert_eq!(intent.child_pane, top2);
+        assert_eq!(
+            intent.action,
+            AgentReparentAction::SetParent {
+                parent_ws: 0,
+                parent_pane: parent
+            }
+        );
+    }
+
+    #[test]
+    fn drop_right_after_expanded_parent_attaches_as_first_child() {
+        let (state, parent, _child_a, _child_b, top2) = app_with_agent_subtree_and_sibling();
+        // Drop top2 immediately after the parent row (tree slot 1).
+        let intent = state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(top2), 1)
+            .expect("drop after expanded parent yields a reparent");
+        assert_eq!(
+            intent.action,
+            AgentReparentAction::SetParent {
+                parent_ws: 0,
+                parent_pane: parent
+            }
+        );
+    }
+
+    #[test]
+    fn drop_at_top_level_detaches_a_child() {
+        let (state, _parent, child_a, _child_b, _top2) = app_with_agent_subtree_and_sibling();
+        // Drag child_a to the very end, after the childless top-level agent.
+        let intent = state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(child_a), 4)
+            .expect("dropping a child at top level yields a detach");
+        assert_eq!(intent.child_pane, child_a);
+        assert_eq!(intent.action, AgentReparentAction::ClearParent);
+    }
+
+    #[test]
+    fn drop_next_to_childless_agent_does_not_attach() {
+        let (state, _parent, child_a, _child_b, _top2) = app_with_agent_subtree_and_sibling();
+        // Dropping right after top2 (a childless leaf) never makes child_a its
+        // child; a childless agent has no children band to drop into.
+        let intent = state.agent_reparent_intent_for_drop(ManualEntryRef::Pane(child_a), 4);
+        assert!(matches!(
+            intent.map(|i| i.action),
+            Some(AgentReparentAction::ClearParent)
+        ));
+    }
+
+    #[test]
+    fn reorder_within_same_group_is_not_a_reparent() {
+        let (state, _parent, child_a, _child_b, _top2) = app_with_agent_subtree_and_sibling();
+        // Moving child_a within its parent's own child band changes nothing about
+        // parentage, so there is no modal, just a plain reorder.
+        assert!(state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(child_a), 3)
+            .is_none());
+    }
+
+    #[test]
+    fn top_level_move_of_parentless_agent_is_not_a_reparent() {
+        let (state, _parent, _child_a, _child_b, top2) = app_with_agent_subtree_and_sibling();
+        // top2 has no parent; dropping it at another top-level slot is a reorder.
+        assert!(state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(top2), 0)
+            .is_none());
+    }
+
+    #[test]
+    fn line_split_source_never_reparents() {
+        let (state, _parent, _child_a, _child_b, _top2) = app_with_agent_subtree_and_sibling();
+        assert!(state
+            .agent_reparent_intent_for_drop(
+                ManualEntryRef::LineSplit(crate::app::state::LineSplitId(0)),
+                1
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn apply_agent_reparent_sets_and_clears_parent() {
+        let (mut state, parent, child_a, _child_b, top2) = app_with_agent_subtree_and_sibling();
+
+        // Attach top2 under parent.
+        let set = state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(top2), 2)
+            .expect("attach intent");
+        assert!(state.apply_agent_reparent(&set));
+        assert_eq!(state.agent_parent_pane(0, top2), Some((0, parent)));
+
+        // Detach child_a back to the top level.
+        let clear = crate::app::state::PendingAgentReparent {
+            child_ws: 0,
+            child_pane: child_a,
+            child_label: String::new(),
+            parent_label: String::new(),
+            action: AgentReparentAction::ClearParent,
+            return_mode: Mode::Terminal,
+        };
+        assert!(state.apply_agent_reparent(&clear));
+        assert_eq!(state.agent_parent_pane(0, child_a), None);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn apply_agent_reparent_rejects_cycles() {
+        let (mut state, parent, child_a, _child_b, _top2) = app_with_agent_subtree_and_sibling();
+        // Making parent a child of its own descendant child_a is a cycle.
+        let cyclic = crate::app::state::PendingAgentReparent {
+            child_ws: 0,
+            child_pane: parent,
+            child_label: String::new(),
+            parent_label: String::new(),
+            action: AgentReparentAction::SetParent {
+                parent_ws: 0,
+                parent_pane: child_a,
+            },
+            return_mode: Mode::Terminal,
+        };
+        assert!(!state.apply_agent_reparent(&cyclic));
+        // parent stays a root.
+        assert_eq!(state.agent_parent_pane(0, parent), None);
     }
 
     #[test]

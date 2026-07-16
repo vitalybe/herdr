@@ -211,7 +211,7 @@ Metadata text is normalized before storage. Herdr trims surrounding whitespace, 
 ```bash
 herdr agent list
 herdr agent get <target>
-herdr agent children <target> [--recursive] [--json]
+herdr agent children [target] [--recursive] [--json]
 herdr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]
 herdr agent send <target> <text>
 herdr agent rename <target> <name>|--clear
@@ -230,7 +230,7 @@ Agent targets can be terminal IDs, unique agent names, detected or reported agen
 
 `agent set-parent <target> <parent>` assigns or changes the parent of an already-running agent. Both targets resolve with the same rules and must be agent panes. It only assigns or changes the link; it never clears it. The command rejects a target that is its own parent and any assignment that would create a cycle (a parent that is the child itself or one of its descendants). The change takes effect immediately, so the child re-nests under its new parent on the next agents-panel render, and the link persists across restart.
 
-`agent children <target>` lists the child agents nested under an agent in the agents-panel tree. The target resolves with the same rules and must be an agent pane. By default it prints one public pane id per direct child, one per line, so it drops straight into shell loops; add `--recursive` to include the whole descendant subtree in tree (preorder) order, and `--json` to emit the full agent records instead of bare pane ids.
+`agent children [target]` lists the child agents nested under an agent in the agents-panel tree. The target resolves with the same rules and must be an agent pane; when omitted it defaults to the caller's own pane via `$HERDR_PANE_ID`, so the command can be run from inside an agent pane without repeating its id. By default it prints one public pane id per direct child, one per line, so it drops straight into shell loops; add `--recursive` to include the whole descendant subtree in tree (preorder) order, and `--json` to emit the full agent records instead of bare pane ids.
 
 `agent read` reads the resolved terminal stream. `agent send` writes literal text to that stream. `agent get`, `agent focus`, `agent wait`, and `agent attach` require the resolved terminal to have agent identity. `agent rename` can assign that identity.
 

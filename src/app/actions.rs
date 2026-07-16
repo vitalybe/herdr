@@ -12,9 +12,10 @@ use crate::workspace::WorkspaceGitStatus;
 use unicode_width::UnicodeWidthChar;
 
 use super::state::{
-    text_matches_query, AgentNotificationDelivery, AppState, Mode, NavigatorRow,
-    NavigatorStateFilter, NavigatorTarget, PaneFocusTarget, PendingAgentNotification, ToastKind,
-    ToastNotification, ToastTarget, ViewLayout,
+    text_matches_query, AgentNotificationDelivery, AppState, ClosedEntry, ClosedWorkspaceEntry,
+    Mode, NavigatorRow, NavigatorStateFilter, NavigatorTarget, PaneFocusTarget,
+    PendingAgentNotification, ToastKind, ToastNotification, ToastTarget, ViewLayout,
+    MAX_CLOSED_ENTRIES,
 };
 
 fn is_background_completion_transition(prev_state: AgentState, new_state: AgentState) -> bool {
@@ -2098,6 +2099,52 @@ impl AppState {
         }
     }
 
+    /// Push a closed tab/workspace entry onto the undo stack, dropping the
+    /// oldest entries past [`MAX_CLOSED_ENTRIES`].
+    fn push_closed_entry(&mut self, entry: ClosedEntry) {
+        self.closed_entries.push(entry);
+        let overflow = self.closed_entries.len().saturating_sub(MAX_CLOSED_ENTRIES);
+        if overflow > 0 {
+            self.closed_entries.drain(0..overflow);
+        }
+    }
+
+    /// Capture a tab that is about to be closed while its workspace survives, so
+    /// undo can reopen it in place.
+    pub(crate) fn capture_closed_tab(&mut self, ws_idx: usize, tab_idx: usize) {
+        let Some(ws) = self.workspaces.get(ws_idx) else {
+            return;
+        };
+        let workspace_id = ws.id.clone();
+        let Some(tab) = ws.tabs.get(tab_idx) else {
+            return;
+        };
+        let snapshot = crate::persist::capture_tab_for_undo(tab, &self.terminals);
+        self.push_closed_entry(ClosedEntry::Tab {
+            workspace_id,
+            index: tab_idx,
+            snapshot: Box::new(snapshot),
+        });
+    }
+
+    /// Capture one or more workspaces that are about to be closed together, so
+    /// undo can reopen the whole set in place.
+    fn capture_closed_workspaces(&mut self, indices: &[usize]) {
+        let mut entries = Vec::new();
+        for &idx in indices {
+            if let Some(ws) = self.workspaces.get(idx) {
+                let snapshot = crate::persist::capture_workspace_for_undo(ws, &self.terminals);
+                entries.push(ClosedWorkspaceEntry {
+                    index: idx,
+                    snapshot: Box::new(snapshot),
+                });
+            }
+        }
+        if !entries.is_empty() {
+            self.push_closed_entry(ClosedEntry::Workspaces(entries));
+        }
+    }
+
     pub fn close_selected_workspace(&mut self) {
         if self.workspaces.is_empty() {
             return;
@@ -2133,6 +2180,7 @@ impl AppState {
                 crate::logging::workspace_closed(&workspace_id);
             }
         }
+        self.capture_closed_workspaces(&close_indices);
         self.remove_plugin_pane_records(pane_ids);
         for idx in close_indices.iter().rev() {
             self.workspaces.remove(*idx);
@@ -2527,6 +2575,9 @@ impl AppState {
                 .get(ws_idx)
                 .map(|ws| self.pane_ids_for_tab(ws_idx, ws.active_tab))
                 .unwrap_or_default();
+            if let Some(tab_idx) = self.workspaces.get(ws_idx).map(|ws| ws.active_tab) {
+                self.capture_closed_tab(ws_idx, tab_idx);
+            }
             let Some(ws) = self.workspaces.get_mut(ws_idx) else {
                 return false;
             };
@@ -6934,6 +6985,84 @@ mod tests {
         assert!(!state.terminals.contains_key(&terminal_id));
         assert!(!state.plugin_panes.contains_key(&pane_id));
         state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn close_tab_captures_closed_tab_for_undo() {
+        let mut state = app_with_workspaces(&["test"]);
+        let tab_idx = state.workspaces[0].test_add_tab(Some("logs"));
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.workspaces[0].switch_tab(tab_idx);
+        let ws_id = state.workspaces[0].id.clone();
+
+        state.close_tab();
+
+        assert_eq!(state.closed_entries.len(), 1);
+        match &state.closed_entries[0] {
+            ClosedEntry::Tab {
+                workspace_id,
+                index,
+                ..
+            } => {
+                assert_eq!(workspace_id, &ws_id);
+                assert_eq!(*index, tab_idx);
+            }
+            _ => panic!("expected a Tab undo entry"),
+        }
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn close_last_tab_captures_workspace_not_tab_for_undo() {
+        let mut state = app_with_workspaces(&["solo"]);
+        state.ensure_test_terminals();
+        state.active = Some(0);
+
+        state.close_tab();
+
+        assert_eq!(state.closed_entries.len(), 1);
+        assert!(
+            matches!(state.closed_entries[0], ClosedEntry::Workspaces(_)),
+            "closing the last tab should capture the whole workspace for undo"
+        );
+    }
+
+    #[test]
+    fn close_selected_workspace_captures_for_undo() {
+        let mut state = app_with_workspaces(&["a", "b"]);
+        state.ensure_test_terminals();
+        state.selected = 0;
+        let ws_id = state.workspaces[0].id.clone();
+
+        state.close_selected_workspace();
+
+        assert_eq!(state.closed_entries.len(), 1);
+        match &state.closed_entries[0] {
+            ClosedEntry::Workspaces(entries) => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].index, 0);
+                assert_eq!(entries[0].snapshot.id.as_deref(), Some(ws_id.as_str()));
+            }
+            _ => panic!("expected a Workspaces undo entry"),
+        }
+    }
+
+    #[test]
+    fn closed_entries_stack_is_capped() {
+        let names: Vec<String> = (0..(MAX_CLOSED_ENTRIES + 3))
+            .map(|i| format!("ws{i}"))
+            .collect();
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut state = app_with_workspaces(&name_refs);
+        state.ensure_test_terminals();
+
+        for _ in 0..(MAX_CLOSED_ENTRIES + 3) {
+            state.selected = 0;
+            state.close_selected_workspace();
+        }
+
+        assert_eq!(state.closed_entries.len(), MAX_CLOSED_ENTRIES);
     }
 
     #[test]

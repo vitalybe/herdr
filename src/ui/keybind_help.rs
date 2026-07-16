@@ -133,6 +133,10 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
         help_entry(keybind_label(&kb.next_tab), "next tab"),
         help_entry(indexed_label(&kb.switch_tab), "switch tab 1-9"),
         help_entry(keybind_label(&kb.close_tab), "close tab"),
+        help_entry(
+            keybind_label(&kb.undo_close),
+            "reopen closed tab / workspace",
+        ),
     ];
     groups.push(("workspaces / tabs", workspace_tab));
 

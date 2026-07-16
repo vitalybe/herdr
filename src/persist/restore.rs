@@ -92,6 +92,160 @@ pub fn restore(
     )
 }
 
+/// Restored parts for a single reopened workspace (undo-close).
+pub(crate) struct RestoredWorkspaceParts {
+    pub workspace: Workspace,
+    pub terminals: Vec<TerminalState>,
+    pub terminal_runtimes: HashMap<TerminalId, TerminalRuntime>,
+}
+
+/// Restored parts for a single reopened tab spliced into a live workspace
+/// (undo-close). Public pane numbers are assigned from the live workspace's
+/// counter so they never collide with existing panes.
+pub(crate) struct RestoredTabParts {
+    pub tab: crate::workspace::Tab,
+    pub terminals: Vec<TerminalState>,
+    pub terminal_runtimes: HashMap<TerminalId, TerminalRuntime>,
+    pub public_pane_numbers: HashMap<PaneId, usize>,
+    pub next_public_pane_number: usize,
+}
+
+/// Rebuild one workspace from a snapshot with fresh shells, for reopening a
+/// closed workspace at runtime. Agents are not auto-resumed on undo.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn restore_one_workspace(
+    snap: &WorkspaceSnapshot,
+    rows: u16,
+    cols: u16,
+    scrollback_limit_bytes: usize,
+    shell_config: crate::pane::PaneShellConfig<'_>,
+    events: mpsc::Sender<AppEvent>,
+    render_notify: Arc<Notify>,
+    render_dirty: Arc<AtomicBool>,
+) -> Option<RestoredWorkspaceParts> {
+    let runtime_context = RestoreRuntimeContext {
+        scrollback_limit_bytes,
+        shell_config,
+        resume_agents_on_restore: false,
+        events,
+        render_notify,
+        render_dirty,
+    };
+    let mut resumed_agent_sessions = HashSet::new();
+    let mut imported_panes = HashMap::new();
+    let (restored, _failed) = restore_workspace(
+        snap,
+        None,
+        rows,
+        cols,
+        &runtime_context,
+        &mut resumed_agent_sessions,
+        &mut imported_panes,
+    );
+    let (workspace, terminals, terminal_runtimes) = restored?;
+    crate::workspace::reserve_workspace_ids(std::slice::from_ref(&workspace));
+    Some(RestoredWorkspaceParts {
+        workspace,
+        terminals,
+        terminal_runtimes,
+    })
+}
+
+/// Rebuild one tab from a snapshot with fresh shells, for reopening a closed
+/// tab into a still-open workspace. Public pane numbers are assigned starting
+/// at `first_public_pane_number` (the live workspace's next counter value) so
+/// the reopened panes get fresh, non-colliding public ids.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn restore_one_tab(
+    snap: &TabSnapshot,
+    workspace_id: &str,
+    tab_number: usize,
+    first_public_pane_number: usize,
+    rows: u16,
+    cols: u16,
+    scrollback_limit_bytes: usize,
+    shell_config: crate::pane::PaneShellConfig<'_>,
+    events: mpsc::Sender<AppEvent>,
+    render_notify: Arc<Notify>,
+    render_dirty: Arc<AtomicBool>,
+) -> Option<RestoredTabParts> {
+    let mut layout_pane_ids = Vec::new();
+    collect_layout_snapshot_pane_ids(&snap.layout, &mut layout_pane_ids);
+    let mut next_public_pane_number = first_public_pane_number;
+    let mut public_number_by_old_raw: HashMap<u32, usize> = HashMap::new();
+    for old_raw in &layout_pane_ids {
+        public_number_by_old_raw.entry(*old_raw).or_insert_with(|| {
+            let number = next_public_pane_number;
+            next_public_pane_number += 1;
+            number
+        });
+    }
+    let public_pane_ids_by_old_raw: HashMap<u32, String> = public_number_by_old_raw
+        .iter()
+        .map(|(old_raw, number)| {
+            (
+                *old_raw,
+                format!(
+                    "{}:p{}",
+                    workspace_id,
+                    crate::workspace::encode_public_number(*number)
+                ),
+            )
+        })
+        .collect();
+
+    let runtime_context = RestoreRuntimeContext {
+        scrollback_limit_bytes,
+        shell_config,
+        resume_agents_on_restore: false,
+        events,
+        render_notify,
+        render_dirty,
+    };
+    let mut resumed_agent_sessions = HashSet::new();
+    let mut imported_panes = HashMap::new();
+    let (restored, _failed) = restore_tab(
+        snap,
+        None,
+        tab_number,
+        workspace_id,
+        rows,
+        cols,
+        &runtime_context,
+        &mut resumed_agent_sessions,
+        &mut imported_panes,
+        &public_pane_ids_by_old_raw,
+    );
+    let (tab, terminals, terminal_runtimes, reverse_id_map) = restored?;
+
+    let mut public_pane_numbers = HashMap::new();
+    let mut next_public_pane_number = first_public_pane_number;
+    for pane_id in tab.layout.pane_ids() {
+        let old_raw = reverse_id_map
+            .get(&pane_id)
+            .copied()
+            .unwrap_or_else(|| pane_id.raw());
+        let number = public_number_by_old_raw
+            .get(&old_raw)
+            .copied()
+            .unwrap_or_else(|| {
+                let number = next_public_pane_number;
+                next_public_pane_number += 1;
+                number
+            });
+        public_pane_numbers.insert(pane_id, number);
+        next_public_pane_number = next_public_pane_number.max(number + 1);
+    }
+
+    Some(RestoredTabParts {
+        tab,
+        terminals,
+        terminal_runtimes,
+        public_pane_numbers,
+        next_public_pane_number,
+    })
+}
+
 #[cfg(unix)]
 pub fn restore_handoff(
     snapshot: &SessionSnapshot,
@@ -1825,5 +1979,126 @@ mod tests {
             pane_section_order: None,
         };
         (snapshot, history)
+    }
+
+    #[tokio::test]
+    async fn restore_one_tab_assigns_public_numbers_from_counter() {
+        let cwd = std::env::current_dir().unwrap();
+        let tab = TabSnapshot {
+            custom_name: Some("logs".into()),
+            layout: LayoutSnapshot::Split {
+                direction: super::super::snapshot::DirectionSnapshot::Horizontal,
+                ratio: 0.5,
+                first: Box::new(LayoutSnapshot::Pane(7)),
+                second: Box::new(LayoutSnapshot::Pane(8)),
+            },
+            panes: HashMap::from([
+                (
+                    7,
+                    super::super::snapshot::PaneSnapshot {
+                        cwd: cwd.clone(),
+                        label: None,
+                        agent_name: None,
+                        agent_session: None,
+                        launch_argv: None,
+                        parent: None,
+                    },
+                ),
+                (
+                    8,
+                    super::super::snapshot::PaneSnapshot {
+                        cwd: cwd.clone(),
+                        label: None,
+                        agent_name: None,
+                        agent_session: None,
+                        launch_argv: None,
+                        parent: None,
+                    },
+                ),
+            ]),
+            zoomed: false,
+            focused: Some(7),
+            root_pane: Some(7),
+        };
+
+        let parts = restore_one_tab(
+            &tab,
+            "w1",
+            9,
+            4,
+            24,
+            80,
+            0,
+            crate::pane::PaneShellConfig::new(
+                test_restore_shell(),
+                crate::config::ShellModeConfig::NonLogin,
+            ),
+            mpsc::channel(4).0,
+            Arc::new(Notify::new()),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("tab should restore");
+
+        assert_eq!(parts.tab.number, 9);
+        assert_eq!(parts.public_pane_numbers.len(), 2);
+        let mut numbers: Vec<usize> = parts.public_pane_numbers.values().copied().collect();
+        numbers.sort_unstable();
+        assert_eq!(numbers, vec![4, 5]);
+        assert!(parts.next_public_pane_number >= 6);
+    }
+
+    #[tokio::test]
+    async fn restore_one_workspace_rebuilds_workspace() {
+        let cwd = std::env::current_dir().unwrap();
+        let snap = WorkspaceSnapshot {
+            id: Some("w1".into()),
+            custom_name: Some("keep".into()),
+            identity_cwd: cwd.clone(),
+            worktree_space: None,
+            public_pane_numbers: HashMap::from([(10, 1)]),
+            next_public_pane_number: 2,
+            public_tab_numbers: vec![1],
+            next_public_tab_number: 2,
+            tabs: vec![TabSnapshot {
+                custom_name: None,
+                layout: LayoutSnapshot::Pane(10),
+                panes: HashMap::from([(
+                    10,
+                    super::super::snapshot::PaneSnapshot {
+                        cwd: cwd.clone(),
+                        label: None,
+                        agent_name: None,
+                        agent_session: None,
+                        launch_argv: None,
+                        parent: None,
+                    },
+                )]),
+                zoomed: false,
+                focused: Some(10),
+                root_pane: Some(10),
+            }],
+            active_tab: 0,
+            home_tab: 0,
+        };
+
+        let parts = restore_one_workspace(
+            &snap,
+            24,
+            80,
+            0,
+            crate::pane::PaneShellConfig::new(
+                test_restore_shell(),
+                crate::config::ShellModeConfig::NonLogin,
+            ),
+            mpsc::channel(4).0,
+            Arc::new(Notify::new()),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("workspace should restore");
+
+        assert_eq!(parts.workspace.id, "w1");
+        assert_eq!(parts.workspace.custom_name.as_deref(), Some("keep"));
+        assert_eq!(parts.workspace.tabs.len(), 1);
+        assert_eq!(parts.terminals.len(), 1);
     }
 }

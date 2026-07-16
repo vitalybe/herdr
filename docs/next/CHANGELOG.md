@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Added undo for a mistakenly closed tab or workspace. `prefix+u` (configurable as `keys.undo_close`) reopens the most recently closed tab, or the whole workspace when closing the last tab or pane closed it. Reopened tabs and workspaces spawn fresh shells in their saved directories; running processes and scrollback are not revived, and agents are not auto-resumed.
 - Added a sidebar "Tabs" section that lists every non-agent tab across all spaces as a two-line row (tab name over its space). Tabs can be reordered by dragging (visual only - it never changes the real tab order in any workspace), renamed by double-clicking, and scrolled when they overflow. The section collapses when there are no non-agent tabs.
 - Added `ui.sidebar_collapsed_mode = "hidden"` to make a collapsed sidebar use zero width while keeping the existing compact rail as the default. (#842)
 - Added `session.snapshot` to bootstrap client runtime state in one socket API response before subscribing to events.

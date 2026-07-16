@@ -191,6 +191,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # switch_tab = "prefix+1..9"
 # switch_workspace = ""   # optional indexed binding, e.g. "prefix+shift+1..9"
 # close_tab = "prefix+shift+x"
+# undo_close = "prefix+u"
 # rename_pane = "prefix+shift+p"
 # edit_scrollback = "prefix+e"
 # focus_pane_left = "prefix+h"

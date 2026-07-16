@@ -1716,6 +1716,34 @@ pub(crate) struct PaneFocusTarget {
     pub pane_id: PaneId,
 }
 
+/// A workspace captured on close, with the display index it occupied, so undo
+/// can reopen it in place.
+pub(crate) struct ClosedWorkspaceEntry {
+    pub index: usize,
+    pub snapshot: Box<crate::persist::WorkspaceSnapshot>,
+}
+
+/// A recently closed tab or workspace group, captured for undo-close. Reopening
+/// spawns fresh shells from the snapshot; scrollback and running processes are
+/// not revived.
+pub(crate) enum ClosedEntry {
+    /// One or more workspaces closed together. A worktree group closes as a set,
+    /// so it reopens as a set.
+    Workspaces(Vec<ClosedWorkspaceEntry>),
+    /// A tab closed while its workspace stayed open.
+    Tab {
+        /// Stable id of the workspace the tab belongs to.
+        workspace_id: String,
+        /// Tab display index at close time; reopen clamps to bounds.
+        index: usize,
+        snapshot: Box<crate::persist::TabSnapshot>,
+    },
+}
+
+/// Maximum number of closed tabs/workspaces retained for undo. Oldest entries
+/// are dropped past this bound.
+pub(crate) const MAX_CLOSED_ENTRIES: usize = 25;
+
 /// All application state — pure data, no channels or async runtime.
 /// Testable without PTYs or a tokio runtime.
 pub struct AppState {
@@ -1748,6 +1776,13 @@ pub struct AppState {
     pub detach_requested: bool,
     pub request_new_workspace: bool,
     pub request_new_tab: bool,
+    /// Set when input requested reopening the most recently closed tab or
+    /// workspace. Drained by the outer App/event loop, which owns the runtime
+    /// context needed to respawn shells.
+    pub request_undo_close: bool,
+    /// LIFO stack of recently closed tabs/workspaces available to reopen.
+    /// Runtime convenience state; not persisted across sessions.
+    pub(crate) closed_entries: Vec<ClosedEntry>,
     pub request_new_linked_worktree: Option<usize>,
     pub request_open_existing_worktree: Option<usize>,
     pub request_new_workspace_cwd: Option<std::path::PathBuf>,
@@ -2167,6 +2202,8 @@ impl AppState {
             detach_requested: false,
             request_new_workspace: false,
             request_new_tab: false,
+            request_undo_close: false,
+            closed_entries: Vec::new(),
             request_new_linked_worktree: None,
             request_open_existing_worktree: None,
             request_new_workspace_cwd: None,

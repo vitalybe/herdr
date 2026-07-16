@@ -372,6 +372,8 @@ pub struct KeysConfig {
     pub switch_workspace: BindingConfig,
     /// Close the active tab. Default: "prefix+shift+x".
     pub close_tab: BindingConfig,
+    /// Reopen the most recently closed tab or workspace. Default: "prefix+u".
+    pub undo_close: BindingConfig,
     /// Rename the focused pane. Default: "prefix+shift+p".
     pub rename_pane: BindingConfig,
     /// Open the focused pane scrollback in $EDITOR. Default: "prefix+e".
@@ -498,6 +500,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     close_tab: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    undo_close: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     rename_pane: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     edit_scrollback: Option<BindingConfig>,
@@ -597,6 +601,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(switch_tab);
         apply_field!(switch_workspace);
         apply_field!(close_tab);
+        apply_field!(undo_close);
         apply_field!(rename_pane);
         apply_field!(edit_scrollback);
         apply_field!(copy_mode);
@@ -698,6 +703,7 @@ impl KeysConfig {
         copy_effective_indexed_field!(switch_tab, keybinds.switch_tab);
         copy_effective_indexed_field!(switch_workspace, keybinds.switch_workspace);
         copy_effective_action_field!(close_tab, keybinds.close_tab);
+        copy_effective_action_field!(undo_close, keybinds.undo_close);
         copy_effective_action_field!(rename_pane, keybinds.rename_pane);
         copy_effective_action_field!(edit_scrollback, keybinds.edit_scrollback);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
@@ -954,6 +960,7 @@ impl Default for KeysConfig {
             switch_tab: BindingConfig::one("prefix+1..9"),
             switch_workspace: BindingConfig::empty(),
             close_tab: BindingConfig::one("prefix+shift+x"),
+            undo_close: BindingConfig::one("prefix+u"),
             rename_pane: BindingConfig::one("prefix+shift+p"),
             edit_scrollback: BindingConfig::one("prefix+e"),
             copy_mode: BindingConfig::one("prefix+["),

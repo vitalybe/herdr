@@ -317,6 +317,7 @@ pub struct Keybinds {
     pub switch_tab: Vec<IndexedKeybind>,
     pub switch_workspace: Vec<IndexedKeybind>,
     pub close_tab: ActionKeybinds,
+    pub undo_close: ActionKeybinds,
     pub rename_pane: ActionKeybinds,
     pub edit_scrollback: ActionKeybinds,
     pub copy_mode: ActionKeybinds,
@@ -482,6 +483,7 @@ impl Config {
             switch_tab: Vec::new(),
             switch_workspace: Vec::new(),
             close_tab: empty_action!(),
+            undo_close: empty_action!(),
             rename_pane: empty_action!(),
             edit_scrollback: empty_action!(),
             copy_mode: empty_action!(),
@@ -626,6 +628,7 @@ impl Config {
                 source
             );
             apply_action!(keybinds.close_tab, close_tab, source);
+            apply_action!(keybinds.undo_close, undo_close, source);
             apply_action!(keybinds.rename_pane, rename_pane, source);
             apply_action!(keybinds.edit_scrollback, edit_scrollback, source);
             apply_action!(keybinds.copy_mode, copy_mode, source);

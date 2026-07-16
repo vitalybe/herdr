@@ -414,6 +414,31 @@ pub fn capture(
     }
 }
 
+/// Capture a workspace snapshot for the undo-close stack. Unlike the session
+/// snapshot path this has no live runtime registry, so pane cwds fall back to
+/// each terminal's recorded cwd. Reopening spawns fresh shells there.
+pub(crate) fn capture_workspace_for_undo(
+    ws: &Workspace,
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+) -> WorkspaceSnapshot {
+    capture_workspace(ws, terminals, &TerminalRuntimeRegistry::new())
+}
+
+/// Capture a single tab snapshot for the undo-close stack. See
+/// [`capture_workspace_for_undo`] for the cwd fallback behavior.
+pub(crate) fn capture_tab_for_undo(
+    tab: &crate::workspace::Tab,
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+) -> TabSnapshot {
+    capture_tab(tab, terminals, &TerminalRuntimeRegistry::new())
+}
+
 fn capture_workspace(
     ws: &Workspace,
     terminals: &std::collections::HashMap<

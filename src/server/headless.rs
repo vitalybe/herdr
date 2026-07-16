@@ -526,6 +526,15 @@ impl HeadlessServer {
                 crate::render_prof::event("full_render_cause.deferred_new_tab");
             }
 
+            if self.app.state.request_undo_close {
+                self.app.state.request_undo_close = false;
+                if self.app.undo_last_close() {
+                    needs_render = true;
+                    needs_full_render = true;
+                    crate::render_prof::event("full_render_cause.deferred_undo_close");
+                }
+            }
+
             if let Some(ws_idx) = self.app.state.request_new_linked_worktree.take() {
                 self.app.open_new_linked_worktree_dialog(ws_idx);
                 needs_render = true;

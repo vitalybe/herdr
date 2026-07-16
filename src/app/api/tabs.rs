@@ -235,16 +235,22 @@ impl App {
             .and_then(|ws| ws.tabs.get(tab_idx))
             .map(|tab| tab.layout.pane_ids())
             .unwrap_or_default();
-        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
-            return tab_not_found(id, &target.tab_id);
-        };
-        if ws.tabs.len() <= 1 {
+        let survives = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .is_some_and(|ws| ws.tabs.len() > 1);
+        if !survives {
             return encode_error(
                 id,
                 "tab_close_failed",
                 "cannot close the last tab in a workspace",
             );
         }
+        self.state.capture_closed_tab(ws_idx, tab_idx);
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            return tab_not_found(id, &target.tab_id);
+        };
         if !ws.close_tab(tab_idx) {
             return encode_error(
                 id,

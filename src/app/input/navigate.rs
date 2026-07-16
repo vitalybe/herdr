@@ -675,14 +675,17 @@ impl App {
     }
 
     fn agent_entry_target(&self, idx: usize) -> Option<(usize, crate::layout::PaneId)> {
-        let entries = crate::ui::agent_panel_entries(&self.state);
-        let target = entries.get(idx)?;
-        Some((target.ws_idx, target.pane_id))
+        // Source the visible tree order (collapse-aware, agents only) so numeric
+        // focus matches exactly what the sidebar renders.
+        let targets = self.state.visible_agent_targets();
+        targets.get(idx).copied()
     }
 
     fn relative_agent_entry(&self, forward: bool) -> Option<(usize, usize, crate::layout::PaneId)> {
-        let entries = crate::ui::agent_panel_entries(&self.state);
-        let ids: Vec<crate::layout::PaneId> = entries.iter().map(|entry| entry.pane_id).collect();
+        // Cycle the visible tree order (collapse-aware, agents only) so live
+        // next/previous navigation follows the same order the sidebar shows.
+        let targets = self.state.visible_agent_targets();
+        let ids: Vec<crate::layout::PaneId> = targets.iter().map(|(_, pane_id)| *pane_id).collect();
         let focused = self
             .state
             .active
@@ -694,8 +697,8 @@ impl App {
             self.state.last_agent_focus,
             forward,
         )?;
-        let target = entries.get(next_idx)?;
-        Some((next_idx, target.ws_idx, target.pane_id))
+        let (ws_idx, pane_id) = targets.get(next_idx).copied()?;
+        Some((next_idx, ws_idx, pane_id))
     }
 
     /// Target entry when cycling the sidebar panes section forward/backward from

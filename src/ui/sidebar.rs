@@ -542,10 +542,16 @@ fn render_collapsed_section_header(frame: &mut Frame, area: Rect, band: SidebarB
     );
 }
 
-/// Whether the sidebar Panes section has any entries to show. When false, the
+/// Whether the sidebar Panes section has any content to show. When false, the
 /// Panes band collapses and the Agents band keeps the historical geometry.
+///
+/// Based on the rows *before* collapse filtering, so a line-split divider that
+/// currently hides every pane in its segment still keeps the Panes band (and the
+/// divider's clickable header) on screen. Otherwise collapsing a divider that
+/// covers all panes would drop the whole band and make the divider unreachable,
+/// stranding both the panes and the collapse state.
 pub(crate) fn sidebar_shows_pane_section(app: &AppState) -> bool {
-    !sidebar_pane_section_entries(app).is_empty()
+    !pane_section_rows_before_collapse(app).is_empty()
 }
 
 /// Body (scrolling content) region of the Panes band, below its header rows.
@@ -612,6 +618,15 @@ impl PaneSectionRow {
 /// order and interleaving panes and line-splits. Pane entries whose pane no
 /// longer resolves are skipped; line-splits are always kept.
 pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
+    apply_pane_line_split_collapse(app, pane_section_rows_before_collapse(app))
+}
+
+/// Panes-section rows before collapse filtering: every resolvable non-agent pane
+/// (deduped by same-name-in-tab) and every line-split divider, in manual order.
+/// Serves both as the input to [`apply_pane_line_split_collapse`] and as the
+/// signal for [`sidebar_shows_pane_section`], so section visibility does not
+/// depend on which rows a collapsed divider currently hides.
+fn pane_section_rows_before_collapse(app: &AppState) -> Vec<PaneSectionRow> {
     let mut lookup: std::collections::HashMap<
         (&str, usize),
         (usize, usize, crate::layout::PaneId),
@@ -646,8 +661,7 @@ pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
             }),
         })
         .collect();
-    let deduped = dedupe_same_name_tab_panes(app, base);
-    apply_pane_line_split_collapse(app, deduped)
+    dedupe_same_name_tab_panes(app, base)
 }
 
 /// The pane's own effective name (manual label / terminal title), independent of
@@ -3306,6 +3320,35 @@ mod tests {
             PaneSectionRow::LineSplit { id: row_id, name, .. } if *row_id == id && name == "scheduled"
         ));
         assert!(matches!(rows[2], PaneSectionRow::Pane(_)));
+    }
+
+    #[test]
+    fn pane_section_stays_visible_when_collapsed_divider_hides_every_pane() {
+        use crate::app::state::{line_split_collapse_key, LineSplitSection};
+
+        let mut app = pane_section_app_with_two_panes();
+        // A single divider above both panes, so collapsing it hides everything.
+        let id = app.pane_section_order.new_line_split("dev".to_string(), 0);
+        app.collapsed_line_split_keys
+            .insert(line_split_collapse_key(LineSplitSection::Panes, id));
+
+        // Every pane row is hidden, so there are no visible pane entries...
+        assert!(
+            sidebar_pane_section_entries(&app).is_empty(),
+            "collapsed divider hides all pane rows"
+        );
+        // ...but the divider header row survives so it can be clicked to expand,
+        let rows = sidebar_pane_section_rows(&app);
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(
+            &rows[0],
+            PaneSectionRow::LineSplit { id: row_id, collapsed: true, .. } if *row_id == id
+        ));
+        // ...and the Panes band stays on screen instead of vanishing entirely.
+        assert!(
+            sidebar_shows_pane_section(&app),
+            "a collapsed all-covering divider must not hide the whole Panes band"
+        );
     }
 
     /// One workspace whose single tab holds two non-agent panes, reconciled into

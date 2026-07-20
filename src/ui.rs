@@ -74,7 +74,7 @@ pub(crate) use self::{
         agent_panel_rows, agent_panel_scroll_metrics, agent_panel_scrollbar_rect,
         agent_panel_split_button_rect, agent_panel_toggle_rect, agents_detail_rect,
         collapsed_sidebar_sections, collapsed_sidebar_toggle_rect, compute_agent_panel_row_areas,
-        compute_pane_section_row_areas, compute_workspace_card_areas, expanded_sidebar_sections,
+        compute_pane_section_row_areas, compute_workspace_card_areas, expanded_sidebar_sections3,
         expanded_sidebar_toggle_rect, normalized_workspace_scroll, pane_section_body_rect,
         pane_section_rect, pane_section_row_index_of_pane, pane_section_scroll_metrics,
         pane_section_scrollbar_rect, pane_section_split_button_rect,

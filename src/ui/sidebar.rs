@@ -258,14 +258,53 @@ pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, 
     (ws_area, detail_area)
 }
 
-pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect {
-    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
-    if content.width == 0 || content.height < 6 {
+/// The draggable divider below the Spaces band (divider index 0), adjusting
+/// `spaces_ratio`. Empty unless Spaces is expanded and shares its region with at
+/// least one other expanded band, since `spaces_ratio` only affects the layout
+/// then. Derived from the collapse-aware [`expanded_sidebar_sections3`] geometry
+/// so the hit-test lines up with where the boundary is actually drawn.
+pub(crate) fn sidebar_section_divider_rect(
+    area: Rect,
+    spaces_ratio: f32,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
+    collapse: SidebarSectionCollapse,
+) -> Rect {
+    let panes_expanded = show_pane_section && !collapse.panes;
+    let agents_expanded = !collapse.agents;
+    if collapse.spaces || !(panes_expanded || agents_expanded) {
         return Rect::default();
     }
-
-    let (ws_h, _) = sidebar_section_heights(content.height, split_ratio);
-    Rect::new(content.x, content.y + ws_h, content.width, 1)
+    let (spaces_area, pane_section_area, agents_area) = expanded_sidebar_sections3(
+        area,
+        spaces_ratio,
+        pane_section_ratio,
+        show_pane_section,
+        collapse,
+    );
+    // Match the setter: spaces_ratio splits the Spaces band against the expanded
+    // band(s) below it, so hide the divider when that shared region is too short
+    // to resize (the drag would be a no-op).
+    let panes_h = if collapse.panes {
+        0
+    } else {
+        pane_section_area.height
+    };
+    let agents_h = if collapse.agents {
+        0
+    } else {
+        agents_area.height
+    };
+    let region_h = spaces_area.height + panes_h + agents_h;
+    if spaces_area.width == 0 || region_h < 6 {
+        return Rect::default();
+    }
+    Rect::new(
+        spaces_area.x,
+        spaces_area.y + spaces_area.height,
+        spaces_area.width,
+        1,
+    )
 }
 
 /// Partition the sidebar content height into three stacked bands
@@ -409,23 +448,41 @@ fn collapsible_sidebar_sections3(
     (spaces_area, pane_section_area, agents_area)
 }
 
-/// The draggable divider between the Panes and Agents bands (divider index 1).
-/// Empty when the Panes band is collapsed.
+/// The draggable divider between the Panes and Agents bands (divider index 1),
+/// adjusting `pane_section_ratio`. Empty unless both bands are expanded (and the
+/// Panes band is shown), since the ratio only splits them then; a collapsed
+/// Spaces band above does not disable it. Derived from the collapse-aware
+/// [`expanded_sidebar_sections3`] geometry so the hit-test lines up with the
+/// drawn boundary.
 pub(crate) fn sidebar_pane_section_divider_rect(
     area: Rect,
     spaces_ratio: f32,
     pane_section_ratio: f32,
     show_pane_section: bool,
+    collapse: SidebarSectionCollapse,
 ) -> Rect {
-    if !show_pane_section {
+    if !show_pane_section || collapse.panes || collapse.agents {
         return Rect::default();
     }
-    let (_, rest) = expanded_sidebar_sections(area, spaces_ratio);
-    if rest.width == 0 || rest.height < 6 {
+    let (_, pane_section_area, agents_area) = expanded_sidebar_sections3(
+        area,
+        spaces_ratio,
+        pane_section_ratio,
+        show_pane_section,
+        collapse,
+    );
+    // Match the setter: pane_section_ratio splits the Panes and Agents bands, so
+    // hide the divider when that shared region is too short to resize.
+    let region_h = pane_section_area.height + agents_area.height;
+    if pane_section_area.width == 0 || region_h < 6 {
         return Rect::default();
     }
-    let (pane_section_h, _) = sidebar_section_heights(rest.height, pane_section_ratio);
-    Rect::new(rest.x, rest.y + pane_section_h, rest.width, 1)
+    Rect::new(
+        pane_section_area.x,
+        pane_section_area.y + pane_section_area.height,
+        pane_section_area.width,
+        1,
+    )
 }
 
 /// The Agents (detail) band as the third of three stacked sidebar sections.
@@ -3968,7 +4025,13 @@ mod tests {
 
     #[test]
     fn sidebar_section_divider_is_hidden_for_tiny_heights() {
-        let divider = sidebar_section_divider_rect(Rect::new(0, 0, 20, 5), 0.5);
+        let divider = sidebar_section_divider_rect(
+            Rect::new(0, 0, 20, 5),
+            0.5,
+            0.5,
+            false,
+            SidebarSectionCollapse::default(),
+        );
 
         assert_eq!(divider, Rect::default());
     }

@@ -136,6 +136,9 @@ pub enum AppEvent {
         pane_id: PaneId,
         cwd: std::path::PathBuf,
     },
+    /// A pane child changed its terminal title (OSC 0/2). Agents publish their
+    /// own session name there, which becomes the tab's automatic name.
+    TerminalOscTitleReported { pane_id: PaneId, title: String },
     /// Background git status refresh completed for workspaces.
     GitStatusRefreshed {
         results: Vec<WorkspaceGitStatus>,

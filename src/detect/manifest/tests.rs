@@ -712,3 +712,67 @@ fn codex_osc_working_beats_weak_blocker_screen() {
         Some("osc_title_working")
     );
 }
+
+// --- Session title extraction ---
+
+#[test]
+fn claude_session_title_strips_state_glyph_and_ignores_placeholder() {
+    with_manifest_dirs("claude-session-title", || {
+        assert_eq!(
+            session_title(Agent::Claude, "✳ remove-poc-harness").as_deref(),
+            Some("remove-poc-harness")
+        );
+        // Braille and circle spinner frames carry the same name while working.
+        assert_eq!(
+            session_title(Agent::Claude, "⠋ remove-poc-harness").as_deref(),
+            Some("remove-poc-harness")
+        );
+        assert_eq!(
+            session_title(Agent::Claude, "◑ remove-poc-harness").as_deref(),
+            Some("remove-poc-harness")
+        );
+        // Placeholder before the session has a name, and titles from anything
+        // that is not Claude's own status line.
+        assert_eq!(session_title(Agent::Claude, "✳ Claude Code"), None);
+        assert_eq!(session_title(Agent::Claude, "vbelman@host: ~/git"), None);
+        assert_eq!(session_title(Agent::Claude, ""), None);
+    });
+}
+
+#[test]
+fn session_title_is_absent_for_agents_without_an_extraction_rule() {
+    with_manifest_dirs("codex-session-title", || {
+        assert_eq!(session_title(Agent::Codex, "⠋ llm-proxy"), None);
+    });
+}
+
+#[test]
+fn remote_manifest_without_session_title_inherits_bundled_extraction() {
+    with_manifest_dirs("claude-session-title-fallback", || {
+        let path = super::super::manifest_update::remote_manifest_path(Agent::Claude);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"
+id = "claude"
+version = "2099.01.01.1"
+min_engine_version = 1
+updated_at = "2099-01-01T00:00:00Z"
+
+[[rules]]
+id = "idle"
+state = "idle"
+priority = 10
+region = "visible"
+contains = ["anything"]
+"#,
+        )
+        .unwrap();
+        reload_manifests();
+
+        assert_eq!(
+            session_title(Agent::Claude, "✳ remove-poc-harness").as_deref(),
+            Some("remove-poc-harness")
+        );
+    });
+}

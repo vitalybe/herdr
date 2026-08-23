@@ -11,6 +11,7 @@
 - Added `herdr terminal session observe` for read-only live ANSI terminal streams that bridge processes can consume as newline-delimited JSON.
 - Added `herdr terminal session control` for bridge processes that need live ANSI frames plus input, resize, scroll, release, and takeover authority.
 - Added optional `keys.previous_pane` and `keys.next_pane` bindings for cycling focus through the sidebar panes section. They are unset by default.
+- A tab that holds exactly one agent is now named after that agent's own session name, so renaming a Claude Code session (`/rename`) renames the tab too. Renaming a tab by hand pins the name and stops the automatic updates.
 - Sidebar line-split dividers in the agents panel and panes section are now collapsible: each shows an arrow and the number of items in its group, and clicking the divider hides or reveals everything down to the next divider. The collapsed state is remembered across restarts.
 
 ### Changed

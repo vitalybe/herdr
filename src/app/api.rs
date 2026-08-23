@@ -67,6 +67,11 @@ impl App {
             return;
         }
 
+        if let AppEvent::TerminalOscTitleReported { pane_id, title } = &ev {
+            self.apply_reported_session_title(*pane_id, title);
+            return;
+        }
+
         if let AppEvent::GitStatusRefreshed {
             results,
             cache_updates,

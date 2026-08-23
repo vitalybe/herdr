@@ -1332,6 +1332,18 @@ fn usable_reported_cwd(cwd: std::path::PathBuf) -> Option<std::path::PathBuf> {
     (cwd.is_absolute() && cwd.is_dir()).then_some(cwd)
 }
 
+fn publish_reported_osc_title(pane_id: PaneId, title: String, events: &mpsc::Sender<AppEvent>) {
+    if let Err(err) = events.try_send(AppEvent::TerminalOscTitleReported { pane_id, title }) {
+        // Titles are re-emitted on every change, so a dropped report is
+        // corrected by the next one.
+        debug!(
+            pane = pane_id.raw(),
+            err = %err,
+            "failed to send terminal title report"
+        );
+    }
+}
+
 fn publish_reported_cwd(
     pane_id: PaneId,
     cwd: std::path::PathBuf,
@@ -1686,6 +1698,9 @@ impl PaneRuntime {
                 if let Some(cwd) = result.reported_cwd.clone() {
                     publish_reported_cwd(pane_id, cwd, &reported_cwd, &read_events);
                 }
+                if let Some(title) = result.reported_osc_title {
+                    publish_reported_osc_title(pane_id, title, &read_events);
+                }
                 for content in result.clipboard_writes {
                     if let Err(err) = read_events.try_send(AppEvent::ClipboardWrite { content }) {
                         warn!(
@@ -1843,6 +1858,9 @@ impl PaneRuntime {
                 }
                 if let Some(cwd) = result.reported_cwd.clone() {
                     publish_reported_cwd(pane_id, cwd, &reported_cwd, &events);
+                }
+                if let Some(title) = result.reported_osc_title {
+                    publish_reported_osc_title(pane_id, title, &events);
                 }
                 for content in result.clipboard_writes {
                     if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {

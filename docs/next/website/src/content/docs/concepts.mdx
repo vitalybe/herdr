@@ -17,6 +17,10 @@ A tab is a layout inside a workspace. Use tabs to separate views like `agents`, 
 
 Tabs are addressable from the CLI and socket API.
 
+A tab that holds exactly one agent takes its name from that agent's own session
+name, so a Claude Code `/rename` also renames the tab. Renaming the tab yourself
+pins the name and stops the automatic updates.
+
 ## Pane
 
 A pane is a real terminal. Herdr renders the terminal output, sends input back to the process, and preserves the pane across client detach.

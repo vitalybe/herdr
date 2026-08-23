@@ -497,6 +497,7 @@ impl Workspace {
         Some(
             tab.custom_name
                 .clone()
+                .or_else(|| tab.auto_name.clone())
                 .unwrap_or_else(|| (tab_idx + 1).to_string()),
         )
     }
@@ -1276,6 +1277,7 @@ impl Workspace {
         panes.insert(root_id, PaneState::new(terminal_id));
         let tab = Tab {
             custom_name: None,
+            auto_name: None,
             number: 1,
             root_pane: root_id,
             layout,
@@ -1332,6 +1334,7 @@ impl Workspace {
         panes.insert(root_id, PaneState::new(TerminalId::alloc()));
         let tab = Tab {
             custom_name: name.map(str::to_string),
+            auto_name: None,
             number: self.next_public_tab_number,
             root_pane: root_id,
             layout,

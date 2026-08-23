@@ -37,6 +37,9 @@ enum SplitCommand<'a> {
 
 pub struct Tab {
     pub custom_name: Option<String>,
+    /// Session name published by the tab's only agent, used as the tab's label
+    /// until the tab is renamed by hand. A manual `custom_name` always wins.
+    pub auto_name: Option<String>,
     pub number: usize,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -181,6 +184,7 @@ impl Tab {
         Ok((
             Self {
                 custom_name: None,
+                auto_name: None,
                 number,
                 root_pane: root_id,
                 layout,
@@ -203,6 +207,15 @@ impl Tab {
 
     pub fn set_custom_name(&mut self, name: String) {
         self.custom_name = Some(name);
+    }
+
+    /// Records the agent-published session name. Returns whether it changed.
+    pub fn set_auto_name(&mut self, name: String) -> bool {
+        if self.auto_name.as_deref() == Some(name.as_str()) {
+            return false;
+        }
+        self.auto_name = Some(name);
+        true
     }
 
     #[cfg(test)]
@@ -474,6 +487,7 @@ impl Tab {
         panes.insert(pane_id, moved.pane_state);
         Self {
             custom_name,
+            auto_name: None,
             number,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),

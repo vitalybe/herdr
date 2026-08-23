@@ -124,6 +124,7 @@ pub struct RuleEvidence {
 struct LoadedManifest {
     manifest: AgentManifest,
     compiled_rules: Vec<CompiledRule>,
+    compiled_session_title: Option<Regex>,
     source: ManifestSource,
     warning: Option<String>,
     cached_remote_version: Option<String>,
@@ -145,6 +146,14 @@ pub(crate) struct AgentManifest {
     _updated_at: Option<String>,
     #[serde(default)]
     aliases: Vec<String>,
+    /// Regex over the pane's OSC 0/2 title whose first capture group is the
+    /// agent's own session title (e.g. Claude Code's `\u{2733} my-session`).
+    /// Absent means the agent does not publish a session title.
+    session_title_regex: Option<String>,
+    /// Extracted titles to discard because the agent uses them as a
+    /// placeholder before the session has a real name.
+    #[serde(default)]
+    session_title_ignore: Vec<String>,
     #[serde(default)]
     rules: Vec<ManifestRule>,
 }
@@ -582,6 +591,36 @@ fn fallback_explain(
     }
 }
 
+/// Maximum characters kept from an agent-reported session title. Title text is
+/// untrusted child output and ends up in tab labels, so bound it.
+const SESSION_TITLE_MAX_CHARS: usize = 64;
+
+/// Extracts the agent's own session title out of the pane's OSC 0/2 title,
+/// using the agent manifest's `session_title_regex` capture group.
+///
+/// Returns `None` when the manifest defines no extraction, the title does not
+/// match, or the captured text is one of the manifest's placeholder titles.
+pub fn session_title(agent: Agent, osc_title: &str) -> Option<String> {
+    let loaded = load_manifest(agent)?;
+    let captured = loaded
+        .compiled_session_title
+        .as_ref()?
+        .captures(osc_title)?
+        .get(1)?
+        .as_str()
+        .trim();
+    if captured.is_empty()
+        || loaded
+            .manifest
+            .session_title_ignore
+            .iter()
+            .any(|placeholder| placeholder == captured)
+    {
+        return None;
+    }
+    Some(captured.chars().take(SESSION_TITLE_MAX_CHARS).collect())
+}
+
 fn load_manifest(agent: Agent) -> Option<LoadedManifest> {
     let lock = manifest_cache();
     let guard = match lock.read() {
@@ -596,6 +635,23 @@ fn load_manifest(agent: Agent) -> Option<LoadedManifest> {
 }
 
 fn load_manifest_uncached(agent: Agent) -> Option<LoadedManifest> {
+    let mut loaded = load_effective_manifest(agent)?;
+    // A remote or override manifest written before session titles existed must
+    // not switch the feature off, so inherit the bundled extraction when the
+    // effective manifest carries none.
+    if loaded.compiled_session_title.is_none() {
+        if let Some(bundled) = bundled_manifest(agent) {
+            loaded.compiled_session_title = bundled
+                .session_title_regex
+                .as_deref()
+                .and_then(|pattern| Regex::new(pattern).ok());
+            loaded.manifest.session_title_ignore = bundled.session_title_ignore;
+        }
+    }
+    Some(loaded)
+}
+
+fn load_effective_manifest(agent: Agent) -> Option<LoadedManifest> {
     let bundled = bundled_manifest(agent)?;
     let mut remote = read_remote_manifest(agent, &bundled);
     let cached_remote_version = remote.as_ref().and_then(|loaded| match &loaded.source {
@@ -702,9 +758,18 @@ fn loaded_manifest(
     local_override_shadowing_remote: bool,
 ) -> Result<LoadedManifest, String> {
     let compiled_rules = compile_manifest(&manifest)?;
+    let compiled_session_title = manifest
+        .session_title_regex
+        .as_deref()
+        .map(|pattern| {
+            Regex::new(pattern)
+                .map_err(|err| format!("session_title_regex could not be compiled: {err}"))
+        })
+        .transpose()?;
     Ok(LoadedManifest {
         manifest,
         compiled_rules,
+        compiled_session_title,
         source,
         warning,
         cached_remote_version,

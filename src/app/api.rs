@@ -147,6 +147,11 @@ impl App {
             return Vec::new();
         }
 
+        if let AppEvent::TerminalOscTitleReported { pane_id, title } = &ev {
+            self.apply_reported_session_title(*pane_id, title);
+            return Vec::new();
+        }
+
         if let AppEvent::GitStatusRefreshed {
             results,
             cache_updates,

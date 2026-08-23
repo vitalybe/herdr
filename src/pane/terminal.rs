@@ -153,6 +153,8 @@ pub(crate) struct ProcessBytesResult {
     pub terminal_bells: u16,
     pub clipboard_writes: Vec<Vec<u8>>,
     pub reported_cwd: Option<std::path::PathBuf>,
+    /// Set when the child changed its OSC 0/2 title with this chunk.
+    pub reported_osc_title: Option<String>,
     pub terminal_responses: Vec<Bytes>,
 }
 
@@ -1230,6 +1232,7 @@ impl GhosttyPaneTerminal {
                 terminal_bells: 0,
                 clipboard_writes: Vec::new(),
                 reported_cwd: None,
+                reported_osc_title: None,
                 terminal_responses: Vec::new(),
             };
         };
@@ -1260,6 +1263,7 @@ impl GhosttyPaneTerminal {
             );
         }
         let terminal_title_changed = core.agent_osc_state.observe(bytes);
+        let reported_osc_title = core.agent_osc_state.drain_changed_title();
 
         let alternate_screen = core
             .terminal
@@ -1365,6 +1369,7 @@ impl GhosttyPaneTerminal {
             terminal_bells,
             clipboard_writes,
             reported_cwd,
+            reported_osc_title,
             terminal_responses,
         }
     }

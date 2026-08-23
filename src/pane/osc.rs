@@ -461,15 +461,17 @@ pub(super) struct AgentOscStateTracker {
     latest_title: Option<String>,
     terminal_title: Option<String>,
     latest_progress: Option<String>,
+    title_changed: bool,
 }
 
 impl AgentOscStateTracker {
     pub(super) fn observe(&mut self, bytes: &[u8]) -> bool {
-        let (collector, latest_title, terminal_title, latest_progress) = (
+        let (collector, latest_title, terminal_title, latest_progress, title_changed) = (
             &mut self.collector,
             &mut self.latest_title,
             &mut self.terminal_title,
             &mut self.latest_progress,
+            &mut self.title_changed,
         );
         let mut terminal_title_changed = false;
         collector.observe(bytes, |body| {
@@ -481,6 +483,7 @@ impl AgentOscStateTracker {
                     let title = sanitize_agent_osc_string(payload, AGENT_OSC_MAX_CHARS);
                     let title = (!title.is_empty()).then_some(title);
                     terminal_title_changed |= *terminal_title != title;
+                    *title_changed |= *latest_title != title;
                     *terminal_title = title.clone();
                     *latest_title = title;
                 }
@@ -508,6 +511,14 @@ impl AgentOscStateTracker {
     #[allow(dead_code)] // used by terminal.rs; full call chain wired in Stage C
     pub(super) fn latest_title(&self) -> &str {
         self.latest_title.as_deref().unwrap_or("")
+    }
+
+    /// Takes the retained title if it changed since the last drain. Used to
+    /// report title changes once instead of polling for them.
+    pub(super) fn drain_changed_title(&mut self) -> Option<String> {
+        std::mem::take(&mut self.title_changed)
+            .then(|| self.latest_title.clone())
+            .flatten()
     }
 
     /// Returns the latest retained OSC 9 progress payload, or `""` if none.
@@ -1032,6 +1043,28 @@ mod tests {
 
         assert_eq!(tracker.terminal_title(), Some("✳ restored title"));
         assert_eq!(tracker.latest_title(), "");
+    }
+
+    #[test]
+    fn agent_osc_drain_changed_title_reports_each_change_once() {
+        let mut t = AgentOscStateTracker::default();
+        assert_eq!(t.drain_changed_title(), None);
+
+        t.observe(b"\x1b]0;\xe2\x9c\xb3 session\x07");
+        assert_eq!(t.drain_changed_title().as_deref(), Some("\u{2733} session"));
+        assert_eq!(t.drain_changed_title(), None);
+
+        // Repainting the same title is not a change.
+        t.observe(b"\x1b]0;\xe2\x9c\xb3 session\x07");
+        assert_eq!(t.drain_changed_title(), None);
+
+        t.observe(b"\x1b]0;\xe2\x9c\xb3 renamed\x07");
+        assert_eq!(t.drain_changed_title().as_deref(), Some("\u{2733} renamed"));
+
+        // A clear reports nothing; the retained title is simply dropped.
+        t.observe(b"\x1b]0;\x07");
+        assert_eq!(t.drain_changed_title(), None);
+        assert_eq!(t.latest_title(), "");
     }
 
     #[test]

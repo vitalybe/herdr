@@ -139,6 +139,37 @@ impl App {
         encode_success(id, ResponseResult::TabInfo { tab })
     }
 
+    /// Names the reporting pane's tab after the session title its agent
+    /// published, unless the tab was renamed by hand.
+    pub(crate) fn apply_reported_session_title(
+        &mut self,
+        pane_id: crate::layout::PaneId,
+        osc_title: &str,
+    ) {
+        let Some((ws_idx, tab_idx)) = self.state.apply_reported_session_title(pane_id, osc_title)
+        else {
+            return;
+        };
+        let Some(label) = self.state.workspaces[ws_idx].tab_display_name(tab_idx) else {
+            return;
+        };
+        let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
+            return;
+        };
+        crate::logging::tab_renamed(&self.state.workspaces[ws_idx].id.clone(), &tab_id);
+        self.schedule_session_save();
+        self.emit_event(EventEnvelope {
+            event: EventKind::TabRenamed,
+            data: EventData::TabRenamed {
+                tab_id,
+                workspace_id: self.public_workspace_id(ws_idx),
+                label,
+            },
+        });
+        self.render_dirty.request_generic();
+        self.render_notify.notify_one();
+    }
+
     pub(super) fn handle_tab_rename(&mut self, id: String, params: TabRenameParams) -> String {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return tab_not_found(id, &params.tab_id);

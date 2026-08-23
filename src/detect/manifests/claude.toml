@@ -4,6 +4,12 @@ min_engine_version = 2
 updated_at = "2026-08-21T00:00:00Z"
 aliases = ["claude-code"]
 
+# Claude Code publishes its session name as the terminal title, prefixed by the
+# idle marker or the current spinner frame: "\u{2733} my-session", "\u{28FF} my-session".
+# "Claude Code" is the placeholder title before a session has a name.
+session_title_regex = '^[\x{2733}\x{2800}-\x{28FF}\x{25D0}-\x{25D3}]\s+(.+)$'
+session_title_ignore = ["Claude Code"]
+
 [[rules]]
 id = "osc_title_working"
 state = "working"

@@ -2766,6 +2766,53 @@ impl AppState {
         changed
     }
 
+    /// Applies an agent-published session title as the automatic name of the
+    /// tab holding `pane_id`.
+    ///
+    /// Only a tab whose single agent pane is the reporting pane is named this
+    /// way, so a split with two agents keeps its own name. A manual tab rename
+    /// always wins. Returns the tab whose displayed name changed.
+    pub fn apply_reported_session_title(
+        &mut self,
+        pane_id: PaneId,
+        osc_title: &str,
+    ) -> Option<(usize, usize)> {
+        let (ws_idx, tab_idx) = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(ws_idx, ws)| {
+                ws.find_tab_index_for_pane(pane_id)
+                    .map(|tab_idx| (ws_idx, tab_idx))
+            })?;
+        let tab = self.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
+        let agent_terminal = |pane: &crate::pane::PaneState| {
+            self.terminals
+                .get(&pane.attached_terminal_id)
+                .filter(|terminal| terminal.is_agent_terminal())
+        };
+        let mut agent_panes = tab
+            .panes
+            .iter()
+            .filter(|(_, pane)| agent_terminal(pane).is_some());
+        let sole_agent_pane = match (agent_panes.next(), agent_panes.next()) {
+            (Some((only, _)), None) => *only,
+            _ => return None,
+        };
+        if sole_agent_pane != pane_id {
+            return None;
+        }
+        let agent = tab
+            .panes
+            .get(&pane_id)
+            .and_then(agent_terminal)?
+            .effective_known_agent()?;
+        let title = crate::detect::manifest::session_title(agent, osc_title)?;
+        let tab = self.workspaces.get_mut(ws_idx)?.tabs.get_mut(tab_idx)?;
+        let changed = tab.set_auto_name(title);
+        (changed && tab.custom_name.is_none()).then_some((ws_idx, tab_idx))
+    }
+
     pub fn handle_app_event(&mut self, event: AppEvent) -> Vec<PaneStateUpdate> {
         match event {
             AppEvent::PaneDied { pane_id } => {
@@ -2971,6 +3018,11 @@ impl AppState {
             AppEvent::TerminalBell { .. } => Vec::new(),
             AppEvent::ClipboardWrite { .. } => Vec::new(),
             AppEvent::PrefixInputSource { .. } => Vec::new(),
+            AppEvent::TerminalOscTitleReported { .. } => {
+                // Intercepted in App::handle_internal_event, which applies the
+                // title and announces the resulting tab rename.
+                Vec::new()
+            }
             AppEvent::TerminalCwdReported { pane_id, cwd } => {
                 if !cwd.is_absolute() || !cwd.is_dir() {
                     return Vec::new();
@@ -3483,6 +3535,85 @@ mod tests {
             state.mode = Mode::Terminal;
         }
         state
+    }
+
+    fn claude_pane(state: &mut AppState, pane_id: crate::layout::PaneId) {
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Claude),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+    }
+
+    #[test]
+    fn reported_session_title_names_the_tab_of_a_sole_agent_pane() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        claude_pane(&mut state, pane_id);
+
+        assert_eq!(
+            state.apply_reported_session_title(pane_id, "✳ remove-poc-harness"),
+            Some((0, 0))
+        );
+        assert_eq!(
+            state.workspaces[0].tab_display_name(0).as_deref(),
+            Some("remove-poc-harness")
+        );
+
+        // The same title again is not a rename.
+        assert_eq!(
+            state.apply_reported_session_title(pane_id, "⠋ remove-poc-harness"),
+            None
+        );
+        // A title Claude does not own leaves the name alone.
+        assert_eq!(
+            state.apply_reported_session_title(pane_id, "some shell"),
+            None
+        );
+        assert_eq!(
+            state.workspaces[0].tab_display_name(0).as_deref(),
+            Some("remove-poc-harness")
+        );
+    }
+
+    #[test]
+    fn manual_tab_name_outranks_reported_session_title() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        claude_pane(&mut state, pane_id);
+        state.workspaces[0].tabs[0].set_custom_name("mine".into());
+
+        assert_eq!(
+            state.apply_reported_session_title(pane_id, "✳ remove-poc-harness"),
+            None
+        );
+        assert_eq!(
+            state.workspaces[0].tab_display_name(0).as_deref(),
+            Some("mine")
+        );
+    }
+
+    #[test]
+    fn reported_session_title_leaves_a_tab_with_two_agents_alone() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let split_id = state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        state.ensure_test_terminals();
+        claude_pane(&mut state, pane_id);
+        claude_pane(&mut state, split_id);
+
+        assert_eq!(
+            state.apply_reported_session_title(pane_id, "✳ remove-poc-harness"),
+            None
+        );
+        assert_eq!(
+            state.workspaces[0].tab_display_name(0).as_deref(),
+            Some("1")
+        );
     }
 
     fn mark_linked_worktree(state: &mut AppState, ws_idx: usize) {

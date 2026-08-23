@@ -197,6 +197,14 @@ impl Tab {
         self.custom_name = Some(name);
     }
 
+    /// Names the tab from tooling: visible immediately, but superseded by the
+    /// session name its agent publishes. Only a rename typed in the TUI pins a
+    /// name through `set_custom_name`.
+    pub fn set_reported_name(&mut self, name: String) {
+        self.custom_name = None;
+        self.auto_name = Some(name);
+    }
+
     /// Records the agent-published session name. Returns whether it changed.
     pub fn set_auto_name(&mut self, name: String) -> bool {
         if self.auto_name.as_deref() == Some(name.as_str()) {

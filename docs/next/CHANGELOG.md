@@ -11,7 +11,7 @@
 - Added `herdr terminal session observe` for read-only live ANSI terminal streams that bridge processes can consume as newline-delimited JSON.
 - Added `herdr terminal session control` for bridge processes that need live ANSI frames plus input, resize, scroll, release, and takeover authority.
 - Added optional `keys.previous_pane` and `keys.next_pane` bindings for cycling focus through the sidebar panes section. They are unset by default.
-- A tab that holds exactly one agent is now named after that agent's own session name, so renaming a Claude Code session (`/rename`) renames the tab too. Renaming a tab by hand pins the name and stops the automatic updates.
+- A tab that holds exactly one agent is now named after that agent's own session name, so renaming a Claude Code session (`/rename`) renames the tab too. Renaming a tab in the Herdr UI pins the name and stops the automatic updates.
 - Sidebar line-split dividers in the agents panel and panes section are now collapsible: each shows an arrow and the number of items in its group, and clicking the divider hides or reveals everything down to the next divider. The collapsed state is remembered across restarts.
 
 ### Changed
@@ -19,6 +19,7 @@
 - The sidebar panes section now shows a single row when a tab has several panes with the same name, instead of one identical-looking row per pane. Panes with different names, or with no name of their own, still each get a row.
 - Double-clicking an agent in the sidebar now renames its tab (matching the Tabs section) instead of renaming the agent.
 - Clicking a space now returns to that workspace's latest active tab instead of a separately tracked home tab.
+- `herdr tab rename` is now advisory rather than a permanent name: it renames the tab immediately, and a session name published by the tab's agent supersedes it. Renaming a tab in the Herdr UI still pins the name.
 - Bumped the client/server protocol version to 15 for socket API placement mutation event and response compatibility.
 
 ### Fixed

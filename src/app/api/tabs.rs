@@ -189,7 +189,10 @@ impl App {
         else {
             return tab_not_found(id, &params.tab_id);
         };
-        tab.set_custom_name(params.label.clone());
+        // A rename over the socket API is advisory: it names the tab now, but the
+        // session name an agent publishes supersedes it. Only a rename typed in
+        // the TUI pins the name.
+        tab.set_reported_name(params.label.clone());
         crate::logging::tab_renamed(&workspace_id, &tab_id);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {

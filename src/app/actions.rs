@@ -3797,6 +3797,28 @@ mod tests {
     }
 
     #[test]
+    fn reported_session_title_supersedes_a_tab_rename_from_tooling() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        claude_pane(&mut state, pane_id);
+        // What `herdr tab rename` does: names the tab without pinning it.
+        state.workspaces[0].tabs[0].set_reported_name("named-by-tooling".into());
+        assert_eq!(
+            state.workspaces[0].tab_display_name(0).as_deref(),
+            Some("named-by-tooling")
+        );
+
+        assert_eq!(
+            state.apply_reported_session_title(pane_id, "✳ remove-poc-harness"),
+            Some((0, 0))
+        );
+        assert_eq!(
+            state.workspaces[0].tab_display_name(0).as_deref(),
+            Some("remove-poc-harness")
+        );
+    }
+
+    #[test]
     fn manual_tab_name_outranks_reported_session_title() {
         let mut state = app_with_workspaces(&["active"]);
         let pane_id = *state.workspaces[0].panes.keys().next().unwrap();

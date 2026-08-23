@@ -4763,7 +4763,10 @@ mod tests {
         let mut ws = Workspace::test_new("one");
         let root = ws.tabs[0].root_pane;
         let p2 = ws.test_split(Direction::Horizontal);
-        let p3 = ws.test_split(Direction::Horizontal);
+        // The non-agent pane lives in its own tab: a pane sharing a tab with an
+        // agent is hidden from the Panes section.
+        let shell_tab = ws.test_add_tab(Some("shell"));
+        let p3 = ws.tabs[shell_tab].root_pane;
         ws.tabs[0].layout.focus_pane(root);
 
         let mut state = AppState::test_new();
@@ -4819,11 +4822,15 @@ mod tests {
 
     #[test]
     fn pane_nav_on_agent_jumps_to_last_selected_pane_either_direction() {
-        // ws0: root is an agent, p2/p3 are non-agent Panes-section entries.
+        // ws0: tab 0 holds the agent; p2/p3 are non-agent Panes-section entries
+        // in their own tab (panes sharing a tab with an agent are hidden).
         let mut ws = Workspace::test_new("one");
         let root = ws.tabs[0].root_pane;
-        let p2 = ws.test_split(Direction::Horizontal);
+        let shell_tab = ws.test_add_tab(Some("shell"));
+        let p2 = ws.tabs[shell_tab].root_pane;
+        ws.active_tab = shell_tab;
         let p3 = ws.test_split(Direction::Horizontal);
+        ws.active_tab = 0;
         ws.tabs[0].layout.focus_pane(root);
 
         let mut state = AppState::test_new();
@@ -5428,12 +5435,11 @@ mod tests {
         assert_eq!(entries.len(), 2, "both panes of the split tab are listed");
         assert!(pane_ids.contains(&a) && pane_ids.contains(&b));
 
-        // Make pane `b` an agent pane; only the non-agent pane `a` remains.
+        // Make pane `b` an agent pane. The tab now has an agent row, so its
+        // sibling pane `a` is hidden from the Panes section too.
         mark_agent(&mut state, 0, 0, b);
         state.reconcile_pane_section_order();
-        let entries = crate::ui::sidebar_pane_section_entries(&state);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].pane_id, a);
+        assert!(crate::ui::sidebar_pane_section_entries(&state).is_empty());
     }
 
     #[test]

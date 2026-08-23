@@ -14,6 +14,7 @@
 - Sidebar line-split dividers in the agents panel and panes section are now collapsible: each shows an arrow and the number of items in its group, and clicking the divider hides or reveals everything down to the next divider. The collapsed state is remembered across restarts.
 
 ### Changed
+- The sidebar panes section now hides a tab's panes when that tab already has an agent row in the agents section. Those agent rows are marked with a 📟 prefix before the name.
 - The sidebar panes section now shows a single row when a tab has several panes with the same name, instead of one identical-looking row per pane. Panes with different names, or with no name of their own, still each get a row.
 - Double-clicking an agent in the sidebar now renames its tab (matching the Tabs section) instead of renaming the agent.
 - Clicking a space now returns to that workspace's latest active tab instead of a separately tracked home tab.

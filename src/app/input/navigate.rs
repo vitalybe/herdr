@@ -239,7 +239,7 @@ impl App {
             NavigateAction::FocusAgent(idx) => {
                 if let Some((ws_idx, pane_id)) = self.agent_entry_target(idx) {
                     self.focus_pane_internal_via_api(ws_idx, pane_id);
-                    self.state.ensure_agent_panel_entry_visible(idx);
+                    self.state.ensure_agent_panel_pane_visible(pane_id);
                     leave_navigate_mode(&mut self.state);
                 }
             }
@@ -260,16 +260,16 @@ impl App {
                 }
             }
             NavigateAction::PreviousAgent => {
-                if let Some((idx, ws_idx, pane_id)) = self.relative_agent_entry(false) {
+                if let Some((_idx, ws_idx, pane_id)) = self.relative_agent_entry(false) {
                     self.focus_pane_internal_via_api(ws_idx, pane_id);
-                    self.state.ensure_agent_panel_entry_visible(idx);
+                    self.state.ensure_agent_panel_pane_visible(pane_id);
                     leave_navigate_mode(&mut self.state);
                 }
             }
             NavigateAction::NextAgent => {
-                if let Some((idx, ws_idx, pane_id)) = self.relative_agent_entry(true) {
+                if let Some((_idx, ws_idx, pane_id)) = self.relative_agent_entry(true) {
                     self.focus_pane_internal_via_api(ws_idx, pane_id);
-                    self.state.ensure_agent_panel_entry_visible(idx);
+                    self.state.ensure_agent_panel_pane_visible(pane_id);
                     leave_navigate_mode(&mut self.state);
                 }
             }
@@ -772,14 +772,16 @@ impl App {
     }
 
     fn agent_entry_target(&self, idx: usize) -> Option<(usize, crate::layout::PaneId)> {
-        let entries = crate::ui::agent_panel_entries(&self.state);
-        let target = entries.get(idx)?;
-        Some((target.ws_idx, target.pane_id))
+        // Source the visible tree order (collapse-aware, agents only) so numeric
+        // focus matches exactly what the sidebar renders.
+        self.state.visible_agent_targets().get(idx).copied()
     }
 
     fn relative_agent_entry(&self, forward: bool) -> Option<(usize, usize, crate::layout::PaneId)> {
-        let entries = crate::ui::agent_panel_entries(&self.state);
-        if entries.is_empty() {
+        // Cycle the visible tree order (collapse-aware, agents only) so live
+        // next/previous navigation follows the same order the sidebar shows.
+        let targets = self.state.visible_agent_targets();
+        if targets.is_empty() {
             return None;
         }
         let focused = self
@@ -787,18 +789,18 @@ impl App {
             .active
             .and_then(|idx| self.state.workspaces.get(idx))
             .and_then(crate::workspace::Workspace::focused_pane_id);
-        let current_idx = entries
+        let current_idx = targets
             .iter()
-            .position(|entry| Some(entry.pane_id) == focused);
+            .position(|(_, pane_id)| Some(*pane_id) == focused);
         let next_idx = match (current_idx, forward) {
-            (Some(idx), true) => (idx + 1) % entries.len(),
-            (Some(0), false) => entries.len() - 1,
+            (Some(idx), true) => (idx + 1) % targets.len(),
+            (Some(0), false) => targets.len() - 1,
             (Some(idx), false) => idx - 1,
             (None, true) => 0,
-            (None, false) => entries.len() - 1,
+            (None, false) => targets.len() - 1,
         };
-        let target = entries.get(next_idx)?;
-        Some((next_idx, target.ws_idx, target.pane_id))
+        let (ws_idx, pane_id) = *targets.get(next_idx)?;
+        Some((next_idx, ws_idx, pane_id))
     }
 
     fn pass_through_key_to_focused_pane(&mut self, key: TerminalKey) -> bool {

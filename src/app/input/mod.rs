@@ -4,7 +4,7 @@ use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use tracing::warn;
 
-use crate::app::PaneClickState;
+use crate::app::{AgentRowClickState, PaneClickState};
 use crate::input::TerminalKey;
 #[cfg(test)]
 use ratatui::layout::Direction;
@@ -25,6 +25,7 @@ enum WheelRouting {
 
 const WORKSPACE_DRAG_THRESHOLD: u16 = 1;
 const TAB_DRAG_THRESHOLD: u16 = 1;
+const AGENT_DRAG_THRESHOLD: u16 = 1;
 
 fn modified_url_click_modifier() -> KeyModifiers {
     KeyModifiers::CONTROL
@@ -100,14 +101,16 @@ impl App {
                 Mode::ReleaseNotes => self.handle_release_notes_key(key_event),
                 Mode::ProductAnnouncement => self.handle_product_announcement_key(key_event),
                 Mode::Prefix | Mode::Navigate | Mode::Copy => unreachable!(),
-                Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
-                    self.handle_rename_key_via_api(key_event)
-                }
+                Mode::RenameWorkspace
+                | Mode::RenameTab
+                | Mode::RenamePane
+                | Mode::RenameLineSplit => self.handle_rename_key_via_api(key_event),
                 Mode::NewLinkedWorktree => self.handle_worktree_create_key(key_event),
                 Mode::OpenExistingWorktree => self.handle_worktree_open_key(key_event),
                 Mode::ConfirmRemoveWorktree => self.handle_worktree_remove_key(key_event),
                 Mode::Resize => self.handle_resize_key_via_api(key),
                 Mode::ConfirmClose => self.handle_confirm_close_key_via_api(key_event),
+                Mode::ConfirmAgentReparent => self.handle_agent_reparent_key_via_api(key_event),
                 Mode::ContextMenu => {
                     self.handle_context_menu_key_via_api(key_event);
                 }
@@ -209,7 +212,7 @@ impl App {
 
     pub(crate) fn paste_into_active_text_input(&mut self, text: &str) -> bool {
         match self.state.mode {
-            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
+            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::RenameLineSplit => {
                 insert_rename_input_text(&mut self.state, text);
                 true
             }
@@ -380,6 +383,10 @@ impl App {
             }
         }
 
+        if self.handle_agent_row_double_click(mouse) {
+            return;
+        }
+
         if self.handle_modified_url_click(source_id, mouse) {
             return;
         }
@@ -436,6 +443,18 @@ impl App {
                         source_tab_idx,
                         insert_idx,
                     } => self.move_tab_via_api(ws_idx, source_tab_idx, insert_idx),
+                    MouseAction::MoveAgentEntry { source, insert_idx } => {
+                        // Manual agent order (agents + line-splits) is client-only
+                        // presentation state, so mutate it directly instead of
+                        // routing through the runtime API path used by
+                        // workspace/tab moves.
+                        // The drop index is in visible tree-row space; translate
+                        // it to the flat manual-order space the reorder mutates.
+                        let base_idx = self
+                            .state
+                            .agent_manual_base_index_for_tree_insert(insert_idx);
+                        self.state.move_agent_entry(source, base_idx);
+                    }
                     MouseAction::SetSplitRatio { path, ratio } => {
                         self.set_split_ratio_via_api(path, ratio)
                     }
@@ -614,6 +633,77 @@ impl App {
         true
     }
 
+    /// Detects a double-click on an agent row in the expanded agent panel or the
+    /// collapsed sidebar detail strip and opens the tab rename modal for that
+    /// agent's tab, matching the behavior of double-clicking a tab. The first
+    /// click is recorded and left to normal single-click focus handling; only the
+    /// qualifying second click is consumed here.
+    fn handle_agent_row_double_click(&mut self, mouse: MouseEvent) -> bool {
+        // A left drag starts a drag-to-reorder gesture; invalidate any pending
+        // agent-row click so a drag (and the click that may follow it) is never
+        // mistaken for the first half of a double-click that would open rename.
+        if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) {
+            self.last_agent_row_click = None;
+            return false;
+        }
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+        if !mouse.modifiers.is_empty() {
+            self.last_agent_row_click = None;
+            return false;
+        }
+
+        let sidebar = self.state.view.sidebar_rect;
+        let in_sidebar = mouse.column >= sidebar.x
+            && mouse.column < sidebar.x + sidebar.width
+            && mouse.row >= sidebar.y
+            && mouse.row < sidebar.y + sidebar.height;
+        if !in_sidebar {
+            self.last_agent_row_click = None;
+            return false;
+        }
+
+        // The collapse/expand glyph owns its cell: toggling a subtree twice in
+        // quick succession must not be read as a rename gesture.
+        if self
+            .state
+            .agent_panel_collapse_toggle_at(mouse.column, mouse.row)
+            .is_some()
+        {
+            self.last_agent_row_click = None;
+            return false;
+        }
+
+        let Some((ws_idx, _tab_idx, pane_id)) = self
+            .state
+            .agent_detail_target_at(mouse.row)
+            .or_else(|| self.state.collapsed_agent_detail_target_at(mouse.row))
+        else {
+            self.last_agent_row_click = None;
+            return false;
+        };
+
+        let click = AgentRowClickState {
+            pane_id,
+            at: std::time::Instant::now(),
+        };
+        if self
+            .last_agent_row_click
+            .is_some_and(|last| last.is_double_click_for(click))
+        {
+            self.last_agent_row_click = None;
+            // Focusing the pane activates its workspace and tab, so the shared
+            // active-tab rename modal targets the agent's own tab.
+            self.focus_pane_internal_via_api(ws_idx, pane_id);
+            modal::open_rename_active_tab(&mut self.state, false);
+            return true;
+        }
+
+        self.last_agent_row_click = Some(click);
+        false
+    }
+
     fn handle_pane_double_click(&mut self, mouse: MouseEvent) -> bool {
         // A pane press stops being a double-click candidate once it becomes
         // a drag or completes as a real text selection.
@@ -726,9 +816,11 @@ pub(crate) fn is_modal_paste_shortcut(key: &KeyEvent) -> bool {
 
 pub(crate) fn modal_paste_target_active(state: &AppState) -> bool {
     match state.mode {
-        Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::NewLinkedWorktree => {
-            true
-        }
+        Mode::RenameWorkspace
+        | Mode::RenameTab
+        | Mode::RenamePane
+        | Mode::RenameLineSplit
+        | Mode::NewLinkedWorktree => true,
         Mode::OpenExistingWorktree => state
             .worktree_open
             .as_ref()
@@ -875,6 +967,8 @@ fn capture_snapshot(state: &AppState) -> crate::persist::SessionSnapshot {
         state.sidebar_width,
         state.sidebar_section_split,
         state.collapsed_space_keys.clone(),
+        state.collapsed_agent_keys.clone(),
+        state.agent_manual_order.to_public_keys(&state.workspaces),
     )
 }
 

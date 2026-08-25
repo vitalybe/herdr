@@ -238,12 +238,7 @@ impl App {
 
     /// True when the pane at `(ws_idx, pane_id)` is backed by an agent terminal.
     fn pane_is_agent(&self, ws_idx: usize, pane_id: crate::layout::PaneId) -> bool {
-        self.state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.pane_state(pane_id))
-            .and_then(|pane| self.state.terminals.get(&pane.attached_terminal_id))
-            .is_some_and(|terminal| terminal.is_agent_terminal())
+        self.state.pane_is_agent(ws_idx, pane_id)
     }
 
     /// Walk the parent chain upward from `(start_ws, start_pane)`, including the
@@ -257,24 +252,8 @@ impl App {
         needle_ws: usize,
         needle_pane: crate::layout::PaneId,
     ) -> bool {
-        let mut current = Some((start_ws, start_pane));
-        let mut visited = std::collections::HashSet::new();
-        while let Some((ws_idx, pane_id)) = current {
-            if ws_idx == needle_ws && pane_id == needle_pane {
-                return true;
-            }
-            if !visited.insert((ws_idx, pane_id)) {
-                break;
-            }
-            current = self
-                .state
-                .workspaces
-                .get(ws_idx)
-                .and_then(|ws| ws.pane_state(pane_id))
-                .and_then(|pane| pane.parent.as_ref())
-                .and_then(|parent| self.state.resolve_pane_parent(parent));
-        }
-        false
+        self.state
+            .agent_parent_chain_contains(start_ws, start_pane, needle_ws, needle_pane)
     }
 
     pub(super) fn start_agent(

@@ -1,6 +1,6 @@
 use ratatui::layout::Rect;
 
-use crate::app::state::{AppState, ViewLayout};
+use crate::app::state::{AgentPanelSort, AppState, LineSplitId, ManualEntryRef, ViewLayout};
 
 use super::ScrollbarClickTarget;
 
@@ -482,42 +482,168 @@ impl AppState {
             && row < rect.y + rect.height
     }
 
-    pub(super) fn agent_detail_target_at(
+    /// Body rect, ordered rows and visible row areas for the agent panel, shared
+    /// by the pointer hit-testing helpers. Returns `None` when the panel is
+    /// collapsed or has no usable body. Geometry comes from
+    /// `compute_agent_panel_row_areas`, the same function render uses.
+    fn agent_panel_row_areas_at(
         &self,
-        row: u16,
-    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+    ) -> Option<(
+        Rect,
+        Vec<crate::ui::AgentPanelRow>,
+        Vec<crate::ui::AgentPanelRowArea>,
+    )> {
         if self.sidebar_collapsed {
             return None;
         }
-
         let detail_area = self.agent_panel_rect();
         let metrics = crate::ui::agent_panel_scroll_metrics(self, detail_area);
         let body = crate::ui::agent_panel_body_rect(
             detail_area,
             crate::ui::should_show_scrollbar(metrics),
         );
-        if body.height == 0 || row < body.y || row >= body.y + body.height {
+        if body.width == 0 || body.height == 0 {
             return None;
         }
-
-        let mut row_y = body.y;
-        let body_bottom = body.y + body.height;
-        let entries = crate::ui::agent_panel_entries(self);
         let scroll = self.agent_panel_scroll.min(metrics.max_offset_from_bottom);
-        for (index, detail) in entries.iter().enumerate().skip(scroll) {
-            let height = crate::ui::agent_entry_height_in_body(self, detail, body.height);
-            if row_y.saturating_add(height) > body_bottom {
-                break;
+        let rows = crate::ui::agent_panel_rows(self);
+        let areas = crate::ui::compute_agent_panel_row_areas(self, &rows, body, scroll);
+        Some((body, rows, areas))
+    }
+
+    /// Flat insert index into the manual agent order for a mouse row inside the
+    /// agent panel body, honoring variable row heights. The upper half of a
+    /// row's slot inserts before it, the lower half (including its trailing gap)
+    /// after it. Returns `None` outside the body or when not in manual mode.
+    pub(super) fn agent_panel_drop_index_at_row(&self, row: u16) -> Option<usize> {
+        if !matches!(self.agent_panel_sort, AgentPanelSort::Manual) {
+            return None;
+        }
+        let (body, rows, areas) = self.agent_panel_row_areas_at()?;
+        if row < body.y || row >= body.y + body.height {
+            return None;
+        }
+        let row_count = rows.len();
+        for area in &areas {
+            let slot_bottom = area.rect.y.saturating_add(area.rect.height);
+            if row < slot_bottom {
+                // Upper half inserts before, lower half after.
+                let mid = area.rect.y.saturating_add(area.rect.height / 2);
+                let idx = if row < mid {
+                    area.row_idx
+                } else {
+                    area.row_idx.saturating_add(1)
+                };
+                return Some(idx.min(row_count));
             }
-            if row >= row_y && row < row_y.saturating_add(height) {
-                return Some((detail.ws_idx, detail.tab_idx, detail.pane_id));
+            // Gap row directly below this slot inserts after it.
+            if row == slot_bottom {
+                return Some(area.row_idx.saturating_add(1).min(row_count));
             }
-            row_y = row_y
-                .saturating_add(height)
-                .saturating_add(crate::ui::agent_entry_gap(self, index, entries.len()))
-                .min(body_bottom);
+        }
+        // Below the last visible row: insert at the end of what is visible.
+        let idx = areas
+            .last()
+            .map(|area| area.row_idx.saturating_add(1))
+            .unwrap_or(self.agent_panel_scroll);
+        Some(idx.min(row_count))
+    }
+
+    pub(super) fn agent_detail_target_at(
+        &self,
+        row: u16,
+    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+        let (_, rows, areas) = self.agent_panel_row_areas_at()?;
+        for area in &areas {
+            if row >= area.rect.y && row < area.rect.y + area.rect.height {
+                // Left-click on a line-split row is a no-op (no pane focus).
+                return match &rows[area.row_idx] {
+                    crate::ui::AgentPanelRow::Agent(detail) => {
+                        Some((detail.ws_idx, detail.tab_idx, detail.pane_id))
+                    }
+                    crate::ui::AgentPanelRow::LineSplit { .. } => None,
+                };
+            }
         }
         None
+    }
+
+    /// The stable public pane id of a collapse/expand glyph under `(col, row)`,
+    /// if the pointer is on a parent agent row's glyph. Applies in every sort
+    /// mode. Returns `None` otherwise.
+    pub(super) fn agent_panel_collapse_toggle_at(&self, col: u16, row: u16) -> Option<String> {
+        let (body, rows, areas) = self.agent_panel_row_areas_at()?;
+        for area in &areas {
+            // The glyph sits on the first line of the row.
+            if row != area.rect.y {
+                continue;
+            }
+            if let crate::ui::AgentPanelRow::Agent(entry) = &rows[area.row_idx] {
+                if !entry.has_children {
+                    return None;
+                }
+                let glyph_col = body.x.saturating_add(
+                    (entry.depth as u16).saturating_mul(crate::ui::AGENT_TREE_INDENT as u16),
+                );
+                if col == glyph_col {
+                    let ws = self.workspaces.get(entry.ws_idx)?;
+                    let number = ws.public_pane_number(entry.pane_id)?;
+                    return Some(crate::workspace::public_pane_id_for_number(&ws.id, number));
+                }
+            }
+            return None;
+        }
+        None
+    }
+
+    /// Manual-order entry (agent or line-split) under the given row, for drag
+    /// pickup. Returns `None` outside manual mode or outside any row.
+    pub(super) fn agent_panel_entry_ref_at_row(&self, row: u16) -> Option<ManualEntryRef> {
+        if !matches!(self.agent_panel_sort, AgentPanelSort::Manual) {
+            return None;
+        }
+        let (_, rows, areas) = self.agent_panel_row_areas_at()?;
+        for area in &areas {
+            if row >= area.rect.y && row < area.rect.y + area.rect.height {
+                return Some(match &rows[area.row_idx] {
+                    crate::ui::AgentPanelRow::Agent(detail) => ManualEntryRef::Pane(detail.pane_id),
+                    crate::ui::AgentPanelRow::LineSplit { id, .. } => {
+                        ManualEntryRef::LineSplit(*id)
+                    }
+                });
+            }
+        }
+        None
+    }
+
+    /// Line-split id under the given row, if any (for the right-click menu).
+    pub(super) fn agent_panel_line_split_at_row(&self, row: u16) -> Option<LineSplitId> {
+        if !matches!(self.agent_panel_sort, AgentPanelSort::Manual) {
+            return None;
+        }
+        let (_, rows, areas) = self.agent_panel_row_areas_at()?;
+        for area in &areas {
+            if row >= area.rect.y && row < area.rect.y + area.rect.height {
+                return match &rows[area.row_idx] {
+                    crate::ui::AgentPanelRow::LineSplit { id, .. } => Some(*id),
+                    crate::ui::AgentPanelRow::Agent(_) => None,
+                };
+            }
+        }
+        None
+    }
+
+    pub(super) fn on_agent_panel_split_button(&self, col: u16, row: u16) -> bool {
+        if self.sidebar_collapsed {
+            return false;
+        }
+        let detail_area = self.agent_panel_rect();
+        let rect = crate::ui::agent_panel_split_button_rect(detail_area, self.agent_panel_sort);
+        rect.width > 0
+            && col >= rect.x
+            && col < rect.x + rect.width
+            && row >= rect.y
+            && row < rect.y + rect.height
     }
 }
 
@@ -797,6 +923,83 @@ mod tests {
             app.state.agent_detail_target_at(body.y + 1),
             Some((1, 0, second_pane))
         );
+    }
+
+    /// Render and hit-testing must read the same rects: every screen row inside
+    /// a computed row area resolves to that row's pane, and the gap rows between
+    /// areas resolve to nothing.
+    #[test]
+    fn render_row_areas_and_hit_testing_agree_on_the_same_rects() {
+        let mut app = app_for_mouse_test();
+        let first = Workspace::test_new("one");
+        let first_pane = first.tabs[0].root_pane;
+        let second = Workspace::test_new("two");
+        let second_pane = second.tabs[0].root_pane;
+        app.state.workspaces = vec![first, second];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        for (ws_idx, pane_id, agent) in
+            [(0, first_pane, Agent::Pi), (1, second_pane, Agent::Claude)]
+        {
+            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(agent);
+        }
+        // Give the two agents different heights so a fixed stride cannot pass.
+        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+        app.state.sidebar_agents.rows_by_agent.insert(
+            "claude".into(),
+            vec![
+                vec![crate::config::AgentSidebarToken::Agent],
+                vec![crate::config::AgentSidebarToken::Workspace],
+            ],
+        );
+        app.state.sidebar_agents.row_gap = 1;
+
+        let detail_area = app.state.agent_panel_rect();
+        let metrics = crate::ui::agent_panel_scroll_metrics(&app.state, detail_area);
+        let body = crate::ui::agent_panel_body_rect(
+            detail_area,
+            crate::ui::should_show_scrollbar(metrics),
+        );
+        let rows = crate::ui::agent_panel_rows(&app.state);
+        let areas = crate::ui::compute_agent_panel_row_areas(
+            &app.state,
+            &rows,
+            body,
+            app.state.agent_panel_scroll,
+        );
+        assert_eq!(areas.len(), 2);
+
+        let mut covered = std::collections::HashSet::new();
+        for area in &areas {
+            let crate::ui::AgentPanelRow::Agent(entry) = &rows[area.row_idx] else {
+                panic!("expected an agent row");
+            };
+            for row in area.rect.y..area.rect.y + area.rect.height {
+                covered.insert(row);
+                assert_eq!(
+                    app.state.agent_detail_target_at(row),
+                    Some((entry.ws_idx, entry.tab_idx, entry.pane_id)),
+                    "row {row} must hit the agent render put there"
+                );
+            }
+        }
+        for row in body.y..body.y + body.height {
+            if !covered.contains(&row) {
+                assert_eq!(
+                    app.state.agent_detail_target_at(row),
+                    None,
+                    "row {row} is a gap and must not hit any agent"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1916,6 +2119,288 @@ mod tests {
             snapshot.sidebar_section_split,
             Some(app.state.sidebar_section_split)
         );
+    }
+
+    fn app_with_two_manual_agents() -> crate::app::App {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.agent_panel_sort = AgentPanelSort::Manual;
+        for ws_idx in 0..2 {
+            let pane = app.state.workspaces[ws_idx].tabs[0].root_pane;
+            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(Agent::Pi);
+        }
+        app
+    }
+
+    fn manual_panel_pane_ids(app: &crate::app::App) -> Vec<crate::layout::PaneId> {
+        crate::ui::agent_panel_entries(&app.state)
+            .into_iter()
+            .map(|entry| entry.pane_id)
+            .collect()
+    }
+
+    fn agent_row_for(
+        app: &crate::app::App,
+        pane_id: crate::layout::PaneId,
+        want_last: bool,
+    ) -> u16 {
+        let sidebar = app.state.view.sidebar_rect;
+        let matching = (sidebar.y..sidebar.y + sidebar.height).filter(|&r| {
+            app.state.agent_detail_target_at(r).map(|(_, _, pane)| pane) == Some(pane_id)
+        });
+        if want_last {
+            matching.max().expect("agent row present")
+        } else {
+            matching.min().expect("agent row present")
+        }
+    }
+
+    #[test]
+    fn dragging_agent_reorders_manual_order() {
+        let mut app = app_with_two_manual_agents();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let order = manual_panel_pane_ids(&app);
+        assert_eq!(order.len(), 2);
+        let source_pane = order[0];
+        let last_pane = order[1];
+
+        let source_row = agent_row_for(&app, source_pane, false);
+        // The gap row just below the last entry inserts at the end of the order.
+        let target_row = agent_row_for(&app, last_pane, true) + 1;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            source_row,
+        ));
+        assert!(!app.state.agent_presses.is_empty());
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            2,
+            target_row,
+        ));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::AgentReorder {
+                insert_idx: Some(2),
+                ..
+            })
+        ));
+
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
+
+        assert_eq!(manual_panel_pane_ids(&app), vec![last_pane, source_pane]);
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn clicking_split_button_inserts_a_line_split_and_opens_rename() {
+        let mut app = app_with_two_manual_agents();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let detail_area = app.state.agent_panel_rect();
+        let rect =
+            crate::ui::agent_panel_split_button_rect(detail_area, app.state.agent_panel_sort);
+        assert_ne!(rect, Rect::default());
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            rect.x,
+            rect.y,
+        ));
+
+        assert_eq!(app.state.mode, Mode::RenameLineSplit);
+        assert!(app.state.rename_line_split_target.is_some());
+        assert_eq!(app.state.agent_manual_order.order.len(), 3);
+
+        // Name it, then confirm the row is hit-tested as a line-split, not an agent.
+        app.state.name_input = "scheduled".into();
+        app.state.name_input_replace_on_type = false;
+        app.handle_rename_key_via_api(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::empty(),
+        ));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let body = crate::ui::agent_panel_body_rect(app.state.agent_panel_rect(), false);
+        let split_row = (body.y..body.y + body.height)
+            .find(|&r| app.state.agent_panel_line_split_at_row(r).is_some())
+            .expect("line-split row is visible");
+        assert_eq!(app.state.agent_detail_target_at(split_row), None);
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn clicking_the_collapse_glyph_toggles_the_subtree_and_persists() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("one");
+        let parent = ws.tabs[0].root_pane;
+        let child = ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(parent);
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        for pane in [parent, child] {
+            let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(Agent::Pi);
+        }
+        let number = app.state.workspaces[0]
+            .public_pane_number(parent)
+            .expect("parent has number");
+        let workspace_id = app.state.workspaces[0].id.clone();
+        app.state.workspaces[0]
+            .pane_state_mut(child)
+            .expect("child pane")
+            .parent = Some(crate::pane::PaneParentRef {
+            workspace_id: workspace_id.clone(),
+            pane_number: number,
+        });
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
+
+        let key = crate::workspace::public_pane_id_for_number(&workspace_id, number);
+        let body = crate::ui::agent_panel_body_rect(app.state.agent_panel_rect(), false);
+        // The parent is the first row, so its glyph is the body's first cell.
+        assert_eq!(
+            app.state
+                .agent_panel_collapse_toggle_at(body.x, body.y)
+                .as_deref(),
+            Some(key.as_str())
+        );
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            body.x,
+            body.y,
+        ));
+        assert!(app.state.collapsed_agent_keys.contains(&key));
+        assert_eq!(
+            capture_snapshot(&app.state).collapsed_agent_keys,
+            std::collections::HashSet::from([key.clone()])
+        );
+
+        // Clicking again expands, and the child row is visible once more.
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            body.x,
+            body.y,
+        ));
+        assert!(!app.state.collapsed_agent_keys.contains(&key));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
+        assert!((body.y..body.y + body.height)
+            .any(|r| { app.state.agent_detail_target_at(r).map(|(_, _, p)| p) == Some(child) }));
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn double_clicking_an_agent_row_opens_the_tab_rename() {
+        let mut app = app_with_two_manual_agents();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let target_pane = manual_panel_pane_ids(&app)[0];
+        let row = agent_row_for(&app, target_pane, false);
+        let col = app.state.view.sidebar_rect.x + 2;
+
+        // The first click focuses and only records the candidate.
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), col, row));
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert!(app.last_agent_row_click.is_some());
+
+        // The second quick click opens the tab rename for that agent's tab.
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+        assert_eq!(app.state.mode, Mode::RenameTab);
+        assert_eq!(app.state.rename_pane_target, None);
+        assert!(app.last_agent_row_click.is_none());
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn dragging_an_agent_row_never_opens_the_tab_rename() {
+        let mut app = app_with_two_manual_agents();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let order = manual_panel_pane_ids(&app);
+        let source_row = agent_row_for(&app, order[0], false);
+        let target_row = agent_row_for(&app, order[1], true) + 1;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            source_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            2,
+            target_row,
+        ));
+        // A drag invalidates the double-click candidate.
+        assert!(app.last_agent_row_click.is_none());
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
+        assert_ne!(app.state.mode, Mode::RenameTab);
+    }
+
+    #[test]
+    fn clicking_agent_row_without_drag_focuses_pane() {
+        let mut app = app_with_two_manual_agents();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let target_pane = manual_panel_pane_ids(&app)[1];
+        let row = agent_row_for(&app, target_pane, false);
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, row));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, row));
+
+        assert_eq!(app.state.active, Some(1));
+        assert_eq!(app.state.workspaces[1].focused_pane_id(), Some(target_pane));
+        assert!(app.state.agent_presses.is_empty());
+    }
+
+    #[test]
+    fn clicking_sort_toggle_cycles_spaces_priority_manual() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.agent_panel_sort = AgentPanelSort::Spaces;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let click_toggle = |app: &mut crate::app::App| {
+            let (_, detail_area) = crate::ui::expanded_sidebar_sections(
+                app.state.view.sidebar_rect,
+                app.state.sidebar_section_split,
+            );
+            let rect = crate::ui::agent_panel_toggle_rect(detail_area, app.state.agent_panel_sort);
+            app.handle_mouse(mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                rect.x,
+                rect.y,
+            ));
+        };
+
+        click_toggle(&mut app);
+        assert_eq!(app.state.agent_panel_sort, AgentPanelSort::Priority);
+        click_toggle(&mut app);
+        assert_eq!(app.state.agent_panel_sort, AgentPanelSort::Manual);
+        click_toggle(&mut app);
+        assert_eq!(app.state.agent_panel_sort, AgentPanelSort::Spaces);
     }
 
     #[test]

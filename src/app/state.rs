@@ -896,11 +896,13 @@ pub enum Mode {
     RenameWorkspace,
     RenameTab,
     RenamePane,
+    RenameLineSplit,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
     Resize,
     ConfirmClose,
+    ConfirmAgentReparent,
     ContextMenu,
     Settings,
     GlobalMenu,
@@ -1074,6 +1076,193 @@ pub enum AgentPanelSort {
     #[default]
     Spaces,
     Priority,
+    Manual,
+}
+
+/// Client-only identifier for a named line-split divider row in the agents
+/// panel. A monotonic counter (see [`AgentManualOrder::next_line_split_id`])
+/// hands these out so ordering, drag, rename, and persistence are all
+/// deterministic and testable. Never enters the server/runtime protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct LineSplitId(pub(crate) u64);
+
+/// A single entry in the manual agent ordering. Either an agent pane or a
+/// user-created named line-split divider, interleaved in one flat vector.
+#[derive(Debug, Clone)]
+pub(crate) enum ManualEntry {
+    Pane(PaneId),
+    LineSplit { id: LineSplitId, name: String },
+}
+
+/// Reference to a single manual-order entry, used to pick up and move either an
+/// agent pane or a line-split during drag-and-drop. Client-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManualEntryRef {
+    Pane(PaneId),
+    LineSplit(LineSplitId),
+}
+
+/// What a pending drag-to-reparent operation will do once confirmed. Attach the
+/// dragged agent under a parent, or detach it back to the top level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentReparentAction {
+    SetParent {
+        parent_ws: usize,
+        parent_pane: PaneId,
+    },
+    ClearParent,
+}
+
+/// A drag-to-reparent operation awaiting confirmation in the
+/// [`Mode::ConfirmAgentReparent`] modal. Client-only presentation state; the
+/// resolved parent link it produces is the only runtime fact and is applied on
+/// confirm. Ephemeral, never persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingAgentReparent {
+    pub child_ws: usize,
+    pub child_pane: PaneId,
+    /// Display label of the dragged agent, for the modal prompt.
+    pub child_label: String,
+    /// Display label of the target parent (SetParent) or the current parent
+    /// being removed (ClearParent), for the modal prompt.
+    pub parent_label: String,
+    pub action: AgentReparentAction,
+    /// Mode to restore when the modal closes (a drag can start from Terminal or
+    /// Navigate).
+    pub return_mode: Mode,
+}
+
+/// Persistence-neutral projection of a manual-order entry. Panes are keyed by
+/// stable (workspace id + public pane number) so they survive the PaneId remap
+/// on restore; line-splits carry their id and name directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ManualOrderEntryKey {
+    Pane {
+        workspace_id: String,
+        pane_number: usize,
+    },
+    LineSplit {
+        id: u64,
+        name: String,
+    },
+}
+
+/// Flat, client-only manual ordering of agent panes for the agents panel.
+///
+/// This is TUI presentation state: it never enters the server/runtime protocol.
+/// `order` drives the display order, `known` tracks which panes have already
+/// been placed (so genuinely new agents get the placement rule), and `seeded`
+/// records whether the natural order has been captured at least once.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AgentManualOrder {
+    pub(crate) order: Vec<ManualEntry>,
+    pub(crate) known: std::collections::HashSet<PaneId>,
+    pub(crate) seeded: bool,
+    /// Monotonic counter handing out [`LineSplitId`]s. Never reused, so ids stay
+    /// unique for the lifetime of the session (and across restore).
+    pub(crate) next_line_split_id: u64,
+}
+
+impl AgentManualOrder {
+    /// Insert a new line-split with `name` at flat index `at` (clamped to the
+    /// order length) and return its freshly minted id.
+    pub(crate) fn new_line_split(&mut self, name: String, at: usize) -> LineSplitId {
+        let id = LineSplitId(self.next_line_split_id);
+        self.next_line_split_id = self.next_line_split_id.saturating_add(1);
+        let at = at.min(self.order.len());
+        self.order.insert(at, ManualEntry::LineSplit { id, name });
+        id
+    }
+
+    /// Rebuild a manual order from persisted stable keys (workspace id + public
+    /// pane number) resolved against the restored workspaces. Entries whose
+    /// workspace or pane number no longer resolve are dropped. `seeded` is set
+    /// because a snapshot was present, so reconcile treats later arrivals as
+    /// genuinely new agents rather than reseeding.
+    pub(crate) fn from_public_keys(
+        keys: &[ManualOrderEntryKey],
+        workspaces: &[crate::workspace::Workspace],
+    ) -> Self {
+        let mut number_to_pane: std::collections::HashMap<(&str, usize), PaneId> =
+            std::collections::HashMap::new();
+        for ws in workspaces {
+            for (pane_id, number) in &ws.public_pane_numbers {
+                number_to_pane.insert((ws.id.as_str(), *number), *pane_id);
+            }
+        }
+
+        let mut order = Vec::new();
+        let mut known = std::collections::HashSet::new();
+        let mut seen_line_splits = std::collections::HashSet::new();
+        let mut max_line_split_id: Option<u64> = None;
+        for key in keys {
+            match key {
+                ManualOrderEntryKey::Pane {
+                    workspace_id,
+                    pane_number,
+                } => {
+                    if let Some(pane_id) =
+                        number_to_pane.get(&(workspace_id.as_str(), *pane_number))
+                    {
+                        if known.insert(*pane_id) {
+                            order.push(ManualEntry::Pane(*pane_id));
+                        }
+                    }
+                }
+                ManualOrderEntryKey::LineSplit { id, name } => {
+                    if seen_line_splits.insert(*id) {
+                        order.push(ManualEntry::LineSplit {
+                            id: LineSplitId(*id),
+                            name: name.clone(),
+                        });
+                        max_line_split_id =
+                            Some(max_line_split_id.map_or(*id, |current| current.max(*id)));
+                    }
+                }
+            }
+        }
+
+        Self {
+            order,
+            known,
+            seeded: true,
+            next_line_split_id: max_line_split_id.map_or(0, |max| max.saturating_add(1)),
+        }
+    }
+
+    /// Serialize `order` to persistence-neutral keys so the ordering survives the
+    /// PaneId remap that happens on restore. Pane entries whose pane cannot be
+    /// resolved to a public number are skipped; line-splits are always kept.
+    pub(crate) fn to_public_keys(
+        &self,
+        workspaces: &[crate::workspace::Workspace],
+    ) -> Vec<ManualOrderEntryKey> {
+        let mut pane_to_key: std::collections::HashMap<PaneId, (String, usize)> =
+            std::collections::HashMap::new();
+        for ws in workspaces {
+            for (pane_id, number) in &ws.public_pane_numbers {
+                pane_to_key.insert(*pane_id, (ws.id.clone(), *number));
+            }
+        }
+
+        self.order
+            .iter()
+            .filter_map(|entry| match entry {
+                ManualEntry::Pane(pane_id) => {
+                    pane_to_key.get(pane_id).map(|(workspace_id, pane_number)| {
+                        ManualOrderEntryKey::Pane {
+                            workspace_id: workspace_id.clone(),
+                            pane_number: *pane_number,
+                        }
+                    })
+                }
+                ManualEntry::LineSplit { id, name } => Some(ManualOrderEntryKey::LineSplit {
+                    id: id.0,
+                    name: name.clone(),
+                }),
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,6 +1396,14 @@ pub(crate) enum DragTarget {
         source_tab_idx: usize,
         insert_idx: Option<usize>,
     },
+    /// Reorder of a manual-order entry (agent pane or line-split) within the flat
+    /// manual agent ordering. Cross-workspace moves are allowed; `insert_idx` is
+    /// a flat index into the manual order.
+    AgentReorder {
+        source_id: crate::app::InputSourceId,
+        source: ManualEntryRef,
+        insert_idx: Option<usize>,
+    },
     WorkspaceListScrollbar {
         grab_row_offset: u16,
     },
@@ -1254,6 +1451,12 @@ pub(crate) struct TabPressState {
     pub start_row: u16,
 }
 
+pub(crate) struct AgentPressState {
+    pub entry: ManualEntryRef,
+    pub start_col: u16,
+    pub start_row: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextMenuKind {
     Workspace {
@@ -1276,6 +1479,10 @@ pub enum ContextMenuKind {
         source_pane_id: Option<PaneId>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+    },
+    /// Right-click menu for a named line-split divider row (manual mode only).
+    LineSplit {
+        id: LineSplitId,
     },
 }
 
@@ -1313,6 +1520,7 @@ impl ContextMenuState {
                 if collapsed { "Expand" } else { "Collapse" },
             ],
             ContextMenuKind::Tab { .. } => vec!["New tab", "Rename", "Close"],
+            ContextMenuKind::LineSplit { .. } => vec!["Rename", "Delete"],
             ContextMenuKind::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -1506,11 +1714,18 @@ pub struct AppState {
     pub requested_new_tab_name: Option<String>,
     pub pending_workspace_create_cwd: Option<std::path::PathBuf>,
     pub rename_pane_target: Option<PaneId>,
+    /// Target line-split for the rename modal (client-only; mirrors
+    /// `rename_pane_target`). Set only while `mode == Mode::RenameLineSplit`.
+    pub(crate) rename_line_split_target: Option<LineSplitId>,
     pub worktree_create: Option<WorktreeCreateState>,
     pub worktree_open: Option<WorktreeOpenState>,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    /// Public pane ids (e.g. `"w1:p2"`) of agent-tree parents the user has
+    /// collapsed in the agents panel. Client-only TUI presentation state,
+    /// persisted like [`AppState::collapsed_space_keys`].
+    pub collapsed_agent_keys: std::collections::HashSet<String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1533,6 +1748,7 @@ pub struct AppState {
     pub(crate) workspace_presses:
         std::collections::HashMap<crate::app::InputSourceId, WorkspacePressState>,
     pub(crate) tab_presses: std::collections::HashMap<crate::app::InputSourceId, TabPressState>,
+    pub(crate) agent_presses: std::collections::HashMap<crate::app::InputSourceId, AgentPressState>,
     pub selection: Option<Selection>,
     pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub context_menu: Option<ContextMenuState>,
@@ -1565,6 +1781,11 @@ pub struct AppState {
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
     pub agent_panel_sort: AgentPanelSort,
+    /// Flat client-only manual ordering of agent panes (TUI presentation state).
+    pub(crate) agent_manual_order: AgentManualOrder,
+    /// A drag-to-reparent operation awaiting confirmation. Set only while
+    /// `mode == Mode::ConfirmAgentReparent`.
+    pub(crate) pending_agent_reparent: Option<PendingAgentReparent>,
     pub status_indicators: crate::config::StatusIndicatorStyle,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
@@ -1949,11 +2170,13 @@ impl AppState {
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
             rename_pane_target: None,
+            rename_line_split_target: None,
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_agent_keys: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -1987,6 +2210,7 @@ impl AppState {
             drag: None,
             workspace_presses: std::collections::HashMap::new(),
             tab_presses: std::collections::HashMap::new(),
+            agent_presses: std::collections::HashMap::new(),
             selection: None,
             selection_autoscroll: None,
             context_menu: None,
@@ -2016,6 +2240,8 @@ impl AppState {
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
             agent_panel_sort: AgentPanelSort::Spaces,
+            agent_manual_order: AgentManualOrder::default(),
+            pending_agent_reparent: None,
             status_indicators: crate::config::StatusIndicatorStyle::Dots,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
@@ -2126,6 +2352,11 @@ impl AppState {
     }
 
     pub fn assert_invariants_for_test(&self) {
+        assert!(
+            self.pending_agent_reparent.is_none() || self.mode == Mode::ConfirmAgentReparent,
+            "pending agent reparent must only be set while the confirm modal is open"
+        );
+
         if self.workspaces.is_empty() {
             assert!(
                 self.active.is_none(),
@@ -2165,6 +2396,10 @@ impl AppState {
                 "empty app state must not keep rename pane target"
             );
             assert!(
+                self.rename_line_split_target.is_none(),
+                "empty app state must not keep rename line-split target"
+            );
+            assert!(
                 self.selection.is_none(),
                 "empty app state must not keep text selection"
             );
@@ -2193,6 +2428,18 @@ impl AppState {
             assert!(
                 self.tab_presses.is_empty(),
                 "empty app state must not keep tab press state"
+            );
+            assert!(
+                self.agent_presses.is_empty(),
+                "empty app state must not keep agent press state"
+            );
+            assert!(
+                self.agent_manual_order.order.is_empty(),
+                "empty app state must not keep manual agent order entries"
+            );
+            assert!(
+                self.agent_manual_order.known.is_empty(),
+                "empty app state must not keep known manual agent panes"
             );
             assert!(
                 self.context_menu.is_none(),
@@ -2385,6 +2632,21 @@ impl AppState {
                 DragTarget::PaneScrollbar { pane_id, .. } => {
                     assert_live_pane(*pane_id, "pane scrollbar drag")
                 }
+                DragTarget::AgentReorder {
+                    source, insert_idx, ..
+                } => {
+                    if let ManualEntryRef::Pane(source_pane_id) = source {
+                        assert_live_pane(*source_pane_id, "agent reorder drag source");
+                    }
+                    if let Some(insert_idx) = insert_idx {
+                        assert!(
+                            *insert_idx <= self.agent_manual_order.order.len(),
+                            "agent reorder insert index {} out of bounds for {} manual entries",
+                            insert_idx,
+                            self.agent_manual_order.order.len()
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -2393,6 +2655,39 @@ impl AppState {
         }
         for press in self.tab_presses.values() {
             assert_tab_index(press.ws_idx, press.tab_idx, "tab press");
+        }
+        for press in self.agent_presses.values() {
+            if let ManualEntryRef::Pane(pane_id) = press.entry {
+                assert_live_pane(pane_id, "agent press");
+            }
+        }
+        let mut seen_line_split_ids = std::collections::HashSet::new();
+        for entry in &self.agent_manual_order.order {
+            match entry {
+                ManualEntry::Pane(pane_id) => {
+                    assert_live_pane(*pane_id, "manual agent order");
+                    assert!(
+                        self.agent_manual_order.known.contains(pane_id),
+                        "manual agent order entry {pane_id:?} missing from known set"
+                    );
+                }
+                ManualEntry::LineSplit { id, .. } => {
+                    assert!(
+                        id.0 < self.agent_manual_order.next_line_split_id,
+                        "line-split id {} not below next_line_split_id {}",
+                        id.0,
+                        self.agent_manual_order.next_line_split_id
+                    );
+                    assert!(
+                        seen_line_split_ids.insert(id.0),
+                        "duplicate line-split id {} in manual agent order",
+                        id.0
+                    );
+                }
+            }
+        }
+        for pane_id in &self.agent_manual_order.known {
+            assert_live_pane(*pane_id, "known manual agent pane");
         }
         if let Some(menu) = &self.context_menu {
             match menu.kind {
@@ -2424,7 +2719,21 @@ impl AppState {
                         assert_live_pane(source_pane_id, "context menu source pane");
                     }
                 }
+                ContextMenuKind::LineSplit { id } => {
+                    assert!(
+                        self.agent_manual_order.order.iter().any(
+                            |entry| matches!(entry, ManualEntry::LineSplit { id: entry_id, .. } if *entry_id == id)
+                        ),
+                        "context menu references line-split {id:?} not present in manual order"
+                    );
+                }
             }
+        }
+        if self.mode != Mode::RenameLineSplit {
+            assert!(
+                self.rename_line_split_target.is_none(),
+                "rename line-split target must be cleared outside RenameLineSplit mode"
+            );
         }
     }
 

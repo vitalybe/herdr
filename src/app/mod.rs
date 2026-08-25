@@ -47,6 +47,7 @@ const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 const SIDEBAR_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
+const AGENT_ROW_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_COPY_HIGHLIGHT_DURATION: Duration = Duration::from_millis(500);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
 
@@ -98,6 +99,20 @@ impl PaneClickState {
     }
 }
 
+/// TUI-only double-click tracking for agent rows in the sidebar/agent panel.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AgentRowClickState {
+    pane_id: crate::layout::PaneId,
+    at: Instant,
+}
+
+impl AgentRowClickState {
+    fn is_double_click_for(self, next: Self) -> bool {
+        self.pane_id == next.pane_id
+            && next.at.duration_since(self.at) <= AGENT_ROW_DOUBLE_CLICK_WINDOW
+    }
+}
+
 pub struct App {
     pub state: AppState,
     pub(crate) pane_graphics: pane_graphics::Runtime,
@@ -129,6 +144,7 @@ pub struct App {
     pub(crate) next_api_worktree_operation_id: u64,
     pub(crate) last_sidebar_divider_click: Option<Instant>,
     pub(crate) last_pane_click: Option<PaneClickState>,
+    pub(crate) last_agent_row_click: Option<AgentRowClickState>,
     pub(crate) pending_url_click_sources: HashSet<InputSourceId>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_auto_update_check: Option<Instant>,
@@ -251,12 +267,45 @@ fn load_plugin_registry(no_session: bool) -> crate::app::state::InstalledPluginR
         .collect()
 }
 
+/// Rebuild the client-only manual agent order from a restored snapshot,
+/// mapping persisted stable keys back to the freshly assigned pane ids.
+fn restore_agent_manual_order(
+    snap: &crate::persist::SessionSnapshot,
+    workspaces: &[crate::workspace::Workspace],
+) -> state::AgentManualOrder {
+    let Some(order) = snap.agent_manual_order.as_ref() else {
+        return state::AgentManualOrder::default();
+    };
+    let keys: Vec<state::ManualOrderEntryKey> = order
+        .entries
+        .iter()
+        .map(|entry| match entry {
+            crate::persist::AgentManualEntrySnapshot::Pane {
+                workspace_id,
+                pane_number,
+            } => state::ManualOrderEntryKey::Pane {
+                workspace_id: workspace_id.clone(),
+                pane_number: *pane_number,
+            },
+            crate::persist::AgentManualEntrySnapshot::LineSplit {
+                line_split_id,
+                name,
+            } => state::ManualOrderEntryKey::LineSplit {
+                id: *line_split_id,
+                name: name.clone(),
+            },
+        })
+        .collect();
+    state::AgentManualOrder::from_public_keys(&keys, workspaces)
+}
+
 fn agent_panel_sort_from_config(
     sort: crate::config::AgentPanelSortConfig,
 ) -> state::AgentPanelSort {
     match sort {
         crate::config::AgentPanelSortConfig::Spaces => state::AgentPanelSort::Spaces,
         crate::config::AgentPanelSortConfig::Priority => state::AgentPanelSort::Priority,
+        crate::config::AgentPanelSortConfig::Manual => state::AgentPanelSort::Manual,
     }
 }
 
@@ -419,6 +468,8 @@ impl App {
             sidebar_width_source,
             sidebar_section_split,
             collapsed_space_keys,
+            collapsed_agent_keys,
+            agent_manual_order,
         ) = if no_session {
             (
                 Vec::new(),
@@ -428,6 +479,8 @@ impl App {
                 state::SidebarWidthSource::ConfigDefault,
                 0.5_f32,
                 std::collections::HashSet::new(),
+                std::collections::HashSet::new(),
+                state::AgentManualOrder::default(),
             )
         } else if let Some(snap) = crate::persist::load() {
             let history = config
@@ -464,11 +517,14 @@ impl App {
                     },
                     snap.sidebar_section_split.unwrap_or(0.5),
                     snap.collapsed_space_keys,
+                    snap.collapsed_agent_keys,
+                    state::AgentManualOrder::default(),
                 )
             } else {
                 crate::logging::session_restored(ws.len(), "ok");
                 let active = snap.active.filter(|&i| i < ws.len());
                 let selected = snap.selected.min(ws.len().saturating_sub(1));
+                let agent_manual_order = restore_agent_manual_order(&snap, &ws);
                 (
                     ws,
                     active,
@@ -481,6 +537,8 @@ impl App {
                     },
                     snap.sidebar_section_split.unwrap_or(0.5),
                     snap.collapsed_space_keys,
+                    snap.collapsed_agent_keys,
+                    agent_manual_order,
                 )
             }
         } else {
@@ -492,6 +550,8 @@ impl App {
                 state::SidebarWidthSource::ConfigDefault,
                 0.5_f32,
                 std::collections::HashSet::new(),
+                std::collections::HashSet::new(),
+                state::AgentManualOrder::default(),
             )
         };
 
@@ -581,11 +641,13 @@ impl App {
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
             rename_pane_target: None,
+            rename_line_split_target: None,
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
             worktree_directory,
             collapsed_space_keys,
+            collapsed_agent_keys,
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -628,6 +690,7 @@ impl App {
             drag: None,
             workspace_presses: HashMap::new(),
             tab_presses: HashMap::new(),
+            agent_presses: HashMap::new(),
             selection: None,
             selection_autoscroll: None,
             context_menu: None,
@@ -654,6 +717,8 @@ impl App {
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_section_split,
             agent_panel_sort,
+            agent_manual_order,
+            pending_agent_reparent: None,
             status_indicators: config.ui.status_indicators,
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),
@@ -784,6 +849,7 @@ impl App {
             next_api_worktree_operation_id: 1,
             last_sidebar_divider_click: None,
             last_pane_click: None,
+            last_agent_row_click: None,
             pending_url_click_sources: HashSet::new(),
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
             next_auto_update_check: version_check_enabled
@@ -886,6 +952,8 @@ impl App {
             app.state.sidebar_section_split = split;
         }
         app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
+        app.state.collapsed_agent_keys = snapshot.collapsed_agent_keys.clone();
+        app.state.agent_manual_order = restore_agent_manual_order(snapshot, &app.state.workspaces);
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
         } else {
@@ -1933,7 +2001,7 @@ impl App {
             Mode::Copy => {
                 self.handle_copy_mode_key(key);
             }
-            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
+            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::RenameLineSplit => {
                 self.handle_rename_key_via_api(key_event);
             }
             Mode::NewLinkedWorktree => {
@@ -1950,6 +2018,9 @@ impl App {
             }
             Mode::ConfirmClose => {
                 self.handle_confirm_close_key_via_api(key_event);
+            }
+            Mode::ConfirmAgentReparent => {
+                self.handle_agent_reparent_key_via_api(key_event);
             }
             Mode::ContextMenu => {
                 self.handle_context_menu_key_via_api(key_event);
@@ -2250,6 +2321,7 @@ mod tests {
             Mode::RenameWorkspace,
             Mode::RenameTab,
             Mode::RenamePane,
+            Mode::RenameLineSplit,
             Mode::NewLinkedWorktree,
             Mode::OpenExistingWorktree,
             Mode::Settings,
@@ -4982,6 +5054,10 @@ mod tests {
             app.state.sidebar_width,
             app.state.sidebar_section_split,
             app.state.collapsed_space_keys.clone(),
+            app.state.collapsed_agent_keys.clone(),
+            app.state
+                .agent_manual_order
+                .to_public_keys(&app.state.workspaces),
         );
         let json = serde_json::to_string(&snap).unwrap();
         let parsed: crate::persist::SessionSnapshot = serde_json::from_str(&json).unwrap();
@@ -6872,6 +6948,8 @@ last_pane = "prefix+tab"
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
+            collapsed_agent_keys: Default::default(),
+            agent_manual_order: None,
         };
         let mut imports = std::collections::HashMap::new();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

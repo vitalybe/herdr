@@ -5,9 +5,9 @@ use tracing::warn;
 
 use crate::{
     app::state::{
-        AgentPanelSort, AppState, ContextMenuKind, ContextMenuState, DragState, DragTarget,
-        MenuListState, Mode, RightClickPassthroughGesture, TabPressState, ViewLayout,
-        WorkspacePressState,
+        AgentPanelSort, AgentPressState, AppState, ContextMenuKind, ContextMenuState, DragState,
+        DragTarget, ManualEntryRef, MenuListState, Mode, RightClickPassthroughGesture,
+        TabPressState, ViewLayout, WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
     selection::Selection,
@@ -18,11 +18,12 @@ use crate::{
 use super::WheelRouting;
 use super::{
     modal::{
-        apply_global_menu_action, confirm_close_cancel, global_menu_actions, leave_modal,
-        modal_action_from_buttons, open_global_menu, open_new_tab_dialog, ModalAction,
+        agent_reparent_accept, agent_reparent_cancel, apply_global_menu_action,
+        confirm_close_cancel, global_menu_actions, leave_modal, modal_action_from_buttons,
+        open_agent_reparent_confirm, open_global_menu, open_new_tab_dialog, ModalAction,
     },
     settings::SettingsAction,
-    ScrollbarClickTarget, TAB_DRAG_THRESHOLD, WORKSPACE_DRAG_THRESHOLD,
+    ScrollbarClickTarget, AGENT_DRAG_THRESHOLD, TAB_DRAG_THRESHOLD, WORKSPACE_DRAG_THRESHOLD,
 };
 
 pub(super) enum MouseAction {
@@ -49,6 +50,10 @@ pub(super) enum MouseAction {
     MoveTab {
         ws_idx: usize,
         source_tab_idx: usize,
+        insert_idx: usize,
+    },
+    MoveAgentEntry {
+        source: ManualEntryRef,
         insert_idx: usize,
     },
     SetSplitRatio {
@@ -253,6 +258,31 @@ impl AppState {
                     return None;
                 }
 
+                if self.mode == Mode::ConfirmAgentReparent {
+                    let popup = crate::ui::agent_reparent_popup_rect(self.view.terminal_area)
+                        .unwrap_or_default();
+                    let inner = Rect::new(
+                        popup.x + 1,
+                        popup.y + 1,
+                        popup.width.saturating_sub(2),
+                        popup.height.saturating_sub(2),
+                    );
+                    let (confirm, cancel) = crate::ui::agent_reparent_button_rects(inner);
+                    match modal_action_from_buttons(
+                        mouse.column,
+                        mouse.row,
+                        &[
+                            (confirm, ModalAction::Confirm),
+                            (cancel, ModalAction::Cancel),
+                        ],
+                    ) {
+                        Some(ModalAction::Confirm) => agent_reparent_accept(self),
+                        Some(ModalAction::Cancel) | None => agent_reparent_cancel(self),
+                        _ => {}
+                    }
+                    return None;
+                }
+
                 if self.mode == Mode::NewLinkedWorktree {
                     if let Some(inner) =
                         crate::ui::new_linked_worktree_inner_rect(self.screen_rect())
@@ -392,7 +422,10 @@ impl AppState {
 
                 if matches!(
                     self.mode,
-                    Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane
+                    Mode::RenameWorkspace
+                        | Mode::RenameTab
+                        | Mode::RenamePane
+                        | Mode::RenameLineSplit
                 ) {
                     let action = self
                         .rename_modal_inner()
@@ -604,10 +637,23 @@ impl AppState {
                     if self.on_agent_panel_sort_toggle(mouse.column, mouse.row) {
                         self.agent_panel_sort = match self.agent_panel_sort {
                             AgentPanelSort::Spaces => AgentPanelSort::Priority,
-                            AgentPanelSort::Priority => AgentPanelSort::Spaces,
+                            AgentPanelSort::Priority => AgentPanelSort::Manual,
+                            AgentPanelSort::Manual => AgentPanelSort::Spaces,
                         };
                         self.agent_panel_scroll = 0;
                         self.mark_session_dirty();
+                        return None;
+                    }
+
+                    if self.mouse_capture
+                        && matches!(self.agent_panel_sort, AgentPanelSort::Manual)
+                        && self.on_agent_panel_split_button(mouse.column, mouse.row)
+                    {
+                        // Insert a new empty line-split at the top of the order and
+                        // immediately open rename so the user can name it.
+                        let id = self.agent_manual_order.new_line_split(String::new(), 0);
+                        self.mark_session_dirty();
+                        super::modal::open_rename_line_split(self, id);
                         return None;
                     }
 
@@ -627,7 +673,34 @@ impl AppState {
                         return None;
                     }
 
-                    if let Some((ws_idx, _tab_idx, pane_id)) =
+                    // Collapse/expand glyph on a parent agent row toggles its
+                    // subtree. Applies in every sort mode and takes priority over
+                    // focus/drag on that cell.
+                    if let Some(key) = self.agent_panel_collapse_toggle_at(mouse.column, mouse.row)
+                    {
+                        if !self.collapsed_agent_keys.remove(&key) {
+                            self.collapsed_agent_keys.insert(key);
+                        }
+                        self.mark_session_dirty();
+                        return None;
+                    }
+
+                    if matches!(self.agent_panel_sort, AgentPanelSort::Manual) {
+                        if let Some(entry) = self.agent_panel_entry_ref_at_row(mouse.row) {
+                            // Manual mode: record a press so a drag can promote to a
+                            // reorder. On release without a drag, an agent row
+                            // focuses its pane while a line-split row is a no-op.
+                            self.agent_presses.insert(
+                                source_id,
+                                AgentPressState {
+                                    entry,
+                                    start_col: mouse.column,
+                                    start_row: mouse.row,
+                                },
+                            );
+                            return None;
+                        }
+                    } else if let Some((ws_idx, _tab_idx, pane_id)) =
                         self.agent_detail_target_at(mouse.row)
                     {
                         self.mode = Mode::Terminal;
@@ -689,8 +762,21 @@ impl AppState {
 
                 let workspace_drop_target = self.workspace_drop_target_at_row(mouse.row);
                 let tab_drop_index = self.tab_drop_index_at(mouse.column, mouse.row);
+                let agent_drop_index = self.agent_panel_drop_index_at_row(mouse.row);
                 if self.drag.is_none() {
-                    if let Some(press) = self.workspace_presses.get(&source_id) {
+                    if let Some(press) = self.agent_presses.get(&source_id) {
+                        let delta_col = mouse.column.abs_diff(press.start_col);
+                        let delta_row = mouse.row.abs_diff(press.start_row);
+                        if delta_col.max(delta_row) >= AGENT_DRAG_THRESHOLD {
+                            self.drag = Some(DragState {
+                                target: DragTarget::AgentReorder {
+                                    source_id,
+                                    source: press.entry,
+                                    insert_idx: agent_drop_index,
+                                },
+                            });
+                        }
+                    } else if let Some(press) = self.workspace_presses.get(&source_id) {
                         let delta_col = mouse.column.abs_diff(press.start_col);
                         let delta_row = mouse.row.abs_diff(press.start_row);
                         let can_reorder = self.workspaces.get(press.ws_idx).is_some_and(|ws| {
@@ -755,9 +841,23 @@ impl AppState {
                     if *drag_source_id == source_id && self.active == Some(*ws_idx) {
                         *insert_idx = tab_drop_index;
                     }
+                } else if let Some(DragState {
+                    target:
+                        DragTarget::AgentReorder {
+                            source_id: drag_source_id,
+                            insert_idx,
+                            ..
+                        },
+                }) = &mut self.drag
+                {
+                    if *drag_source_id == source_id {
+                        *insert_idx = agent_drop_index;
+                    }
                 } else if let Some(drag) = &self.drag {
                     match &drag.target {
-                        DragTarget::WorkspaceReorder { .. } | DragTarget::TabReorder { .. } => {}
+                        DragTarget::WorkspaceReorder { .. }
+                        | DragTarget::TabReorder { .. }
+                        | DragTarget::AgentReorder { .. } => {}
                         DragTarget::WorkspaceListScrollbar { grab_row_offset } => {
                             if let Some(offset_from_bottom) =
                                 self.workspace_list_offset_for_drag_row(mouse.row, *grab_row_offset)
@@ -867,8 +967,9 @@ impl AppState {
 
                 let workspace_press = self.workspace_presses.remove(&source_id);
                 let tab_press = self.tab_presses.remove(&source_id);
+                let agent_press = self.agent_presses.remove(&source_id);
                 if foreign_chrome_drag {
-                    return self.chrome_press_action(workspace_press, tab_press);
+                    return self.chrome_press_action(workspace_press, tab_press, agent_press);
                 }
 
                 match self.drag.take() {
@@ -923,8 +1024,30 @@ impl AppState {
                             });
                         }
                     }
+                    Some(DragState {
+                        target:
+                            DragTarget::AgentReorder {
+                                source,
+                                insert_idx: Some(insert_idx),
+                                ..
+                            },
+                    }) => {
+                        // A drop that lands inside another parent's children band
+                        // (attach) or back at the top level (detach) changes the
+                        // agent's parent, which is confirmed via a modal. Anything
+                        // else is a plain reorder.
+                        if let Some(pending) =
+                            self.agent_reparent_intent_for_drop(source, insert_idx)
+                        {
+                            open_agent_reparent_confirm(self, pending);
+                            return None;
+                        }
+                        return Some(MouseAction::MoveAgentEntry { source, insert_idx });
+                    }
                     Some(_) => {}
-                    None => return self.chrome_press_action(workspace_press, tab_press),
+                    None => {
+                        return self.chrome_press_action(workspace_press, tab_press, agent_press)
+                    }
                 }
             }
 
@@ -1080,6 +1203,14 @@ impl AppState {
                         .unwrap_or(ContextMenuKind::Workspace { ws_idx: idx });
                     self.context_menu = Some(ContextMenuState {
                         kind,
+                        x: mouse.column,
+                        y: mouse.row,
+                        list: MenuListState::new(0),
+                    });
+                    self.mode = Mode::ContextMenu;
+                } else if let Some(id) = self.agent_panel_line_split_at_row(mouse.row) {
+                    self.context_menu = Some(ContextMenuState {
+                        kind: ContextMenuKind::LineSplit { id },
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
@@ -1461,7 +1592,9 @@ impl AppState {
     }
 
     fn chrome_press_pending(&self, source_id: crate::app::InputSourceId) -> bool {
-        self.tab_presses.contains_key(&source_id) || self.workspace_presses.contains_key(&source_id)
+        self.tab_presses.contains_key(&source_id)
+            || self.workspace_presses.contains_key(&source_id)
+            || self.agent_presses.contains_key(&source_id)
     }
 
     fn chrome_drag_owned_by_other(&self, source_id: crate::app::InputSourceId) -> bool {
@@ -1483,6 +1616,7 @@ impl AppState {
         &mut self,
         workspace_press: Option<WorkspacePressState>,
         tab_press: Option<TabPressState>,
+        agent_press: Option<AgentPressState>,
     ) -> Option<MouseAction> {
         if let Some(press) = workspace_press {
             self.mode = Mode::Terminal;
@@ -1496,6 +1630,20 @@ impl AppState {
                 return Some(MouseAction::FocusTab {
                     tab_idx: press.tab_idx,
                 });
+            }
+        }
+        if let Some(press) = agent_press {
+            // A plain click focuses an agent pane; a line-split row click is a
+            // no-op.
+            if let ManualEntryRef::Pane(pane_id) = press.entry {
+                if let Some(ws_idx) = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.pane_state(pane_id).is_some())
+                {
+                    self.mode = Mode::Terminal;
+                    return Some(MouseAction::FocusPane { ws_idx, pane_id });
+                }
             }
         }
         None
@@ -1522,6 +1670,7 @@ impl AppState {
     fn clear_chrome_press(&mut self, source_id: crate::app::InputSourceId) {
         self.tab_presses.remove(&source_id);
         self.workspace_presses.remove(&source_id);
+        self.agent_presses.remove(&source_id);
     }
 
     fn mouse_pane_focus_action(&self, pane_id: crate::layout::PaneId) -> Option<MouseAction> {

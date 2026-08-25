@@ -2,6 +2,11 @@ use std::time::{Duration, Instant};
 
 use super::{App, SESSION_SAVE_DEBOUNCE};
 
+// The Save variant carries a whole session snapshot while Clear carries
+// nothing. Boxing it would allocate on every debounced save for no benefit: the
+// job is constructed at most once per debounce window and moved straight into
+// the save call.
+#[allow(clippy::large_enum_variant)]
 enum SessionSaveJob {
     Clear,
     Save {
@@ -40,6 +45,10 @@ impl App {
         if self.state.workspaces.is_empty() {
             SessionSaveJob::Clear
         } else {
+            let agent_manual_order_keys = self
+                .state
+                .agent_manual_order
+                .to_public_keys(&self.state.workspaces);
             let snapshot = crate::persist::capture(
                 &self.state.workspaces,
                 &self.state.terminals,
@@ -49,6 +58,8 @@ impl App {
                 self.state.sidebar_width,
                 self.state.sidebar_section_split,
                 self.state.collapsed_space_keys.clone(),
+                self.state.collapsed_agent_keys.clone(),
+                agent_manual_order_keys,
             );
             let history = self.persist_pane_history.then(|| {
                 crate::persist::capture_history(&self.state.workspaces, &self.terminal_runtimes)

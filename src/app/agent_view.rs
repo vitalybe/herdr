@@ -61,19 +61,37 @@ pub(crate) fn apply_agent_view(app: &AppState, entries: &mut Vec<AgentPanelEntry
         }
     }
 
-    if matches!(
-        app.agent_panel_sort,
-        crate::app::state::AgentPanelSort::Priority
-    ) {
-        entries.sort_by_key(|entry| {
-            (
-                std::cmp::Reverse(super::api_helpers::tab_attention_priority(
-                    entry.state,
-                    entry.seen,
-                )),
-                std::cmp::Reverse(entry.last_agent_state_change_seq),
-            )
-        });
+    match app.agent_panel_sort {
+        crate::app::state::AgentPanelSort::Spaces => {}
+        crate::app::state::AgentPanelSort::Priority => {
+            entries.sort_by_key(|entry| {
+                (
+                    std::cmp::Reverse(super::api_helpers::tab_attention_priority(
+                        entry.state,
+                        entry.seen,
+                    )),
+                    std::cmp::Reverse(entry.last_agent_state_change_seq),
+                )
+            });
+        }
+        crate::app::state::AgentPanelSort::Manual => {
+            // Reorder the flat list to follow the manual order. Entries present
+            // in `order` sort by their position; any not-yet-reconciled entries
+            // keep their natural relative order and land at the end (defensive
+            // fallback - reconcile normally keeps `order` in sync before render).
+            let order_pos: std::collections::HashMap<crate::layout::PaneId, usize> = app
+                .agent_manual_order
+                .order
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, entry)| match entry {
+                    crate::app::state::ManualEntry::Pane(pane_id) => Some((*pane_id, idx)),
+                    crate::app::state::ManualEntry::LineSplit { .. } => None,
+                })
+                .collect();
+            entries
+                .sort_by_key(|entry| order_pos.get(&entry.pane_id).copied().unwrap_or(usize::MAX));
+        }
     }
 }
 

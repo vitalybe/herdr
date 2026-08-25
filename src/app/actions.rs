@@ -1486,6 +1486,387 @@ impl AppState {
         true
     }
 
+    /// Reconcile the flat manual agent order against the current set of agent
+    /// panes. Called from the compute_view mutation phase so render stays pure.
+    ///
+    /// Drops stale entries, seeds the natural display order on first run, then
+    /// places genuinely new agents: above the topmost existing pane of the same
+    /// workspace, or at the very top when that workspace has no pane in the
+    /// order yet.
+    pub(crate) fn reconcile_agent_manual_order(&mut self) {
+        use crate::app::state::ManualEntry;
+
+        // Flat agent-pane set in natural display order (workspaces x panes),
+        // matching the flatten used by the ordering function.
+        let mut flat: Vec<(crate::layout::PaneId, usize)> = Vec::new();
+        let mut pane_workspace: std::collections::HashMap<crate::layout::PaneId, usize> =
+            std::collections::HashMap::new();
+        for (ws_idx, ws) in self.workspaces.iter().enumerate() {
+            for detail in ws.pane_details(&self.terminals) {
+                flat.push((detail.pane_id, ws_idx));
+                pane_workspace.insert(detail.pane_id, ws_idx);
+            }
+        }
+        let current: std::collections::HashSet<crate::layout::PaneId> =
+            flat.iter().map(|(pane_id, _)| *pane_id).collect();
+
+        // Drop stale pane entries and prune the known set. Line-splits are user
+        // data, never derived from panes, so they are always retained.
+        self.agent_manual_order.order.retain(|entry| match entry {
+            ManualEntry::Pane(pane_id) => current.contains(pane_id),
+            ManualEntry::LineSplit { .. } => true,
+        });
+        self.agent_manual_order
+            .known
+            .retain(|pane_id| current.contains(pane_id));
+
+        if !self.agent_manual_order.seeded {
+            // First reconcile: establish the natural pane order. Append panes not
+            // yet present (line-splits, if any, keep their positions untouched).
+            for (pane_id, _) in &flat {
+                if self.agent_manual_order.known.insert(*pane_id) {
+                    self.agent_manual_order
+                        .order
+                        .push(ManualEntry::Pane(*pane_id));
+                }
+            }
+            self.agent_manual_order.seeded = true;
+            return;
+        }
+
+        for (pane_id, ws_idx) in &flat {
+            if self.agent_manual_order.known.contains(pane_id) {
+                continue;
+            }
+            // Genuinely new agent: insert above the topmost (earliest) pane entry
+            // belonging to the same workspace, else at the very top. Line-splits
+            // are skipped when locating that pane.
+            let insert_pos = self
+                .agent_manual_order
+                .order
+                .iter()
+                .position(|entry| match entry {
+                    ManualEntry::Pane(other) => pane_workspace.get(other) == Some(ws_idx),
+                    ManualEntry::LineSplit { .. } => false,
+                })
+                .unwrap_or(0);
+            self.agent_manual_order
+                .order
+                .insert(insert_pos, ManualEntry::Pane(*pane_id));
+            self.agent_manual_order.known.insert(*pane_id);
+        }
+    }
+
+    /// True when the pane at `(ws_idx, pane_id)` is backed by an agent terminal.
+    pub(crate) fn pane_is_agent(&self, ws_idx: usize, pane_id: crate::layout::PaneId) -> bool {
+        self.workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane_id))
+            .and_then(|pane| self.terminals.get(&pane.attached_terminal_id))
+            .is_some_and(|terminal| terminal.is_agent_terminal())
+    }
+
+    /// Live parent pane of the agent at `(ws_idx, pane_id)`, resolved from its
+    /// stable parent link. `None` for roots or when the parent no longer exists.
+    pub(crate) fn agent_parent_pane(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<(usize, crate::layout::PaneId)> {
+        self.workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane_id))
+            .and_then(|pane| pane.parent.as_ref())
+            .and_then(|parent| self.resolve_pane_parent(parent))
+    }
+
+    /// Walk the parent chain upward from `(start_ws, start_pane)`, including the
+    /// start pane itself, and report whether it reaches `(needle_ws,
+    /// needle_pane)`. A visited set guards against pre-existing cycles so the
+    /// walk always terminates. Used to reject reparent operations that would
+    /// create a cycle.
+    pub(crate) fn agent_parent_chain_contains(
+        &self,
+        start_ws: usize,
+        start_pane: crate::layout::PaneId,
+        needle_ws: usize,
+        needle_pane: crate::layout::PaneId,
+    ) -> bool {
+        let mut current = Some((start_ws, start_pane));
+        let mut visited = std::collections::HashSet::new();
+        while let Some((ws_idx, pane_id)) = current {
+            if ws_idx == needle_ws && pane_id == needle_pane {
+                return true;
+            }
+            if !visited.insert((ws_idx, pane_id)) {
+                break;
+            }
+            current = self.agent_parent_pane(ws_idx, pane_id);
+        }
+        false
+    }
+
+    /// Classify a manual-mode agent drag drop into a pending reparent operation,
+    /// if any. Returns `Some` only when the drop should change the dragged
+    /// agent's parent (attach under a parent whose children band the drop lands
+    /// in, or detach to the top level); returns `None` for a plain reorder (no
+    /// parent change), for line-splits, or for invalid targets (self/cycle).
+    ///
+    /// `tree_insert_idx` is the insertion slot in visible tree-row space, as
+    /// produced by the drop indicator. Attaching requires the target parent to
+    /// already have visible children (they form the drop band); a childless
+    /// agent has no band to drop into, so it can never gain its first child by
+    /// dragging.
+    pub(crate) fn agent_reparent_intent_for_drop(
+        &self,
+        source: crate::app::state::ManualEntryRef,
+        tree_insert_idx: usize,
+    ) -> Option<crate::app::state::PendingAgentReparent> {
+        use crate::app::state::{AgentReparentAction, ManualEntryRef, PendingAgentReparent};
+        use crate::ui::AgentPanelRow;
+
+        let source_pane = match source {
+            ManualEntryRef::Pane(pane_id) => pane_id,
+            ManualEntryRef::LineSplit(_) => return None,
+        };
+
+        let rows = crate::ui::agent_panel_rows(self);
+
+        // Locate the dragged agent row and its (contiguous) subtree span so we
+        // can skip it when scanning for the drop's neighbour.
+        let source_idx = rows.iter().position(
+            |row| matches!(row, AgentPanelRow::Agent(entry) if entry.pane_id == source_pane),
+        )?;
+        let AgentPanelRow::Agent(source_entry) = &rows[source_idx] else {
+            return None;
+        };
+        let source_ws = source_entry.ws_idx;
+        let source_depth = source_entry.depth;
+        let source_label = source_entry.primary_label.clone();
+        // Subtree end: first later row at depth <= source depth.
+        let mut subtree_end = rows.len();
+        for (idx, row) in rows.iter().enumerate().skip(source_idx + 1) {
+            let depth = match row {
+                AgentPanelRow::Agent(entry) => entry.depth,
+                AgentPanelRow::LineSplit { .. } => 0,
+            };
+            if depth <= source_depth {
+                subtree_end = idx;
+                break;
+            }
+        }
+        let is_in_source_subtree = |idx: usize| idx >= source_idx && idx < subtree_end;
+
+        // The row the dragged item would land after, ignoring its own subtree.
+        let mut prev: Option<&AgentPanelRow> = None;
+        for idx in (0..tree_insert_idx.min(rows.len())).rev() {
+            if is_in_source_subtree(idx) {
+                continue;
+            }
+            prev = Some(&rows[idx]);
+            break;
+        }
+
+        // Determine the enclosing parent of the drop slot.
+        let target_parent: Option<(usize, crate::layout::PaneId)> = match prev {
+            Some(AgentPanelRow::Agent(entry)) if entry.has_children && !entry.collapsed => {
+                // Dropped right after an expanded parent: becomes its first child.
+                Some((entry.ws_idx, entry.pane_id))
+            }
+            Some(AgentPanelRow::Agent(entry)) if entry.depth >= 1 => {
+                // Dropped among a parent's children: attach to that parent.
+                self.agent_parent_pane(entry.ws_idx, entry.pane_id)
+            }
+            _ => None,
+        };
+
+        let current_parent = self.agent_parent_pane(source_ws, source_pane);
+        if target_parent == current_parent {
+            return None;
+        }
+
+        let label_of = |ws_idx: usize, pane_id: crate::layout::PaneId| {
+            rows.iter().find_map(|row| match row {
+                AgentPanelRow::Agent(entry)
+                    if entry.ws_idx == ws_idx && entry.pane_id == pane_id =>
+                {
+                    Some(entry.primary_label.clone())
+                }
+                _ => None,
+            })
+        };
+
+        match target_parent {
+            Some((parent_ws, parent_pane)) => {
+                // Reject self-parenting and cycles.
+                if parent_ws == source_ws && parent_pane == source_pane {
+                    return None;
+                }
+                if self.agent_parent_chain_contains(parent_ws, parent_pane, source_ws, source_pane)
+                {
+                    return None;
+                }
+                Some(PendingAgentReparent {
+                    child_ws: source_ws,
+                    child_pane: source_pane,
+                    child_label: source_label,
+                    parent_label: label_of(parent_ws, parent_pane)?,
+                    action: AgentReparentAction::SetParent {
+                        parent_ws,
+                        parent_pane,
+                    },
+                    return_mode: self.mode,
+                })
+            }
+            None => {
+                // Detach only makes sense when the agent currently has a parent.
+                let (parent_ws, parent_pane) = current_parent?;
+                Some(PendingAgentReparent {
+                    child_ws: source_ws,
+                    child_pane: source_pane,
+                    child_label: source_label,
+                    parent_label: label_of(parent_ws, parent_pane).unwrap_or_default(),
+                    action: AgentReparentAction::ClearParent,
+                    return_mode: self.mode,
+                })
+            }
+        }
+    }
+
+    /// Apply a confirmed reparent: set or clear the dragged agent's stable parent
+    /// link. Re-validates agent-ness and cycles defensively in case state moved
+    /// since the drop. Returns true when the link changed.
+    pub(crate) fn apply_agent_reparent(
+        &mut self,
+        pending: &crate::app::state::PendingAgentReparent,
+    ) -> bool {
+        use crate::app::state::AgentReparentAction;
+
+        if !self.pane_is_agent(pending.child_ws, pending.child_pane) {
+            return false;
+        }
+
+        let new_parent_ref = match pending.action {
+            AgentReparentAction::SetParent {
+                parent_ws,
+                parent_pane,
+            } => {
+                if !self.pane_is_agent(parent_ws, parent_pane) {
+                    return false;
+                }
+                if parent_ws == pending.child_ws && parent_pane == pending.child_pane {
+                    return false;
+                }
+                if self.agent_parent_chain_contains(
+                    parent_ws,
+                    parent_pane,
+                    pending.child_ws,
+                    pending.child_pane,
+                ) {
+                    return false;
+                }
+                let Some(parent_ws_ref) = self.workspaces.get(parent_ws) else {
+                    return false;
+                };
+                let Some(pane_number) = parent_ws_ref.public_pane_number(parent_pane) else {
+                    return false;
+                };
+                Some(crate::pane::PaneParentRef {
+                    workspace_id: parent_ws_ref.id.clone(),
+                    pane_number,
+                })
+            }
+            AgentReparentAction::ClearParent => None,
+        };
+
+        let Some(pane_state) = self
+            .workspaces
+            .get_mut(pending.child_ws)
+            .and_then(|ws| ws.pane_state_mut(pending.child_pane))
+        else {
+            return false;
+        };
+        if pane_state.parent == new_parent_ref {
+            return false;
+        }
+        pane_state.parent = new_parent_ref;
+        self.mark_session_dirty();
+        true
+    }
+
+    /// Translate an insert index expressed in visible tree-row space (what the
+    /// drop indicator uses) into an index in the flat `agent_manual_order.order`
+    /// (what [`AppState::move_agent_entry`] mutates). The two spaces differ once
+    /// the tree nests children under parents; in the flat case this is the
+    /// identity.
+    ///
+    /// The dragged item lands at the base-order position of the row it was
+    /// dropped before. Because tree grouping is reapplied on every render, a
+    /// child always re-nests under its parent regardless of where it lands in
+    /// the base order, so a drag can never detach a child from its parent.
+    pub(crate) fn agent_manual_base_index_for_tree_insert(&self, tree_insert_idx: usize) -> usize {
+        use crate::app::state::ManualEntry;
+        let rows = crate::ui::agent_panel_rows(self);
+        let order = &self.agent_manual_order.order;
+        let Some(row) = rows.get(tree_insert_idx) else {
+            return order.len();
+        };
+        let pos = match row {
+            crate::ui::AgentPanelRow::Agent(entry) => order
+                .iter()
+                .position(|e| matches!(e, ManualEntry::Pane(p) if *p == entry.pane_id)),
+            crate::ui::AgentPanelRow::LineSplit { id, .. } => order
+                .iter()
+                .position(|e| matches!(e, ManualEntry::LineSplit { id: oid, .. } if oid == id)),
+        };
+        pos.unwrap_or(order.len())
+    }
+
+    /// Move a manual-order entry (agent pane or line-split) to a new position in
+    /// the flat manual order. The `insert_idx` is a slot in the current order
+    /// (before removal), clamped to bounds. Cross-workspace moves are allowed.
+    /// Client-only presentation state, PTY-free. Returns true when the order
+    /// changed.
+    pub(crate) fn move_agent_entry(
+        &mut self,
+        source: crate::app::state::ManualEntryRef,
+        insert_idx: usize,
+    ) -> bool {
+        use crate::app::state::{ManualEntry, ManualEntryRef};
+
+        let Some(from) =
+            self.agent_manual_order
+                .order
+                .iter()
+                .position(|entry| match (entry, source) {
+                    (ManualEntry::Pane(pane_id), ManualEntryRef::Pane(source_pane_id)) => {
+                        *pane_id == source_pane_id
+                    }
+                    (ManualEntry::LineSplit { id, .. }, ManualEntryRef::LineSplit(source_id)) => {
+                        *id == source_id
+                    }
+                    _ => false,
+                })
+        else {
+            return false;
+        };
+
+        let insert_idx = insert_idx.min(self.agent_manual_order.order.len());
+        let target_idx = if from < insert_idx {
+            insert_idx - 1
+        } else {
+            insert_idx
+        };
+        if from == target_idx {
+            return false;
+        }
+
+        self.mark_session_dirty();
+        let entry = self.agent_manual_order.order.remove(from);
+        self.agent_manual_order.order.insert(target_idx, entry);
+        true
+    }
+
     pub fn scroll_tabs_left(&mut self) {
         self.tab_scroll_follow_active = false;
         self.tab_scroll = self.tab_scroll.saturating_sub(1);
@@ -1532,32 +1913,55 @@ impl AppState {
         self.cycle_agent_entry(false);
     }
 
+    /// Visible agent panes in tree order (agents only, collapsed descendants
+    /// excluded), used for keyboard navigation and numeric focus so navigation
+    /// skips collapsed subtrees exactly as the panel shows them. Shared with the
+    /// live TUI navigation path so both cycle the same visible order.
+    pub(crate) fn visible_agent_targets(&self) -> Vec<(usize, crate::layout::PaneId)> {
+        crate::ui::agent_panel_rows(self)
+            .into_iter()
+            .filter_map(|row| match row {
+                crate::ui::AgentPanelRow::Agent(entry) => Some((entry.ws_idx, entry.pane_id)),
+                crate::ui::AgentPanelRow::LineSplit { .. } => None,
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub fn focus_agent_entry(&mut self, idx: usize) -> bool {
-        let entries = crate::ui::agent_panel_entries(self);
-        let Some(target) = entries.get(idx) else {
+        let targets = self.visible_agent_targets();
+        let Some(&(ws_idx, pane_id)) = targets.get(idx) else {
             return false;
         };
-        let ws_idx = target.ws_idx;
-        let pane_id = target.pane_id;
+        // Scroll math tracks the full row list (agents + line-splits), so map the
+        // agent to its row index for ensure-visible.
+        let row_idx = crate::ui::agent_panel_row_index_of_pane(self, pane_id).unwrap_or(idx);
 
         if self.active == Some(ws_idx) && self.workspaces[ws_idx].focused_pane_id() == Some(pane_id)
         {
-            self.ensure_agent_panel_entry_visible(idx);
+            self.ensure_agent_panel_entry_visible(row_idx);
             return true;
         }
 
         if self.focus_pane_in_workspace(ws_idx, pane_id) {
-            self.ensure_agent_panel_entry_visible(idx);
+            self.ensure_agent_panel_entry_visible(row_idx);
             return true;
         }
         false
     }
 
+    /// Ensure the agent-panel row for `pane_id` is scrolled into view, mapping the
+    /// pane to its row index in the full (agents + line-splits) row list.
+    pub(crate) fn ensure_agent_panel_pane_visible(&mut self, pane_id: crate::layout::PaneId) {
+        if let Some(row_idx) = crate::ui::agent_panel_row_index_of_pane(self, pane_id) {
+            self.ensure_agent_panel_entry_visible(row_idx);
+        }
+    }
+
     #[cfg(test)]
     fn cycle_agent_entry(&mut self, forward: bool) {
-        let entries = crate::ui::agent_panel_entries(self);
-        if entries.is_empty() {
+        let targets = self.visible_agent_targets();
+        if targets.is_empty() {
             return;
         }
 
@@ -1566,13 +1970,13 @@ impl AppState {
             .and_then(|idx| self.workspaces.get(idx))
             .and_then(crate::workspace::Workspace::focused_pane_id);
         let current_idx =
-            focused.and_then(|pane_id| entries.iter().position(|entry| entry.pane_id == pane_id));
+            focused.and_then(|pane_id| targets.iter().position(|(_, target)| *target == pane_id));
         let target_idx = match (current_idx, forward) {
-            (Some(idx), true) => (idx + 1) % entries.len(),
-            (Some(0), false) => entries.len() - 1,
+            (Some(idx), true) => (idx + 1) % targets.len(),
+            (Some(0), false) => targets.len() - 1,
             (Some(idx), false) => idx - 1,
             (None, true) => 0,
-            (None, false) => entries.len() - 1,
+            (None, false) => targets.len() - 1,
         };
 
         self.focus_agent_entry(target_idx);
@@ -4483,6 +4887,549 @@ mod tests {
                 ))
             })
             .expect("agent state transition should update pane state");
+    }
+
+    fn manual_order_pane_ids(state: &AppState) -> Vec<PaneId> {
+        state
+            .agent_manual_order
+            .order
+            .iter()
+            .filter_map(|entry| match entry {
+                crate::app::state::ManualEntry::Pane(pane_id) => Some(*pane_id),
+                crate::app::state::ManualEntry::LineSplit { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Two workspaces (ws0 has two agent panes, ws1 has one) with all panes
+    /// marked as agents, in manual sort mode. Returns (state, [a, b, c]).
+    fn app_with_manual_agents() -> (AppState, PaneId, PaneId, PaneId) {
+        let mut first = Workspace::test_new("one");
+        let a = first.tabs[0].root_pane;
+        let b = first.test_split(Direction::Horizontal);
+        first.tabs[0].layout.focus_pane(a);
+        let second = Workspace::test_new("two");
+        let c = second.tabs[0].root_pane;
+
+        let mut state = AppState::test_new();
+        state.workspaces = vec![first, second];
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.selected = 0;
+        state.mode = Mode::Terminal;
+        state.agent_panel_sort = crate::app::state::AgentPanelSort::Manual;
+        mark_agent(&mut state, 0, 0, a);
+        mark_agent(&mut state, 0, 0, b);
+        mark_agent(&mut state, 1, 0, c);
+        (state, a, b, c)
+    }
+
+    #[test]
+    fn manual_order_seeds_natural_display_order() {
+        let (mut state, a, b, c) = app_with_manual_agents();
+
+        state.reconcile_agent_manual_order();
+
+        assert!(state.agent_manual_order.seeded);
+        assert_eq!(manual_order_pane_ids(&state), vec![a, b, c]);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn manual_order_places_new_agents_above_their_workspace() {
+        let first = Workspace::test_new("one");
+        let a = first.tabs[0].root_pane;
+        let second = Workspace::test_new("two");
+        let c = second.tabs[0].root_pane;
+
+        let mut state = AppState::test_new();
+        state.workspaces = vec![first, second];
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.selected = 0;
+        state.mode = Mode::Terminal;
+        state.agent_panel_sort = crate::app::state::AgentPanelSort::Manual;
+        mark_agent(&mut state, 0, 0, a);
+        mark_agent(&mut state, 1, 0, c);
+        state.reconcile_agent_manual_order();
+        assert_eq!(manual_order_pane_ids(&state), vec![a, c]);
+
+        // A new agent pane in ws0 lands above the topmost ws0 pane.
+        let b = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        mark_agent(&mut state, 0, 0, b);
+        state.reconcile_agent_manual_order();
+        assert_eq!(manual_order_pane_ids(&state), vec![b, a, c]);
+
+        // A brand new workspace with no pane in the order lands at the very top.
+        let third = Workspace::test_new("three");
+        let d = third.tabs[0].root_pane;
+        state.workspaces.push(third);
+        state.ensure_test_terminals();
+        mark_agent(&mut state, 2, 0, d);
+        state.reconcile_agent_manual_order();
+        assert_eq!(manual_order_pane_ids(&state), vec![d, b, a, c]);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn move_agent_reorders_clamps_and_ignores_unknown_panes() {
+        let (mut state, a, b, c) = app_with_manual_agents();
+        state.reconcile_agent_manual_order();
+        assert_eq!(manual_order_pane_ids(&state), vec![a, b, c]);
+
+        // Cross-workspace move to the very top.
+        assert!(state.move_agent_entry(crate::app::state::ManualEntryRef::Pane(c), 0));
+        assert_eq!(manual_order_pane_ids(&state), vec![c, a, b]);
+
+        // Out-of-range insert index clamps to the end.
+        assert!(state.move_agent_entry(crate::app::state::ManualEntryRef::Pane(c), 999));
+        assert_eq!(manual_order_pane_ids(&state), vec![a, b, c]);
+
+        // Unknown panes are a no-op.
+        assert!(!state.move_agent_entry(
+            crate::app::state::ManualEntryRef::Pane(PaneId::from_raw(9999)),
+            0
+        ));
+        assert_eq!(manual_order_pane_ids(&state), vec![a, b, c]);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn reconcile_leaves_line_splits_untouched_and_places_new_panes() {
+        use crate::app::state::{ManualEntry, ManualEntryRef};
+        let (mut state, a, b, c) = app_with_manual_agents();
+        state.reconcile_agent_manual_order();
+        assert_eq!(manual_order_pane_ids(&state), vec![a, b, c]);
+
+        // Insert a line-split between a and b (flat index 1).
+        let split = state
+            .agent_manual_order
+            .new_line_split("scheduled".to_string(), 1);
+
+        // Closing a pane prunes it but keeps the line-split in place.
+        state.workspaces[0].close_pane(b);
+        state.reconcile_agent_manual_order();
+        let flattened: Vec<_> = state
+            .agent_manual_order
+            .order
+            .iter()
+            .map(|entry| match entry {
+                ManualEntry::Pane(pane_id) => format!("pane:{pane_id:?}"),
+                ManualEntry::LineSplit { id, name } => format!("split:{}:{name}", id.0),
+            })
+            .collect();
+        assert_eq!(
+            flattened,
+            vec![
+                format!("pane:{a:?}"),
+                format!("split:{}:scheduled", split.0),
+                format!("pane:{c:?}"),
+            ]
+        );
+
+        // Moving the line-split works through the same entry-move path.
+        assert!(state.move_agent_entry(ManualEntryRef::LineSplit(split), 0));
+        assert!(matches!(
+            state.agent_manual_order.order.first(),
+            Some(ManualEntry::LineSplit { id, .. }) if *id == split
+        ));
+
+        // An out-of-range insert index clamps to the end.
+        assert!(state.move_agent_entry(ManualEntryRef::LineSplit(split), 999));
+        assert!(matches!(
+            state.agent_manual_order.order.last(),
+            Some(ManualEntry::LineSplit { id, .. }) if *id == split
+        ));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn line_splits_only_render_as_rows_in_manual_mode() {
+        let (mut state, _a, _b, _c) = app_with_manual_agents();
+        state.reconcile_agent_manual_order();
+        let split = state
+            .agent_manual_order
+            .new_line_split("scheduled".to_string(), 1);
+
+        let rows = crate::ui::agent_panel_rows(&state);
+        assert_eq!(rows.len(), 4);
+        assert!(matches!(rows[0], crate::ui::AgentPanelRow::Agent(_)));
+        assert!(matches!(
+            &rows[1],
+            crate::ui::AgentPanelRow::LineSplit { id, name }
+                if *id == split && name == "scheduled"
+        ));
+
+        // Outside manual mode the panel is agents only.
+        state.agent_panel_sort = crate::app::state::AgentPanelSort::Spaces;
+        assert!(crate::ui::agent_panel_rows(&state)
+            .iter()
+            .all(|row| matches!(row, crate::ui::AgentPanelRow::Agent(_))));
+    }
+
+    #[test]
+    fn line_splits_survive_the_snapshot_roundtrip() {
+        let (mut state, _a, _b, _c) = app_with_manual_agents();
+        state.reconcile_agent_manual_order();
+        let split = state
+            .agent_manual_order
+            .new_line_split("scheduled".to_string(), 1);
+
+        let keys = state.agent_manual_order.to_public_keys(&state.workspaces);
+        let rebuilt =
+            crate::app::state::AgentManualOrder::from_public_keys(&keys, &state.workspaces);
+        assert!(matches!(
+            rebuilt.order.get(1),
+            Some(crate::app::state::ManualEntry::LineSplit { id, name })
+                if *id == split && name == "scheduled"
+        ));
+        // Restored ids stay below the counter so freshly minted ids never collide.
+        assert!(rebuilt.next_line_split_id > split.0);
+    }
+
+    #[test]
+    fn keyboard_cycle_skips_line_split_rows() {
+        let (mut state, a, b, c) = app_with_manual_agents();
+        state.reconcile_agent_manual_order();
+        state
+            .agent_manual_order
+            .new_line_split("top".to_string(), 0);
+        state
+            .agent_manual_order
+            .new_line_split("mid".to_string(), 2);
+
+        state.workspaces[0].tabs[0].layout.focus_pane(a);
+        let mut focused = Vec::new();
+        for _ in 0..3 {
+            state.next_agent();
+            if let Some(pane) = state
+                .active
+                .and_then(|i| state.workspaces[i].focused_pane_id())
+            {
+                focused.push(pane);
+            }
+        }
+        // Cycling visits only agent panes, wrapping across all three.
+        assert!(focused.iter().all(|pane| [a, b, c].contains(pane)));
+        assert!(focused.contains(&b) && focused.contains(&c));
+    }
+
+    /// Link `child` to `parent` by the stable (workspace id + public pane number)
+    /// reference, exactly as `herdr agent set-parent` does.
+    fn link_agent_parent(state: &mut AppState, parent: PaneId, child: PaneId) {
+        let ws = &mut state.workspaces[0];
+        let number = ws.public_pane_number(parent).expect("parent has number");
+        let workspace_id = ws.id.clone();
+        ws.pane_state_mut(child).expect("child pane").parent = Some(crate::pane::PaneParentRef {
+            workspace_id,
+            pane_number: number,
+        });
+    }
+
+    /// Mark `pane`'s agent subtree collapsed by its stable key, as clicking the
+    /// collapse glyph does.
+    fn collapse_agent(state: &mut AppState, pane: PaneId) {
+        let ws = &state.workspaces[0];
+        let number = ws.public_pane_number(pane).expect("pane has number");
+        let key = crate::workspace::public_pane_id_for_number(&ws.id, number);
+        state.collapsed_agent_keys.insert(key);
+    }
+
+    /// One workspace with a parent agent, two child agents beneath it, and a
+    /// second top-level agent below the subtree. Focus starts on the parent, so
+    /// the visible tree order is [parent, child_a, child_b, top2].
+    fn app_with_agent_subtree_and_sibling() -> (AppState, PaneId, PaneId, PaneId, PaneId) {
+        let mut ws = Workspace::test_new("one");
+        let parent = ws.tabs[0].root_pane;
+        let child_a = ws.test_split(Direction::Horizontal);
+        let child_b = ws.test_split(Direction::Horizontal);
+        let top2 = ws.test_split(Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(parent);
+
+        let mut state = AppState::test_new();
+        state.workspaces = vec![ws];
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.selected = 0;
+        state.mode = Mode::Terminal;
+
+        for pane in [parent, child_a, child_b, top2] {
+            mark_agent(&mut state, 0, 0, pane);
+        }
+        link_agent_parent(&mut state, parent, child_a);
+        link_agent_parent(&mut state, parent, child_b);
+
+        (state, parent, child_a, child_b, top2)
+    }
+
+    fn visible_agent_order(state: &AppState) -> Vec<PaneId> {
+        state
+            .visible_agent_targets()
+            .iter()
+            .map(|(_, pane_id)| *pane_id)
+            .collect()
+    }
+
+    #[test]
+    fn agent_cycling_follows_the_visible_tree_order() {
+        let (mut state, parent, child_a, child_b, top2) = app_with_agent_subtree_and_sibling();
+
+        // Anchor the expectation against the order the sidebar renders.
+        assert_eq!(
+            visible_agent_order(&state),
+            vec![parent, child_a, child_b, top2]
+        );
+
+        // Parent -> first visible child -> next child -> next top-level agent.
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(child_a));
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(child_b));
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(top2));
+
+        // And in reverse.
+        state.previous_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(child_b));
+        state.previous_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(child_a));
+        state.previous_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(parent));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn agent_cycling_skips_collapsed_children() {
+        let (mut state, parent, _child_a, _child_b, top2) = app_with_agent_subtree_and_sibling();
+        collapse_agent(&mut state, parent);
+
+        // Collapsed children drop out of the visible order entirely.
+        assert_eq!(visible_agent_order(&state), vec![parent, top2]);
+
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(top2));
+        // A full cycle never visits the hidden children; it wraps to the parent.
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(parent));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn focus_agent_entry_indexes_the_visible_tree_order() {
+        let (mut state, parent, child_a, child_b, top2) = app_with_agent_subtree_and_sibling();
+
+        for (idx, expected) in [(0, parent), (1, child_a), (2, child_b), (3, top2)] {
+            assert!(state.focus_agent_entry(idx));
+            assert_eq!(state.workspaces[0].focused_pane_id(), Some(expected));
+        }
+
+        // Collapsing the parent removes its children from the indexable order, so
+        // index 1 now addresses the next top-level agent.
+        collapse_agent(&mut state, parent);
+        assert!(state.focus_agent_entry(1));
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(top2));
+        assert!(!state.focus_agent_entry(2));
+        state.assert_invariants_for_test();
+    }
+
+    /// The subtree app in manual sort mode, with the manual order seeded so the
+    /// tree-row indices used by the drop indicator are stable.
+    fn manual_subtree_app() -> (AppState, PaneId, PaneId, PaneId, PaneId) {
+        let (mut state, parent, child_a, child_b, top2) = app_with_agent_subtree_and_sibling();
+        state.agent_panel_sort = crate::app::state::AgentPanelSort::Manual;
+        state.reconcile_agent_manual_order();
+        // Visible tree order: [parent, child_a, child_b, top2].
+        (state, parent, child_a, child_b, top2)
+    }
+
+    #[test]
+    fn dropping_among_children_attaches_to_that_parent() {
+        use crate::app::state::{AgentReparentAction, ManualEntryRef};
+        let (state, parent, _child_a, child_b, top2) = manual_subtree_app();
+
+        // Drop top2 between the two children (tree row index 2).
+        let pending = state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(top2), 2)
+            .expect("dropping into the children band reparents");
+        assert_eq!(pending.child_pane, top2);
+        assert_eq!(
+            pending.action,
+            AgentReparentAction::SetParent {
+                parent_ws: 0,
+                parent_pane: parent
+            }
+        );
+
+        // Dropping right after the expanded parent makes it the first child.
+        let pending = state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(top2), 1)
+            .expect("dropping right after an expanded parent reparents");
+        assert_eq!(
+            pending.action,
+            AgentReparentAction::SetParent {
+                parent_ws: 0,
+                parent_pane: parent
+            }
+        );
+        let _ = child_b;
+    }
+
+    #[test]
+    fn dropping_at_the_top_level_detaches_a_child() {
+        use crate::app::state::{AgentReparentAction, ManualEntryRef};
+        let (state, _parent, child_a, _child_b, _top2) = manual_subtree_app();
+
+        let pending = state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(child_a), 0)
+            .expect("dropping at the top detaches");
+        assert_eq!(pending.child_pane, child_a);
+        assert_eq!(pending.action, AgentReparentAction::ClearParent);
+    }
+
+    #[test]
+    fn plain_reorders_and_line_splits_never_reparent() {
+        use crate::app::state::ManualEntryRef;
+        let (mut state, _parent, child_a, child_b, top2) = manual_subtree_app();
+
+        // Swapping two siblings under the same parent is not a parent change.
+        assert!(state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(child_b), 1)
+            .is_none());
+        // A parentless top-level agent dropped at the top level stays parentless.
+        assert!(state
+            .agent_reparent_intent_for_drop(ManualEntryRef::Pane(top2), 0)
+            .is_none());
+        // Line-splits are never reparent sources.
+        let split = state.agent_manual_order.new_line_split("x".into(), 0);
+        assert!(state
+            .agent_reparent_intent_for_drop(ManualEntryRef::LineSplit(split), 2)
+            .is_none());
+        let _ = child_a;
+    }
+
+    #[test]
+    fn apply_agent_reparent_sets_clears_and_rejects_cycles() {
+        use crate::app::state::{AgentReparentAction, PendingAgentReparent};
+        let (mut state, parent, child_a, _child_b, top2) = manual_subtree_app();
+
+        let pending = |child, action| PendingAgentReparent {
+            child_ws: 0,
+            child_pane: child,
+            child_label: "child".into(),
+            parent_label: "parent".into(),
+            action,
+            return_mode: Mode::Terminal,
+        };
+
+        // Attach top2 under the parent.
+        assert!(state.apply_agent_reparent(&pending(
+            top2,
+            AgentReparentAction::SetParent {
+                parent_ws: 0,
+                parent_pane: parent,
+            },
+        )));
+        assert_eq!(state.agent_parent_pane(0, top2), Some((0, parent)));
+        // Re-applying the same link is a no-op.
+        assert!(!state.apply_agent_reparent(&pending(
+            top2,
+            AgentReparentAction::SetParent {
+                parent_ws: 0,
+                parent_pane: parent,
+            },
+        )));
+
+        // A cycle (parent under its own child) is rejected.
+        assert!(!state.apply_agent_reparent(&pending(
+            parent,
+            AgentReparentAction::SetParent {
+                parent_ws: 0,
+                parent_pane: child_a,
+            },
+        )));
+        assert_eq!(state.agent_parent_pane(0, parent), None);
+
+        // Self-parenting is rejected.
+        assert!(!state.apply_agent_reparent(&pending(
+            child_a,
+            AgentReparentAction::SetParent {
+                parent_ws: 0,
+                parent_pane: child_a,
+            },
+        )));
+
+        // Detaching clears the link.
+        assert!(state.apply_agent_reparent(&pending(child_a, AgentReparentAction::ClearParent)));
+        assert_eq!(state.agent_parent_pane(0, child_a), None);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn manual_order_drops_stale_pane_on_close() {
+        let (mut state, a, b, c) = app_with_manual_agents();
+        state.reconcile_agent_manual_order();
+
+        state.workspaces[0].close_pane(b);
+        state.reconcile_agent_manual_order();
+
+        assert_eq!(manual_order_pane_ids(&state), vec![a, c]);
+        assert!(!state.agent_manual_order.known.contains(&b));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn manual_order_survives_the_pane_id_remap_on_restore() {
+        let (mut state, a, b, c) = app_with_manual_agents();
+        state.reconcile_agent_manual_order();
+        state.move_agent_entry(crate::app::state::ManualEntryRef::Pane(c), 0);
+        assert_eq!(manual_order_pane_ids(&state), vec![c, a, b]);
+
+        let keys = state.agent_manual_order.to_public_keys(&state.workspaces);
+        assert_eq!(keys.len(), 3);
+
+        // Simulate restore's PaneId remap: fresh pane ids for the same public
+        // pane numbers.
+        let mut remap = std::collections::HashMap::new();
+        for ws in &mut state.workspaces {
+            let new_map: std::collections::HashMap<PaneId, usize> = ws
+                .public_pane_numbers
+                .iter()
+                .map(|(old, number)| {
+                    let new_id = PaneId::alloc();
+                    remap.insert(*old, new_id);
+                    (new_id, *number)
+                })
+                .collect();
+            ws.public_pane_numbers = new_map;
+        }
+
+        let rebuilt =
+            crate::app::state::AgentManualOrder::from_public_keys(&keys, &state.workspaces);
+        assert!(rebuilt.seeded);
+        assert_eq!(rebuilt.to_public_keys(&state.workspaces), keys);
+        let rebuilt_ids: Vec<_> = rebuilt
+            .order
+            .iter()
+            .filter_map(|entry| match entry {
+                crate::app::state::ManualEntry::Pane(pane_id) => Some(*pane_id),
+                crate::app::state::ManualEntry::LineSplit { .. } => None,
+            })
+            .collect();
+        assert_eq!(rebuilt_ids, vec![remap[&c], remap[&a], remap[&b]]);
+    }
+
+    #[test]
+    fn manual_agent_panel_order_follows_the_manual_order() {
+        let (mut state, a, b, c) = app_with_manual_agents();
+        state.reconcile_agent_manual_order();
+        state.move_agent_entry(crate::app::state::ManualEntryRef::Pane(c), 0);
+
+        let panes: Vec<_> = crate::ui::agent_panel_entries(&state)
+            .into_iter()
+            .map(|entry| entry.pane_id)
+            .collect();
+        assert_eq!(panes, vec![c, a, b]);
     }
 
     #[test]

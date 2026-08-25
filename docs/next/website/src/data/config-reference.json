@@ -1027,10 +1027,11 @@
           "key": "ui.agent_panel_sort",
           "type": "enum",
           "default": "\"spaces\"",
-          "description": "Agent sidebar ordering. Saved values are \"spaces\" or \"priority\"; \"workspaces\" is accepted as an alias for \"spaces\".",
+          "description": "Agent sidebar ordering. Saved values are \"spaces\", \"priority\" or \"manual\"; \"workspaces\" is accepted as an alias for \"spaces\".",
           "values": [
             "spaces",
-            "priority"
+            "priority",
+            "manual"
           ]
         },
         {

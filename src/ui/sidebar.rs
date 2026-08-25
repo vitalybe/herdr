@@ -1308,19 +1308,24 @@ fn pane_section_pane_own_name(
         .filter(|label| !label.trim().is_empty())
 }
 
-/// The display name shown for a Panes-section row: the pane's own effective name
-/// (manual label / terminal title) when it has one, otherwise the containing
-/// tab's name, otherwise a positional fallback.
+/// The display name shown for a Panes-section row: `"<pane> • <tab>"` when the
+/// pane has a name of its own (manual label / terminal title), otherwise just the
+/// containing tab's name, otherwise a positional fallback.
 fn pane_section_row_name(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     row_pane_id: crate::layout::PaneId,
     tab_idx: usize,
 ) -> String {
-    pane_section_pane_own_name(app, ws, row_pane_id).unwrap_or_else(|| {
-        ws.tab_display_name(tab_idx)
-            .unwrap_or_else(|| (tab_idx + 1).to_string())
-    })
+    let tab_name = ws
+        .tab_display_name(tab_idx)
+        .unwrap_or_else(|| (tab_idx + 1).to_string());
+    // When the pane has its own name, show both so a pane can still be placed in
+    // its tab; otherwise the tab name stands alone.
+    match pane_section_pane_own_name(app, ws, row_pane_id) {
+        Some(pane_name) => format!("{pane_name} • {tab_name}"),
+        None => tab_name,
+    }
 }
 
 /// Render a named line-split divider row: `── name ─────`.
@@ -2184,6 +2189,25 @@ mod tests {
         app.ensure_test_terminals();
         app.reconcile_pane_section_order();
         app
+    }
+
+    #[test]
+    fn pane_section_row_shows_pane_and_tab_name_together() {
+        let mut app = app_with_two_shell_panes();
+        app.workspaces[0].tabs[0].set_custom_name("build".into());
+        let pane_id = app.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let ws = &app.workspaces[0];
+        assert_eq!(pane_section_row_name(&app, ws, pane_id, 0), "build");
+
+        app.terminals
+            .get_mut(&terminal_id)
+            .expect("terminal")
+            .set_manual_label("logs".into());
+        let ws = &app.workspaces[0];
+        assert_eq!(pane_section_row_name(&app, ws, pane_id, 0), "logs • build");
     }
 
     #[test]

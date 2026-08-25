@@ -1658,14 +1658,26 @@ impl AppState {
         self.cycle_agent_entry(false);
     }
 
+    /// Visible agent panes in tree order (agents only, collapsed descendants
+    /// excluded), used for keyboard navigation and numeric focus so navigation
+    /// skips collapsed subtrees exactly as the panel shows them. Shared with the
+    /// live TUI navigation path so both cycle the same visible order.
+    pub(crate) fn visible_agent_targets(&self) -> Vec<(usize, crate::layout::PaneId)> {
+        crate::ui::agent_panel_rows(self)
+            .into_iter()
+            .filter_map(|row| match row {
+                crate::ui::AgentPanelRow::Agent(entry) => Some((entry.ws_idx, entry.pane_id)),
+                crate::ui::AgentPanelRow::LineSplit { .. } => None,
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub fn focus_agent_entry(&mut self, idx: usize) -> bool {
-        let entries = crate::ui::agent_panel_entries(self);
-        let Some(target) = entries.get(idx) else {
+        let targets = self.visible_agent_targets();
+        let Some(&(ws_idx, pane_id)) = targets.get(idx) else {
             return false;
         };
-        let ws_idx = target.ws_idx;
-        let pane_id = target.pane_id;
         // Scroll math tracks the full row list (agents + line-splits), so map the
         // agent to its row index for ensure-visible.
         let row_idx = crate::ui::agent_panel_row_index_of_pane(self, pane_id).unwrap_or(idx);
@@ -1693,8 +1705,8 @@ impl AppState {
 
     #[cfg(test)]
     fn cycle_agent_entry(&mut self, forward: bool) {
-        let entries = crate::ui::agent_panel_entries(self);
-        if entries.is_empty() {
+        let targets = self.visible_agent_targets();
+        if targets.is_empty() {
             return;
         }
 
@@ -1703,13 +1715,13 @@ impl AppState {
             .and_then(|idx| self.workspaces.get(idx))
             .and_then(crate::workspace::Workspace::focused_pane_id);
         let current_idx =
-            focused.and_then(|pane_id| entries.iter().position(|entry| entry.pane_id == pane_id));
+            focused.and_then(|pane_id| targets.iter().position(|(_, target)| *target == pane_id));
         let target_idx = match (current_idx, forward) {
-            (Some(idx), true) => (idx + 1) % entries.len(),
-            (Some(0), false) => entries.len() - 1,
+            (Some(idx), true) => (idx + 1) % targets.len(),
+            (Some(0), false) => targets.len() - 1,
             (Some(idx), false) => idx - 1,
             (None, true) => 0,
-            (None, false) => entries.len() - 1,
+            (None, false) => targets.len() - 1,
         };
 
         self.focus_agent_entry(target_idx);
@@ -4834,6 +4846,124 @@ mod tests {
         // Cycling visits only agent panes, wrapping across all three.
         assert!(focused.iter().all(|pane| [a, b, c].contains(pane)));
         assert!(focused.contains(&b) && focused.contains(&c));
+    }
+
+    /// Link `child` to `parent` by the stable (workspace id + public pane number)
+    /// reference, exactly as `herdr agent set-parent` does.
+    fn link_agent_parent(state: &mut AppState, parent: PaneId, child: PaneId) {
+        let ws = &mut state.workspaces[0];
+        let number = ws.public_pane_number(parent).expect("parent has number");
+        let workspace_id = ws.id.clone();
+        ws.pane_state_mut(child).expect("child pane").parent = Some(crate::pane::PaneParentRef {
+            workspace_id,
+            pane_number: number,
+        });
+    }
+
+    /// Mark `pane`'s agent subtree collapsed by its stable key, as clicking the
+    /// collapse glyph does.
+    fn collapse_agent(state: &mut AppState, pane: PaneId) {
+        let ws = &state.workspaces[0];
+        let number = ws.public_pane_number(pane).expect("pane has number");
+        let key = crate::workspace::public_pane_id_for_number(&ws.id, number);
+        state.collapsed_agent_keys.insert(key);
+    }
+
+    /// One workspace with a parent agent, two child agents beneath it, and a
+    /// second top-level agent below the subtree. Focus starts on the parent, so
+    /// the visible tree order is [parent, child_a, child_b, top2].
+    fn app_with_agent_subtree_and_sibling() -> (AppState, PaneId, PaneId, PaneId, PaneId) {
+        let mut ws = Workspace::test_new("one");
+        let parent = ws.tabs[0].root_pane;
+        let child_a = ws.test_split(Direction::Horizontal);
+        let child_b = ws.test_split(Direction::Horizontal);
+        let top2 = ws.test_split(Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(parent);
+
+        let mut state = AppState::test_new();
+        state.workspaces = vec![ws];
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.selected = 0;
+        state.mode = Mode::Terminal;
+
+        for pane in [parent, child_a, child_b, top2] {
+            mark_agent(&mut state, 0, 0, pane);
+        }
+        link_agent_parent(&mut state, parent, child_a);
+        link_agent_parent(&mut state, parent, child_b);
+
+        (state, parent, child_a, child_b, top2)
+    }
+
+    fn visible_agent_order(state: &AppState) -> Vec<PaneId> {
+        state
+            .visible_agent_targets()
+            .iter()
+            .map(|(_, pane_id)| *pane_id)
+            .collect()
+    }
+
+    #[test]
+    fn agent_cycling_follows_the_visible_tree_order() {
+        let (mut state, parent, child_a, child_b, top2) = app_with_agent_subtree_and_sibling();
+
+        // Anchor the expectation against the order the sidebar renders.
+        assert_eq!(
+            visible_agent_order(&state),
+            vec![parent, child_a, child_b, top2]
+        );
+
+        // Parent -> first visible child -> next child -> next top-level agent.
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(child_a));
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(child_b));
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(top2));
+
+        // And in reverse.
+        state.previous_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(child_b));
+        state.previous_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(child_a));
+        state.previous_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(parent));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn agent_cycling_skips_collapsed_children() {
+        let (mut state, parent, _child_a, _child_b, top2) = app_with_agent_subtree_and_sibling();
+        collapse_agent(&mut state, parent);
+
+        // Collapsed children drop out of the visible order entirely.
+        assert_eq!(visible_agent_order(&state), vec![parent, top2]);
+
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(top2));
+        // A full cycle never visits the hidden children; it wraps to the parent.
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(parent));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn focus_agent_entry_indexes_the_visible_tree_order() {
+        let (mut state, parent, child_a, child_b, top2) = app_with_agent_subtree_and_sibling();
+
+        for (idx, expected) in [(0, parent), (1, child_a), (2, child_b), (3, top2)] {
+            assert!(state.focus_agent_entry(idx));
+            assert_eq!(state.workspaces[0].focused_pane_id(), Some(expected));
+        }
+
+        // Collapsing the parent removes its children from the indexable order, so
+        // index 1 now addresses the next top-level agent.
+        collapse_agent(&mut state, parent);
+        assert!(state.focus_agent_entry(1));
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(top2));
+        assert!(!state.focus_agent_entry(2));
+        state.assert_invariants_for_test();
     }
 
     #[test]

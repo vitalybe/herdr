@@ -223,6 +223,27 @@ impl PaneSectionRow {
     }
 }
 
+/// Tabs (workspace index, tab index) whose non-agent panes are hidden from the
+/// Panes section because the tab already contributes an agent row to the Agents
+/// section, which would otherwise show the same tab twice. Pure, client-only
+/// presentation filtering.
+pub(crate) fn tabs_with_hidden_panes(app: &AppState) -> std::collections::HashSet<(usize, usize)> {
+    let agent_tabs: std::collections::HashSet<(usize, usize)> = agent_panel_entries(app)
+        .into_iter()
+        .map(|entry| (entry.ws_idx, entry.tab_idx))
+        .collect();
+    app.workspaces
+        .iter()
+        .enumerate()
+        .flat_map(|(ws_idx, ws)| {
+            ws.non_agent_panes(&app.terminals)
+                .into_iter()
+                .map(move |(tab_idx, _, _)| (ws_idx, tab_idx))
+        })
+        .filter(|key| agent_tabs.contains(key))
+        .collect()
+}
+
 /// Full ordered list of visible Panes-section rows, walking the client-only
 /// order and interleaving panes and line-splits. Pane entries whose pane no
 /// longer resolves are skipped; line-splits are always kept.
@@ -236,6 +257,7 @@ pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
             lookup.insert((ws.id.as_str(), pane_number), (ws_idx, tab_idx, pane_id));
         }
     }
+    let hidden_tabs = tabs_with_hidden_panes(app);
     let rows: Vec<PaneSectionRow> = app
         .pane_section_order
         .order
@@ -244,6 +266,7 @@ pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
         .filter_map(|(order_idx, entry)| match entry {
             PaneManualEntry::Pane(pane_ref) => lookup
                 .get(&(pane_ref.workspace_id.as_str(), pane_ref.pane_number))
+                .filter(|&&(ws_idx, tab_idx, _)| !hidden_tabs.contains(&(ws_idx, tab_idx)))
                 .map(|&(ws_idx, tab_idx, pane_id)| {
                     PaneSectionRow::Pane(PaneSectionEntry {
                         order_idx,
@@ -2217,6 +2240,45 @@ mod tests {
         app.ensure_test_terminals();
         app.reconcile_pane_section_order();
         app
+    }
+
+    #[test]
+    fn panes_sharing_a_tab_with_an_agent_are_hidden_from_the_panes_section() {
+        let mut app = app_with_two_shell_panes();
+        let agent_pane = app.workspaces[0].tabs[0].root_pane;
+        let sibling = app.workspaces[0].test_split(Direction::Horizontal);
+        let other_tab = app.workspaces[0].test_add_tab(Some("shell"));
+        let other_tab_pane = app.workspaces[0].tabs[other_tab].root_pane;
+        app.ensure_test_terminals();
+        app.reconcile_pane_section_order();
+        assert!(sidebar_pane_section_rows(&app)
+            .iter()
+            .any(|row| matches!(row, PaneSectionRow::Pane(entry) if entry.pane_id == sibling)));
+
+        let terminal_id = app.workspaces[0].tabs[0].panes[&agent_pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals
+            .get_mut(&terminal_id)
+            .expect("terminal")
+            .detected_agent = Some(Agent::Pi);
+        app.reconcile_pane_section_order();
+
+        assert_eq!(
+            tabs_with_hidden_panes(&app),
+            std::collections::HashSet::from([(0, 0)])
+        );
+        let pane_ids: Vec<PaneId> = sidebar_pane_section_rows(&app)
+            .iter()
+            .filter_map(|row| match row {
+                PaneSectionRow::Pane(entry) => Some(entry.pane_id),
+                PaneSectionRow::LineSplit { .. } => None,
+            })
+            .collect();
+        // The agent's tab is represented by its agent row, so its shell sibling
+        // drops out; panes in other tabs are untouched.
+        assert!(!pane_ids.contains(&sibling));
+        assert!(pane_ids.contains(&other_tab_pane));
     }
 
     #[test]

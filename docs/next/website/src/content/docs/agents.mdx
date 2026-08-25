@@ -95,6 +95,12 @@ A blocked agent makes its pane, tab, and workspace look blocked. A working agent
 
 This is the main Herdr workflow: start several agents, let them work in parallel, and use the sidebar to see which project needs a decision, which one is still running, and which one is ready to review.
 
+## Agent tree
+
+Agents that record a parent nest under it in the sidebar's agents section. Set the link with `herdr agent set-parent <target> <parent>`, or in manual sort mode by dragging one agent onto another.
+
+A parent row gains a collapse arrow and a summary line counting its direct children by state, such as `Subagents - 2 idle 1 blocked`. Clicking the arrow hides or shows the subtree; the collapsed state persists across restarts. Agent navigation follows the visible tree order, so `next_agent` and `previous_agent` skip agents hidden inside a collapsed parent.
+
 ## Direct integrations
 
 Install the integration for each agent you use to give Herdr hook or plugin reports instead of screen detection alone:

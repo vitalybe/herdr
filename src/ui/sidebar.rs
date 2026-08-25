@@ -37,7 +37,23 @@ pub(crate) struct AgentPanelEntry {
     pub last_agent_state_change_seq: Option<u64>,
     pub state_labels: std::collections::HashMap<String, String>,
     pub tokens: std::collections::HashMap<String, String>,
+    /// Live pane id of this agent's parent, resolved from its stable parent
+    /// link. `None` for roots or when the parent no longer exists. Used to build
+    /// the agents-panel tree.
+    pub parent_pane: Option<crate::layout::PaneId>,
+    /// Tree nesting depth (0 for roots), assigned during tree flattening.
+    pub depth: usize,
+    /// True when this agent has at least one direct child in the panel.
+    pub has_children: bool,
+    /// True when this parent is collapsed (its descendants are hidden).
+    pub collapsed: bool,
+    /// Aggregate of direct children by status key, ordered for display. Only
+    /// populated for parents (`has_children`).
+    pub child_summary: Vec<(&'static str, usize)>,
 }
+
+/// Columns of indentation per tree depth level in the agents panel.
+pub(crate) const AGENT_TREE_INDENT: usize = 2;
 
 /// A single visible row in the agents panel. The panel is a heterogeneous row
 /// list rather than a flat pane list, so structural rows can sit between agent
@@ -189,6 +205,13 @@ fn collect_agent_panel_entries_with_runtimes(
                             .tabs
                             .get(detail.tab_idx)
                             .is_some_and(|tab| !tab.is_auto_named());
+                    // Resolve the pane's stable parent link to a live pane id so
+                    // the panel can group children under their parent.
+                    let parent_pane = ws
+                        .pane_state(detail.pane_id)
+                        .and_then(|pane| pane.parent.as_ref())
+                        .and_then(|parent| app.resolve_pane_parent(parent))
+                        .map(|(_, pane_id)| pane_id);
                     AgentPanelEntry {
                         ws_idx,
                         tab_idx: detail.tab_idx,
@@ -206,6 +229,11 @@ fn collect_agent_panel_entries_with_runtimes(
                         last_agent_state_change_seq: detail.last_agent_state_change_seq,
                         state_labels: detail.state_labels,
                         tokens: detail.tokens,
+                        parent_pane,
+                        depth: 0,
+                        has_children: false,
+                        collapsed: false,
+                        child_summary: Vec::new(),
                     }
                 })
         })
@@ -581,11 +609,9 @@ fn resolved_agent_rows(app: &AppState, entry: &AgentPanelEntry) -> Vec<Vec<Resol
 }
 
 fn agent_entry_height_in_body(app: &AppState, entry: &AgentPanelEntry, body_height: u16) -> u16 {
-    (resolved_agent_rows(app, entry)
-        .len()
-        .max(1)
-        .min(u16::MAX as usize) as u16)
-        .min(body_height)
+    // Parents render one extra line summarizing their direct children.
+    let lines = resolved_agent_rows(app, entry).len().max(1) + usize::from(entry.has_children);
+    (lines.min(u16::MAX as usize) as u16).min(body_height)
 }
 
 fn agent_entry_gap(app: &AppState, entry_idx: usize, entry_count: usize) -> u16 {
@@ -608,10 +634,232 @@ pub(crate) fn agent_panel_rows_from(
     agent_panel_rows_with_runtimes(app, Some(terminal_runtimes))
 }
 
-/// In Spaces/Priority the rows are the sorted agent entries. In Manual, agents
-/// and line-splits are interleaved by walking `agent_manual_order.order`; agents
-/// not yet placed in the order fall back to the end. Pure.
+/// Full ordered list of visible agent-panel rows. The sort-driven base ordering
+/// is re-grouped into a parent/child tree so children nest under their parent
+/// regardless of sort mode. Pure.
 fn agent_panel_rows_with_runtimes(
+    app: &AppState,
+    terminal_runtimes: Option<&TerminalRuntimeRegistry>,
+) -> Vec<AgentPanelRow> {
+    let base = base_agent_panel_rows(app, terminal_runtimes);
+    flatten_agent_tree(app, base)
+}
+
+/// Ordered status keys for the parent "Subagents" summary line. Groups appear in
+/// this order and zero-count groups are omitted.
+const SUBAGENT_SUMMARY_ORDER: [&str; 5] = ["working", "blocked", "idle", "done", "unknown"];
+
+/// Aggregate direct-child agents by base status key, in [`SUBAGENT_SUMMARY_ORDER`],
+/// omitting zero counts. Custom state labels collapse to their base status key
+/// (the `(state, seen)` pair maps through [`agent_panel_status_key`]).
+fn subagent_summary(
+    children: impl IntoIterator<Item = (AgentState, bool)>,
+) -> Vec<(&'static str, usize)> {
+    let mut counts: std::collections::HashMap<&'static str, usize> =
+        std::collections::HashMap::new();
+    for (state, seen) in children {
+        *counts
+            .entry(agent_panel_status_key(state, seen))
+            .or_insert(0) += 1;
+    }
+    SUBAGENT_SUMMARY_ORDER
+        .iter()
+        .filter_map(|key| counts.get(key).map(|count| (*key, *count)))
+        .filter(|(_, count)| *count > 0)
+        .collect()
+}
+
+/// Format the parent summary line body (without the leading indent), e.g.
+/// `"Subagents - 2 idle 3 blocked"`.
+fn format_subagent_summary(summary: &[(&'static str, usize)]) -> String {
+    let groups = summary
+        .iter()
+        .map(|(key, count)| format!("{count} {key}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("Subagents - {groups}")
+}
+
+/// Stable collapse key for an agent row: its public pane id (e.g. `"w1:p2"`).
+fn agent_collapse_key(app: &AppState, entry: &AgentPanelEntry) -> Option<String> {
+    let ws = app.workspaces.get(entry.ws_idx)?;
+    let number = ws.public_pane_number(entry.pane_id)?;
+    Some(crate::workspace::public_pane_id_for_number(&ws.id, number))
+}
+
+/// Re-group the flat base rows into a parent/child tree. Children (agents whose
+/// resolved parent is another agent in the list) are emitted nested under their
+/// parent, one indent level per depth. Line-splits and root agents keep their
+/// base order. Descendants of a collapsed parent are omitted. Cycles and
+/// orphaned children are handled defensively so every agent appears exactly
+/// once.
+fn flatten_agent_tree(app: &AppState, base: Vec<AgentPanelRow>) -> Vec<AgentPanelRow> {
+    let len = base.len();
+    // pane_id -> base index for agent rows.
+    let mut index_of: std::collections::HashMap<crate::layout::PaneId, usize> =
+        std::collections::HashMap::new();
+    for (i, row) in base.iter().enumerate() {
+        if let AgentPanelRow::Agent(entry) = row {
+            index_of.insert(entry.pane_id, i);
+        }
+    }
+
+    // Resolve each agent's parent to a base index (when the parent is itself an
+    // agent in the list), building the child lists in base order.
+    let mut parent_index: Vec<Option<usize>> = vec![None; len];
+    let mut children: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::new();
+    // Cached (state, seen) per index for summary aggregation.
+    let mut meta: Vec<Option<(AgentState, bool)>> = vec![None; len];
+    // Collapsed flag per index, keyed by the agent's stable public pane id.
+    let mut collapsed_flags: Vec<bool> = vec![false; len];
+    for (i, row) in base.iter().enumerate() {
+        if let AgentPanelRow::Agent(entry) = row {
+            meta[i] = Some((entry.state, entry.seen));
+            if let Some(key) = agent_collapse_key(app, entry) {
+                collapsed_flags[i] = app.collapsed_agent_keys.contains(&key);
+            }
+            if let Some(parent_pane) = entry.parent_pane {
+                if let Some(&pidx) = index_of.get(&parent_pane) {
+                    if pidx != i {
+                        parent_index[i] = Some(pidx);
+                        children.entry(pidx).or_default().push(i);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut slots: Vec<Option<AgentPanelRow>> = base.into_iter().map(Some).collect();
+    let mut visited = vec![false; len];
+    let mut out = Vec::with_capacity(len);
+
+    for i in 0..len {
+        if visited[i] {
+            continue;
+        }
+        match &slots[i] {
+            Some(AgentPanelRow::LineSplit { .. }) => {
+                visited[i] = true;
+                if let Some(row) = slots[i].take() {
+                    out.push(row);
+                }
+            }
+            Some(AgentPanelRow::Agent(_)) if parent_index[i].is_none() => {
+                emit_agent_subtree(
+                    i,
+                    0,
+                    &children,
+                    &collapsed_flags,
+                    &meta,
+                    &mut slots,
+                    &mut visited,
+                    &mut out,
+                );
+            }
+            _ => {}
+        }
+    }
+    // Defensive: emit any agent not reachable from a root (e.g. a parent cycle).
+    for i in 0..len {
+        if !visited[i] && matches!(slots[i], Some(AgentPanelRow::Agent(_))) {
+            emit_agent_subtree(
+                i,
+                0,
+                &children,
+                &collapsed_flags,
+                &meta,
+                &mut slots,
+                &mut visited,
+                &mut out,
+            );
+        }
+    }
+
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_agent_subtree(
+    i: usize,
+    depth: usize,
+    children: &std::collections::HashMap<usize, Vec<usize>>,
+    collapsed_flags: &[bool],
+    meta: &[Option<(AgentState, bool)>],
+    slots: &mut [Option<AgentPanelRow>],
+    visited: &mut [bool],
+    out: &mut Vec<AgentPanelRow>,
+) {
+    if visited[i] {
+        return;
+    }
+    visited[i] = true;
+    let kids = children.get(&i);
+    let has_children = kids.is_some_and(|kids| !kids.is_empty());
+    let collapsed = collapsed_flags[i];
+    let summary = if has_children {
+        let child_metas = kids
+            .into_iter()
+            .flatten()
+            .filter_map(|&c| meta[c])
+            .collect::<Vec<_>>();
+        subagent_summary(child_metas)
+    } else {
+        Vec::new()
+    };
+
+    if let Some(AgentPanelRow::Agent(mut entry)) = slots[i].take() {
+        entry.depth = depth;
+        entry.has_children = has_children;
+        entry.collapsed = collapsed;
+        entry.child_summary = summary;
+        out.push(AgentPanelRow::Agent(entry));
+    }
+
+    if let Some(kids) = kids {
+        if collapsed {
+            // Descendants stay hidden but must be marked visited so the
+            // orphan-recovery pass does not re-surface them as roots.
+            for &child in kids {
+                mark_subtree_visited(child, children, visited);
+            }
+        } else {
+            for &child in kids {
+                emit_agent_subtree(
+                    child,
+                    depth + 1,
+                    children,
+                    collapsed_flags,
+                    meta,
+                    slots,
+                    visited,
+                    out,
+                );
+            }
+        }
+    }
+}
+
+/// Mark an agent subtree visited without emitting it (used for collapsed
+/// parents). Guards against cycles via the shared `visited` flags.
+fn mark_subtree_visited(
+    i: usize,
+    children: &std::collections::HashMap<usize, Vec<usize>>,
+    visited: &mut [bool],
+) {
+    if visited[i] {
+        return;
+    }
+    visited[i] = true;
+    if let Some(kids) = children.get(&i) {
+        for &child in kids {
+            mark_subtree_visited(child, children, visited);
+        }
+    }
+}
+
+/// The flat, sort-driven base ordering of agent rows, before tree grouping.
+fn base_agent_panel_rows(
     app: &AppState,
     terminal_runtimes: Option<&TerminalRuntimeRegistry>,
 ) -> Vec<AgentPanelRow> {
@@ -1659,9 +1907,31 @@ fn render_agent_row(app: &AppState, frame: &mut Frame, rect: Rect, detail: &Agen
     let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
     let state_icon = state_icon(detail.state, detail.seen, app.status_indicators, p);
 
-    for (row_index, resolved) in rows.iter().take(rect.height as usize).enumerate() {
-        let indent = if row_index == 0 { " " } else { "   " };
-        let mut spans = vec![Span::raw(indent)];
+    // Tree indentation, plus a collapse/expand glyph in the first row's leading
+    // column when this agent has children.
+    let tree_indent = " ".repeat(detail.depth * AGENT_TREE_INDENT);
+    let glyph = match (detail.has_children, detail.collapsed) {
+        (true, true) => "\u{25b8}",
+        (true, false) => "\u{25be}",
+        (false, _) => " ",
+    };
+    let glyph_style = if detail.has_children {
+        Style::default().fg(p.accent)
+    } else {
+        Style::default()
+    };
+
+    let content_rows = rows.len().min(rect.height as usize);
+    for (row_index, resolved) in rows.iter().take(content_rows).enumerate() {
+        let mut spans = vec![Span::styled(tree_indent.clone(), Style::default())];
+        let lead = if row_index == 0 {
+            spans.push(Span::styled(glyph.to_string(), glyph_style));
+            display_width(glyph)
+        } else {
+            spans.push(Span::raw("   "));
+            3
+        };
+        let used = display_width(&tree_indent) + lead;
         spans.extend(resolved_token_spans(
             resolved,
             state_icon,
@@ -1670,11 +1940,27 @@ fn render_agent_row(app: &AppState, frame: &mut Frame, rect: Rect, detail: &Agen
             agent_style,
             agent_style,
             p,
-            rect.width.saturating_sub(display_width_u16(indent)) as usize,
+            (rect.width as usize).saturating_sub(used),
         ));
         frame.render_widget(
             Paragraph::new(Line::from(spans)).style(row_style),
             Rect::new(rect.x, rect.y + row_index as u16, rect.width, 1),
+        );
+    }
+
+    // Parents close with a muted summary of their direct children.
+    if detail.has_children && content_rows < rect.height as usize {
+        let summary = format!(
+            "{tree_indent} {}",
+            format_subagent_summary(&detail.child_summary)
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                truncate_end(&summary, rect.width as usize),
+                Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
+            )))
+            .style(row_style),
+            Rect::new(rect.x, rect.y + content_rows as u16, rect.width, 1),
         );
     }
 }
@@ -2423,6 +2709,148 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         assert_eq!(toggle.x, area.x + area.width - 2);
         assert_eq!(toggle.y, area.y + area.height - 1);
+    }
+
+    #[test]
+    fn subagent_summary_orders_states_and_omits_zero_counts() {
+        let children = vec![
+            (AgentState::Idle, true),
+            (AgentState::Blocked, true),
+            (AgentState::Working, true),
+            (AgentState::Idle, true),
+            (AgentState::Idle, false),
+        ];
+        let summary = subagent_summary(children);
+        assert_eq!(
+            summary,
+            vec![("working", 1), ("blocked", 1), ("idle", 2), ("done", 1)]
+        );
+        assert_eq!(
+            format_subagent_summary(&summary),
+            "Subagents - 1 working 1 blocked 2 idle 1 done"
+        );
+    }
+
+    /// One workspace, one tab, four agent panes: `parent` with `child_a` and
+    /// `child_b` linked beneath it, and `top2` as a second root.
+    fn tree_app() -> (crate::app::state::AppState, PaneId, PaneId, PaneId, PaneId) {
+        let mut ws = Workspace::test_new("one");
+        let parent = ws.tabs[0].root_pane;
+        let child_a = ws.test_split(ratatui::layout::Direction::Horizontal);
+        let child_b = ws.test_split(ratatui::layout::Direction::Horizontal);
+        let top2 = ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(parent);
+
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![ws];
+        app.ensure_test_terminals();
+        app.active = Some(0);
+        app.selected = 0;
+        for pane in [parent, child_a, child_b, top2] {
+            let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
+                .attached_terminal_id
+                .clone();
+            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Pi);
+        }
+        for child in [child_a, child_b] {
+            let ws = &mut app.workspaces[0];
+            let number = ws.public_pane_number(parent).expect("parent has number");
+            let workspace_id = ws.id.clone();
+            ws.pane_state_mut(child).expect("child pane").parent =
+                Some(crate::pane::PaneParentRef {
+                    workspace_id,
+                    pane_number: number,
+                });
+        }
+        (app, parent, child_a, child_b, top2)
+    }
+
+    fn tree_row_panes(app: &crate::app::state::AppState) -> Vec<(PaneId, usize, bool)> {
+        agent_panel_rows(app)
+            .into_iter()
+            .map(|row| match row {
+                AgentPanelRow::Agent(entry) => (entry.pane_id, entry.depth, entry.has_children),
+                AgentPanelRow::LineSplit { .. } => panic!("unexpected line-split row"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn agent_tree_nests_children_under_their_parent() {
+        let (app, parent, child_a, child_b, top2) = tree_app();
+
+        assert_eq!(
+            tree_row_panes(&app),
+            vec![
+                (parent, 0, true),
+                (child_a, 1, false),
+                (child_b, 1, false),
+                (top2, 0, false),
+            ]
+        );
+
+        // The parent carries a summary of its direct children.
+        let rows = agent_panel_rows(&app);
+        let AgentPanelRow::Agent(entry) = &rows[0] else {
+            panic!("expected an agent row");
+        };
+        assert_eq!(entry.child_summary, vec![("unknown", 2)]);
+    }
+
+    #[test]
+    fn collapsed_parent_hides_its_subtree() {
+        let (mut app, parent, _child_a, _child_b, top2) = tree_app();
+        let number = app.workspaces[0]
+            .public_pane_number(parent)
+            .expect("parent has number");
+        let key = crate::workspace::public_pane_id_for_number(&app.workspaces[0].id, number);
+        app.collapsed_agent_keys.insert(key);
+
+        assert_eq!(
+            tree_row_panes(&app),
+            vec![(parent, 0, true), (top2, 0, false)]
+        );
+        let rows = agent_panel_rows(&app);
+        let AgentPanelRow::Agent(entry) = &rows[0] else {
+            panic!("expected an agent row");
+        };
+        assert!(entry.collapsed);
+    }
+
+    #[test]
+    fn parent_cycle_still_emits_every_agent_once() {
+        let (mut app, parent, child_a, _child_b, _top2) = tree_app();
+        // Point the parent at one of its own children: a cycle.
+        let ws = &mut app.workspaces[0];
+        let number = ws.public_pane_number(child_a).expect("child has number");
+        let workspace_id = ws.id.clone();
+        ws.pane_state_mut(parent).expect("parent pane").parent = Some(crate::pane::PaneParentRef {
+            workspace_id,
+            pane_number: number,
+        });
+
+        let panes: Vec<_> = tree_row_panes(&app)
+            .into_iter()
+            .map(|(pane, _, _)| pane)
+            .collect();
+        assert_eq!(panes.len(), 4);
+        let unique: std::collections::HashSet<_> = panes.iter().collect();
+        assert_eq!(unique.len(), 4, "every agent appears exactly once");
+    }
+
+    #[test]
+    fn parent_rows_are_one_line_taller_than_leaves() {
+        let (app, _parent, _child_a, _child_b, _top2) = tree_app();
+        let rows = agent_panel_rows(&app);
+        let body_height = 40;
+        let heights: Vec<_> = rows
+            .iter()
+            .map(|row| row.height_in_body(&app, body_height))
+            .collect();
+        // Row 0 is the parent (extra summary line); the rest are leaves.
+        assert_eq!(heights[0], heights[1] + 1);
+        assert_eq!(heights[1], heights[2]);
+        assert_eq!(heights[1], heights[3]);
     }
 
     #[test]

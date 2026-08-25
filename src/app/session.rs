@@ -53,6 +53,7 @@ impl App {
                 self.state.sidebar_width,
                 self.state.sidebar_section_split,
                 self.state.collapsed_space_keys.clone(),
+                self.state.collapsed_agent_keys.clone(),
                 agent_manual_order_keys,
             );
             let history = self.persist_pane_history.then(|| {

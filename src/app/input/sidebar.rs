@@ -568,6 +568,34 @@ impl AppState {
         None
     }
 
+    /// The stable public pane id of a collapse/expand glyph under `(col, row)`,
+    /// if the pointer is on a parent agent row's glyph. Applies in every sort
+    /// mode. Returns `None` otherwise.
+    pub(super) fn agent_panel_collapse_toggle_at(&self, col: u16, row: u16) -> Option<String> {
+        let (body, rows, areas) = self.agent_panel_row_areas_at()?;
+        for area in &areas {
+            // The glyph sits on the first line of the row.
+            if row != area.rect.y {
+                continue;
+            }
+            if let crate::ui::AgentPanelRow::Agent(entry) = &rows[area.row_idx] {
+                if !entry.has_children {
+                    return None;
+                }
+                let glyph_col = body.x.saturating_add(
+                    (entry.depth as u16).saturating_mul(crate::ui::AGENT_TREE_INDENT as u16),
+                );
+                if col == glyph_col {
+                    let ws = self.workspaces.get(entry.ws_idx)?;
+                    let number = ws.public_pane_number(entry.pane_id)?;
+                    return Some(crate::workspace::public_pane_id_for_number(&ws.id, number));
+                }
+            }
+            return None;
+        }
+        None
+    }
+
     /// Manual-order entry (agent or line-split) under the given row, for drag
     /// pickup. Returns `None` outside manual mode or outside any row.
     pub(super) fn agent_panel_entry_ref_at_row(&self, row: u16) -> Option<ManualEntryRef> {
@@ -2212,6 +2240,75 @@ mod tests {
             .find(|&r| app.state.agent_panel_line_split_at_row(r).is_some())
             .expect("line-split row is visible");
         assert_eq!(app.state.agent_detail_target_at(split_row), None);
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn clicking_the_collapse_glyph_toggles_the_subtree_and_persists() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("one");
+        let parent = ws.tabs[0].root_pane;
+        let child = ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(parent);
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        for pane in [parent, child] {
+            let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(Agent::Pi);
+        }
+        let number = app.state.workspaces[0]
+            .public_pane_number(parent)
+            .expect("parent has number");
+        let workspace_id = app.state.workspaces[0].id.clone();
+        app.state.workspaces[0]
+            .pane_state_mut(child)
+            .expect("child pane")
+            .parent = Some(crate::pane::PaneParentRef {
+            workspace_id: workspace_id.clone(),
+            pane_number: number,
+        });
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
+
+        let key = crate::workspace::public_pane_id_for_number(&workspace_id, number);
+        let body = crate::ui::agent_panel_body_rect(app.state.agent_panel_rect(), false);
+        // The parent is the first row, so its glyph is the body's first cell.
+        assert_eq!(
+            app.state
+                .agent_panel_collapse_toggle_at(body.x, body.y)
+                .as_deref(),
+            Some(key.as_str())
+        );
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            body.x,
+            body.y,
+        ));
+        assert!(app.state.collapsed_agent_keys.contains(&key));
+        assert_eq!(
+            capture_snapshot(&app.state).collapsed_agent_keys,
+            std::collections::HashSet::from([key.clone()])
+        );
+
+        // Clicking again expands, and the child row is visible once more.
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            body.x,
+            body.y,
+        ));
+        assert!(!app.state.collapsed_agent_keys.contains(&key));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
+        assert!((body.y..body.y + body.height)
+            .any(|r| { app.state.agent_detail_target_at(r).map(|(_, _, p)| p) == Some(child) }));
         app.state.assert_invariants_for_test();
     }
 

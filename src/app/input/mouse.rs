@@ -647,6 +647,18 @@ impl AppState {
                         return None;
                     }
 
+                    // Collapse/expand glyph on a parent agent row toggles its
+                    // subtree. Applies in every sort mode and takes priority over
+                    // focus/drag on that cell.
+                    if let Some(key) = self.agent_panel_collapse_toggle_at(mouse.column, mouse.row)
+                    {
+                        if !self.collapsed_agent_keys.remove(&key) {
+                            self.collapsed_agent_keys.insert(key);
+                        }
+                        self.mark_session_dirty();
+                        return None;
+                    }
+
                     if matches!(self.agent_panel_sort, AgentPanelSort::Manual) {
                         if let Some(entry) = self.agent_panel_entry_ref_at_row(mouse.row) {
                             // Manual mode: record a press so a drag can promote to a

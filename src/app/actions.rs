@@ -1539,6 +1539,34 @@ impl AppState {
         }
     }
 
+    /// Translate an insert index expressed in visible tree-row space (what the
+    /// drop indicator uses) into an index in the flat `agent_manual_order.order`
+    /// (what [`AppState::move_agent_entry`] mutates). The two spaces differ once
+    /// the tree nests children under parents; in the flat case this is the
+    /// identity.
+    ///
+    /// The dragged item lands at the base-order position of the row it was
+    /// dropped before. Because tree grouping is reapplied on every render, a
+    /// child always re-nests under its parent regardless of where it lands in
+    /// the base order, so a drag can never detach a child from its parent.
+    pub(crate) fn agent_manual_base_index_for_tree_insert(&self, tree_insert_idx: usize) -> usize {
+        use crate::app::state::ManualEntry;
+        let rows = crate::ui::agent_panel_rows(self);
+        let order = &self.agent_manual_order.order;
+        let Some(row) = rows.get(tree_insert_idx) else {
+            return order.len();
+        };
+        let pos = match row {
+            crate::ui::AgentPanelRow::Agent(entry) => order
+                .iter()
+                .position(|e| matches!(e, ManualEntry::Pane(p) if *p == entry.pane_id)),
+            crate::ui::AgentPanelRow::LineSplit { id, .. } => order
+                .iter()
+                .position(|e| matches!(e, ManualEntry::LineSplit { id: oid, .. } if oid == id)),
+        };
+        pos.unwrap_or(order.len())
+    }
+
     /// Move a manual-order entry (agent pane or line-split) to a new position in
     /// the flat manual order. The `insert_idx` is a slot in the current order
     /// (before removal), clamped to bounds. Cross-workspace moves are allowed.

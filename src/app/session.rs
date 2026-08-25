@@ -10,7 +10,9 @@ use super::{App, SESSION_SAVE_DEBOUNCE};
 enum SessionSaveJob {
     Clear,
     Save {
-        snapshot: crate::persist::SessionSnapshot,
+        // Boxed: the snapshot dwarfs the other variant, and this job is moved
+        // into the background save thread.
+        snapshot: Box<crate::persist::SessionSnapshot>,
         history: Option<crate::persist::SessionHistorySnapshot>,
     },
 }
@@ -57,14 +59,21 @@ impl App {
                 self.state.selected,
                 self.state.sidebar_width,
                 self.state.sidebar_section_split,
+                self.state.sidebar_pane_section_split,
                 self.state.collapsed_space_keys.clone(),
                 self.state.collapsed_agent_keys.clone(),
                 agent_manual_order_keys,
+                self.state.collapsed_line_split_keys.clone(),
+                self.state.pane_section_order.to_keys(),
+                self.state.sidebar_section_collapse(),
             );
             let history = self.persist_pane_history.then(|| {
                 crate::persist::capture_history(&self.state.workspaces, &self.terminal_runtimes)
             });
-            SessionSaveJob::Save { snapshot, history }
+            SessionSaveJob::Save {
+                snapshot: Box::new(snapshot),
+                history,
+            }
         }
     }
 

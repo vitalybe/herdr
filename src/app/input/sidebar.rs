@@ -10,7 +10,13 @@ impl AppState {
         if self.sidebar_collapsed || sidebar.width <= 1 || sidebar.height == 0 {
             return Rect::default();
         }
-        crate::ui::workspace_list_rect(sidebar, self.sidebar_section_split)
+        crate::ui::spaces_list_rect(
+            sidebar,
+            self.sidebar_section_split,
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
+        )
     }
 
     pub(super) fn agent_panel_rect(&self) -> Rect {
@@ -18,9 +24,259 @@ impl AppState {
         if self.sidebar_collapsed || sidebar.width <= 1 || sidebar.height == 0 {
             return Rect::default();
         }
-        let (_, detail_area) =
-            crate::ui::expanded_sidebar_sections(sidebar, self.sidebar_section_split);
-        detail_area
+        crate::ui::agents_detail_rect(
+            sidebar,
+            self.sidebar_section_split,
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
+        )
+    }
+
+    pub(super) fn pane_section_rect(&self) -> Rect {
+        let sidebar = self.view.sidebar_rect;
+        if self.sidebar_collapsed || sidebar.width <= 1 || sidebar.height == 0 {
+            return Rect::default();
+        }
+        crate::ui::pane_section_rect(
+            sidebar,
+            self.sidebar_section_split,
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
+        )
+    }
+
+    /// Resolve a sidebar row to the Panes-section pane row it hits, returning the
+    /// flat order index plus the `(ws_idx, pane_id)` it points at. Line-split rows
+    /// resolve to `None` (they are not focusable panes).
+    pub(crate) fn pane_section_row_at(
+        &self,
+        row: u16,
+    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+        use crate::app::state::PaneSectionRowContent;
+        self.view.pane_section_row_areas.iter().find_map(|area| {
+            if row < area.rect.y || row >= area.rect.y + area.rect.height {
+                return None;
+            }
+            match area.content {
+                PaneSectionRowContent::Pane {
+                    ws_idx, pane_id, ..
+                } => Some((area.order_idx, ws_idx, pane_id)),
+                PaneSectionRowContent::LineSplit { .. } => None,
+            }
+        })
+    }
+
+    /// Manual-order entry (pane or line-split) under the given sidebar row, for
+    /// drag pickup and click handling.
+    pub(super) fn pane_section_entry_ref_at_row(
+        &self,
+        row: u16,
+    ) -> Option<crate::app::state::PaneManualEntryRef> {
+        use crate::app::state::{PaneManualEntryRef, PaneSectionRowContent};
+        for area in &self.view.pane_section_row_areas {
+            if row < area.rect.y || row >= area.rect.y + area.rect.height {
+                continue;
+            }
+            return match area.content {
+                PaneSectionRowContent::Pane {
+                    ws_idx, pane_id, ..
+                } => {
+                    let ws = self.workspaces.get(ws_idx)?;
+                    let pane_number = ws.public_pane_number(pane_id)?;
+                    Some(PaneManualEntryRef::Pane(
+                        crate::app::state::PaneSectionRef {
+                            workspace_id: ws.id.clone(),
+                            pane_number,
+                        },
+                    ))
+                }
+                PaneSectionRowContent::LineSplit { id } => Some(PaneManualEntryRef::LineSplit(id)),
+            };
+        }
+        None
+    }
+
+    /// Line-split id under the given sidebar row in the Panes section, if any
+    /// (for the right-click context menu).
+    pub(super) fn pane_section_line_split_at_row(
+        &self,
+        row: u16,
+    ) -> Option<crate::app::state::LineSplitId> {
+        use crate::app::state::PaneSectionRowContent;
+        for area in &self.view.pane_section_row_areas {
+            if row < area.rect.y || row >= area.rect.y + area.rect.height {
+                continue;
+            }
+            return match area.content {
+                PaneSectionRowContent::LineSplit { id } => Some(id),
+                PaneSectionRowContent::Pane { .. } => None,
+            };
+        }
+        None
+    }
+
+    /// Whether the given cell hits the Panes-section "+ split" affordance.
+    pub(super) fn on_pane_section_split_button(&self, col: u16, row: u16) -> bool {
+        if self.sidebar_collapsed {
+            return false;
+        }
+        let area = self.pane_section_rect();
+        let rect = crate::ui::pane_section_split_button_rect(area);
+        rect.width > 0
+            && col >= rect.x
+            && col < rect.x + rect.width
+            && row >= rect.y
+            && row < rect.y + rect.height
+    }
+
+    /// Resolve a stable [`crate::app::state::PaneSectionRef`] back to its live
+    /// `(ws_idx, pane_id)`, or `None` if the pane no longer exists.
+    pub(super) fn resolve_pane_section_ref(
+        &self,
+        pane_ref: &crate::app::state::PaneSectionRef,
+    ) -> Option<(usize, crate::layout::PaneId)> {
+        let ws_idx = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == pane_ref.workspace_id)?;
+        let pane_id = self.workspaces[ws_idx]
+            .public_pane_numbers
+            .iter()
+            .find_map(|(pane_id, number)| (*number == pane_ref.pane_number).then_some(*pane_id))?;
+        Some((ws_idx, pane_id))
+    }
+
+    /// Flat drop index for a Panes-section reorder at sidebar `row` (upper half
+    /// inserts before, lower half after; the gap and the area below the last row
+    /// insert at the end).
+    pub(super) fn pane_section_drop_index_at_row(&self, row: u16) -> Option<usize> {
+        let pane_section_area = self.pane_section_rect();
+        let has_scrollbar = crate::ui::should_show_scrollbar(
+            crate::ui::pane_section_scroll_metrics(self, pane_section_area),
+        );
+        let body = crate::ui::pane_section_body_rect(pane_section_area, has_scrollbar);
+        if body.width == 0 || body.height == 0 {
+            return None;
+        }
+        if row < body.y || row >= body.y + body.height {
+            return None;
+        }
+        // Insert index is a slot in the flat order (panes + line-splits).
+        let num_entries = self.pane_section_order.order.len();
+        let areas = &self.view.pane_section_row_areas;
+        for area in areas {
+            let slot_bottom = area.rect.y.saturating_add(area.rect.height);
+            if row < slot_bottom {
+                let mid = area.rect.y.saturating_add(area.rect.height / 2);
+                let idx = if row < mid {
+                    area.order_idx
+                } else {
+                    area.order_idx.saturating_add(1)
+                };
+                return Some(idx.min(num_entries));
+            }
+            if row == slot_bottom {
+                return Some(area.order_idx.saturating_add(1).min(num_entries));
+            }
+        }
+        let idx = areas
+            .last()
+            .map(|area| area.order_idx.saturating_add(1))
+            .unwrap_or(0);
+        Some(idx.min(num_entries))
+    }
+
+    pub(super) fn pane_section_scrollbar_target_at(
+        &self,
+        col: u16,
+        row: u16,
+    ) -> Option<ScrollbarClickTarget> {
+        let area = self.pane_section_rect();
+        let metrics = crate::ui::pane_section_scroll_metrics(self, area);
+        let track = crate::ui::pane_section_scrollbar_rect(self, area)?;
+        if col < track.x
+            || col >= track.x + track.width
+            || row < track.y
+            || row >= track.y + track.height
+        {
+            return None;
+        }
+        if let Some(grab_row_offset) = crate::ui::scrollbar_thumb_grab_offset(metrics, track, row) {
+            Some(ScrollbarClickTarget::Thumb { grab_row_offset })
+        } else {
+            Some(ScrollbarClickTarget::Track {
+                offset_from_bottom: crate::ui::scrollbar_offset_from_row(metrics, track, row),
+            })
+        }
+    }
+
+    pub(super) fn pane_section_offset_for_drag_row(
+        &self,
+        row: u16,
+        grab_row_offset: u16,
+    ) -> Option<usize> {
+        let area = self.pane_section_rect();
+        let metrics = crate::ui::pane_section_scroll_metrics(self, area);
+        let track = crate::ui::pane_section_scrollbar_rect(self, area)?;
+        Some(crate::ui::scrollbar_offset_from_drag_row(
+            metrics,
+            track,
+            row,
+            grab_row_offset,
+        ))
+    }
+
+    pub(super) fn set_pane_section_offset_from_bottom(&mut self, offset_from_bottom: usize) {
+        let area = self.pane_section_rect();
+        let metrics = crate::ui::pane_section_scroll_metrics(self, area);
+        self.pane_section_scroll = metrics
+            .max_offset_from_bottom
+            .saturating_sub(offset_from_bottom);
+    }
+
+    pub(super) fn scroll_pane_section(&mut self, delta: i16) {
+        let area = self.pane_section_rect();
+        let max_scroll = crate::ui::pane_section_scroll_metrics(self, area).max_offset_from_bottom;
+        if delta.is_negative() {
+            self.pane_section_scroll = self
+                .pane_section_scroll
+                .saturating_sub(delta.unsigned_abs() as usize);
+        } else {
+            self.pane_section_scroll = self
+                .pane_section_scroll
+                .saturating_add(delta as usize)
+                .min(max_scroll);
+        }
+    }
+
+    /// Route a sidebar wheel notch to whichever stacked band the pointer is over.
+    pub(super) fn scroll_sidebar_band(&mut self, row: u16, delta: i16) {
+        let over =
+            |area: Rect| area != Rect::default() && row >= area.y && row < area.y + area.height;
+        let pane_area = self.pane_section_rect();
+        let agent_area = self.agent_panel_rect();
+        if over(pane_area) {
+            if crate::ui::should_show_scrollbar(crate::ui::pane_section_scroll_metrics(
+                self, pane_area,
+            )) {
+                self.scroll_pane_section(delta);
+            }
+        } else if over(agent_area) {
+            if crate::ui::should_show_scrollbar(crate::ui::agent_panel_scroll_metrics(
+                self, agent_area,
+            )) {
+                self.scroll_agent_panel(delta);
+            }
+        } else if crate::ui::should_show_scrollbar(crate::ui::workspace_list_scroll_metrics(
+            self,
+            self.workspace_list_rect(),
+        )) {
+            self.scroll_workspace_list(delta);
+        } else {
+            self.move_selected_workspace_by_visible_delta(delta as isize);
+        }
     }
 
     pub(super) fn workspace_list_scrollbar_target_at(
@@ -264,6 +520,64 @@ impl AppState {
             && row < rect.y + rect.height
     }
 
+    /// Which stacked sidebar band's collapse/expand toggle sits under the cursor,
+    /// if any. The toggle covers the glyph and title word on the band header.
+    pub(super) fn sidebar_section_header_toggle_at(
+        &self,
+        col: u16,
+        row: u16,
+    ) -> Option<crate::ui::SidebarBand> {
+        if self.sidebar_collapsed {
+            return None;
+        }
+        let collapse = self.sidebar_section_collapse();
+        let bands = [
+            (
+                crate::ui::SidebarBand::Spaces,
+                self.workspace_list_rect(),
+                collapse.spaces,
+            ),
+            (
+                crate::ui::SidebarBand::Panes,
+                self.pane_section_rect(),
+                collapse.panes,
+            ),
+            (
+                crate::ui::SidebarBand::Agents,
+                self.agent_panel_rect(),
+                collapse.agents,
+            ),
+        ];
+        for (band, area, collapsed) in bands {
+            let rect = crate::ui::sidebar_section_header_toggle_rect(area, band, collapsed);
+            if rect.width > 0
+                && col >= rect.x
+                && col < rect.x + rect.width
+                && row >= rect.y
+                && row < rect.y + rect.height
+            {
+                return Some(band);
+            }
+        }
+        None
+    }
+
+    /// Toggle the collapsed state of one stacked sidebar band.
+    pub(super) fn toggle_sidebar_section(&mut self, band: crate::ui::SidebarBand) {
+        match band {
+            crate::ui::SidebarBand::Spaces => {
+                self.spaces_section_collapsed = !self.spaces_section_collapsed;
+            }
+            crate::ui::SidebarBand::Panes => {
+                self.pane_section_collapsed = !self.pane_section_collapsed;
+            }
+            crate::ui::SidebarBand::Agents => {
+                self.agents_section_collapsed = !self.agents_section_collapsed;
+            }
+        }
+        self.mark_session_dirty();
+    }
+
     pub(super) fn set_manual_sidebar_width(&mut self, divider_col: u16) {
         let sidebar = self.view.sidebar_rect;
         let width = divider_col.saturating_sub(sidebar.x).saturating_add(1);
@@ -272,31 +586,96 @@ impl AppState {
         self.mark_session_dirty();
     }
 
-    pub(super) fn on_sidebar_section_divider(&self, col: u16, row: u16) -> bool {
+    /// Which section divider (if any) sits under the cursor: 0 for the
+    /// Spaces/Panes divider, 1 for the Panes/Agents divider.
+    pub(super) fn on_sidebar_section_divider(&self, col: u16, row: u16) -> Option<usize> {
         if self.sidebar_collapsed {
-            return false;
+            return None;
         }
-        let rect = crate::ui::sidebar_section_divider_rect(
+        let hits = |rect: Rect| {
+            rect.width > 0
+                && col >= rect.x
+                && col < rect.x + rect.width
+                && row >= rect.y
+                && row < rect.y + rect.height
+        };
+        // Each divider rect is collapse-aware and empty when its ratio does not
+        // affect the current layout, so a collapsed band only disables the
+        // divider(s) it actually borders instead of every section divider.
+        if hits(crate::ui::sidebar_section_divider_rect(
             self.view.sidebar_rect,
             self.sidebar_section_split,
-        );
-        rect.width > 0
-            && col >= rect.x
-            && col < rect.x + rect.width
-            && row >= rect.y
-            && row < rect.y + rect.height
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
+        )) {
+            return Some(0);
+        }
+        if hits(crate::ui::sidebar_pane_section_divider_rect(
+            self.view.sidebar_rect,
+            self.sidebar_section_split,
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
+        )) {
+            return Some(1);
+        }
+        None
     }
 
-    pub(super) fn set_sidebar_section_split(&mut self, row: u16) {
+    pub(super) fn set_sidebar_section_split(&mut self, index: usize, row: u16) {
         let sidebar = self.view.sidebar_rect;
-        let content_height = sidebar.height;
-        if content_height < 6 {
+        if sidebar.height < 6 {
             return;
         }
-        let relative_y = row.saturating_sub(sidebar.y);
-        let ratio = (relative_y as f32) / (content_height as f32);
-        self.sidebar_section_split = ratio.clamp(0.1, 0.9);
-        self.mark_session_dirty();
+        // Invert the same collapse-aware geometry the dividers are drawn from, so
+        // a drag maps to the ratio without jumping when a band is collapsed.
+        let collapse = self.sidebar_section_collapse();
+        let (spaces_area, pane_section_area, agents_area) = crate::ui::expanded_sidebar_sections3(
+            sidebar,
+            self.sidebar_section_split,
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
+            collapse,
+        );
+        match index {
+            0 => {
+                // The Spaces ratio splits the Spaces band against the expanded
+                // band(s) below it; a collapsed neighbour contributes only its
+                // header row.
+                let panes_h = if collapse.panes {
+                    0
+                } else {
+                    pane_section_area.height
+                };
+                let agents_h = if collapse.agents {
+                    0
+                } else {
+                    agents_area.height
+                };
+                let region_h = spaces_area.height + panes_h + agents_h;
+                if region_h < 6 {
+                    return;
+                }
+                let relative_y = row.saturating_sub(spaces_area.y);
+                let ratio = (relative_y as f32) / (region_h as f32);
+                self.sidebar_section_split = ratio.clamp(0.1, 0.9);
+                self.mark_session_dirty();
+            }
+            1 => {
+                // The Panes ratio splits the Panes and Agents bands, which share
+                // the region directly below the (possibly collapsed) Spaces band.
+                let region_h = pane_section_area.height + agents_area.height;
+                if region_h < 6 {
+                    return;
+                }
+                let relative_y = row.saturating_sub(pane_section_area.y);
+                let ratio = (relative_y as f32) / (region_h as f32);
+                self.sidebar_pane_section_split = ratio.clamp(0.1, 0.9);
+                self.mark_session_dirty();
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn workspace_at_row(&self, row: u16) -> Option<usize> {
@@ -470,10 +849,7 @@ impl AppState {
             return false;
         }
 
-        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
-            self.view.sidebar_rect,
-            self.sidebar_section_split,
-        );
+        let detail_area = self.agent_panel_rect();
         let rect = crate::ui::agent_panel_toggle_rect(detail_area, self.agent_panel_sort);
         rect.width > 0
             && col >= rect.x
@@ -1055,10 +1431,7 @@ mod tests {
         app.state.mode = Mode::Terminal;
         app.state.agent_panel_scroll = 3;
 
-        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
-            app.state.view.sidebar_rect,
-            app.state.sidebar_section_split,
-        );
+        let detail_area = app.state.agent_panel_rect();
         let toggle = crate::ui::agent_panel_toggle_rect(detail_area, app.state.agent_panel_sort);
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
@@ -1101,10 +1474,7 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
 
-        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
-            app.state.view.sidebar_rect,
-            app.state.sidebar_section_split,
-        );
+        let detail_area = app.state.agent_panel_rect();
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             detail_area.x + 2,
@@ -2094,12 +2464,224 @@ mod tests {
         assert_eq!(app.state.sidebar_width, 22);
     }
 
+    /// App with two shell panes in two spaces, a seeded Panes-section order, and
+    /// the published row areas the mouse code hit-tests against.
+    fn app_with_pane_section() -> crate::app::App {
+        let mut app = app_for_mouse_test();
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 40);
+        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        app.state.reconcile_pane_section_order();
+        let pane_area = app.state.pane_section_rect();
+        app.state.view.pane_section_row_areas =
+            crate::ui::compute_pane_section_row_areas(&app.state, pane_area);
+        app
+    }
+
+    #[test]
+    fn collapsed_spaces_band_keeps_panes_agents_divider_draggable() {
+        let mut app = app_with_pane_section();
+        app.state.spaces_section_collapsed = true;
+        let divider = crate::ui::sidebar_pane_section_divider_rect(
+            app.state.view.sidebar_rect,
+            app.state.sidebar_section_split,
+            app.state.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(&app.state),
+            app.state.sidebar_section_collapse(),
+        );
+        assert!(divider.width > 0);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            divider.x + 1,
+            divider.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            divider.x + 1,
+            divider.y + 3,
+        ));
+
+        assert!(app.state.sidebar_pane_section_split > 0.5);
+    }
+
+    #[test]
+    fn clicking_a_band_header_toggle_collapses_and_expands_it() {
+        let mut app = app_with_pane_section();
+        let toggle = crate::ui::sidebar_section_header_toggle_rect(
+            app.state.pane_section_rect(),
+            crate::ui::SidebarBand::Panes,
+            false,
+        );
+        assert!(toggle.width > 0);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            toggle.x,
+            toggle.y,
+        ));
+        assert!(app.state.pane_section_collapsed);
+        let snapshot = capture_snapshot(&app.state);
+        assert!(snapshot.sidebar_section_collapse.panes);
+
+        // The collapsed band's own header row toggles it back open.
+        let toggle = crate::ui::sidebar_section_header_toggle_rect(
+            app.state.pane_section_rect(),
+            crate::ui::SidebarBand::Panes,
+            true,
+        );
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            toggle.x,
+            toggle.y,
+        ));
+        assert!(!app.state.pane_section_collapsed);
+    }
+
+    #[test]
+    fn clicking_a_line_split_row_toggles_its_collapse() {
+        let mut app = app_with_pane_section();
+        let split = app
+            .state
+            .pane_section_order
+            .new_line_split("group".to_string(), 0);
+        let pane_area = app.state.pane_section_rect();
+        app.state.view.pane_section_row_areas =
+            crate::ui::compute_pane_section_row_areas(&app.state, pane_area);
+        let row = app.state.view.pane_section_row_areas[0];
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.rect.x + 2,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            row.rect.x + 2,
+            row.rect.y,
+        ));
+
+        let key = crate::app::state::pane_line_split_collapse_key(split);
+        assert!(app.state.collapsed_line_split_keys.contains(&key));
+        let snapshot = capture_snapshot(&app.state);
+        assert!(snapshot.collapsed_line_split_keys.contains(&key));
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn dragging_panes_agents_divider_sets_the_pane_section_ratio() {
+        let mut app = app_with_pane_section();
+        let divider = crate::ui::sidebar_pane_section_divider_rect(
+            app.state.view.sidebar_rect,
+            app.state.sidebar_section_split,
+            app.state.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(&app.state),
+            app.state.sidebar_section_collapse(),
+        );
+        assert!(divider.width > 0);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            divider.x + 1,
+            divider.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            divider.x + 1,
+            divider.y + 3,
+        ));
+
+        assert!(app.state.sidebar_pane_section_split > 0.5);
+        // The Spaces ratio is untouched: each divider owns exactly one ratio.
+        assert_eq!(app.state.sidebar_section_split, 0.5);
+        let snapshot = capture_snapshot(&app.state);
+        assert_eq!(
+            snapshot.sidebar_pane_section_split,
+            Some(app.state.sidebar_pane_section_split)
+        );
+    }
+
+    #[test]
+    fn clicking_a_panes_section_row_focuses_that_pane_in_its_space() {
+        let mut app = app_with_pane_section();
+        let target = app.state.view.pane_section_row_areas[1];
+        let crate::app::state::PaneSectionRowContent::Pane { pane_id, .. } = target.content else {
+            panic!("expected a pane row");
+        };
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            target.rect.x + 2,
+            target.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            target.rect.x + 2,
+            target.rect.y,
+        ));
+
+        assert_eq!(app.state.active, Some(1));
+        assert_eq!(app.state.workspaces[1].focused_pane_id(), Some(pane_id));
+    }
+
+    #[test]
+    fn dragging_a_panes_section_row_reorders_the_client_only_order() {
+        let mut app = app_with_pane_section();
+        let before: Vec<_> = app.state.pane_section_order.order.clone();
+        let source = app.state.view.pane_section_row_areas[1];
+        let target = app.state.view.pane_section_row_areas[0];
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            source.rect.x + 2,
+            source.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            source.rect.x + 2,
+            target.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            source.rect.x + 2,
+            target.rect.y,
+        ));
+
+        assert_eq!(app.state.pane_section_order.order[0], before[1]);
+        assert_eq!(app.state.pane_section_order.order[1], before[0]);
+        // The real pane order inside each space is untouched.
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 1);
+    }
+
+    #[test]
+    fn clicking_the_panes_split_button_opens_the_line_split_rename() {
+        let mut app = app_with_pane_section();
+        app.state.mouse_capture = true;
+        let rect = crate::ui::pane_section_split_button_rect(app.state.pane_section_rect());
+        assert!(rect.width > 0);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            rect.x,
+            rect.y,
+        ));
+
+        assert_eq!(app.state.mode, Mode::RenameLineSplit);
+        assert!(app.state.rename_line_split_target.is_some());
+        app.state.assert_invariants_for_test();
+    }
+
     #[test]
     fn dragging_sidebar_section_divider_sets_split_ratio() {
         let mut app = app_for_mouse_test();
         let divider = crate::ui::sidebar_section_divider_rect(
             app.state.view.sidebar_rect,
             app.state.sidebar_section_split,
+            app.state.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(&app.state),
+            app.state.sidebar_section_collapse(),
         );
 
         app.handle_mouse(mouse(
@@ -2383,10 +2965,7 @@ mod tests {
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
 
         let click_toggle = |app: &mut crate::app::App| {
-            let (_, detail_area) = crate::ui::expanded_sidebar_sections(
-                app.state.view.sidebar_rect,
-                app.state.sidebar_section_split,
-            );
+            let detail_area = app.state.agent_panel_rect();
             let rect = crate::ui::agent_panel_toggle_rect(detail_area, app.state.agent_panel_sort);
             app.handle_mouse(mouse(
                 MouseEventKind::Down(MouseButton::Left),

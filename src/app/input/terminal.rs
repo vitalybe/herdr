@@ -1558,11 +1558,15 @@ mod tests {
             app.state.selected,
             app.state.sidebar_width,
             app.state.sidebar_section_split,
+            app.state.sidebar_pane_section_split,
             app.state.collapsed_space_keys.clone(),
             app.state.collapsed_agent_keys.clone(),
             app.state
                 .agent_manual_order
                 .to_public_keys(&app.state.workspaces),
+            app.state.collapsed_line_split_keys.clone(),
+            app.state.pane_section_order.to_keys(),
+            app.state.sidebar_section_collapse(),
         );
         assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 1);
         assert!(matches!(

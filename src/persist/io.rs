@@ -206,9 +206,13 @@ mod tests {
             selected: 0,
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
+            sidebar_pane_section_split: None,
             collapsed_space_keys: std::collections::HashSet::new(),
             collapsed_agent_keys: Default::default(),
             agent_manual_order: None,
+            collapsed_line_split_keys: Default::default(),
+            pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         }
     }
 

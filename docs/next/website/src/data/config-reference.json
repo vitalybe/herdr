@@ -614,6 +614,18 @@
           "description": "Focus the next agent shown in the agent panel. Unset by default."
         },
         {
+          "key": "keys.previous_pane",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Focus the previous pane shown in the sidebar panes section. Unset by default."
+        },
+        {
+          "key": "keys.next_pane",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Focus the next pane shown in the sidebar panes section. Unset by default."
+        },
+        {
           "key": "keys.focus_agent",
           "type": "keybinding",
           "default": "unset",

@@ -113,6 +113,23 @@ impl AgentRowClickState {
     }
 }
 
+/// One recorded left-click on a sidebar Panes-section row, used to detect the
+/// double-click that opens the pane rename modal.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PaneSectionRowClickState {
+    pub(crate) ws_idx: usize,
+    pub(crate) pane_id: crate::layout::PaneId,
+    pub(crate) at: Instant,
+}
+
+impl PaneSectionRowClickState {
+    pub(crate) fn is_double_click_for(self, next: Self) -> bool {
+        self.ws_idx == next.ws_idx
+            && self.pane_id == next.pane_id
+            && next.at.duration_since(self.at) <= PANE_DOUBLE_CLICK_WINDOW
+    }
+}
+
 pub struct App {
     pub state: AppState,
     pub(crate) pane_graphics: pane_graphics::Runtime,
@@ -145,6 +162,7 @@ pub struct App {
     pub(crate) last_sidebar_divider_click: Option<Instant>,
     pub(crate) last_pane_click: Option<PaneClickState>,
     pub(crate) last_agent_row_click: Option<AgentRowClickState>,
+    pub(crate) last_pane_section_row_click: Option<PaneSectionRowClickState>,
     pub(crate) pending_url_click_sources: HashSet<InputSourceId>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_auto_update_check: Option<Instant>,
@@ -470,6 +488,10 @@ impl App {
             collapsed_space_keys,
             collapsed_agent_keys,
             agent_manual_order,
+            sidebar_pane_section_split,
+            pane_section_order_keys,
+            collapsed_line_split_keys,
+            sidebar_section_collapse,
         ) = if no_session {
             (
                 Vec::new(),
@@ -481,6 +503,10 @@ impl App {
                 std::collections::HashSet::new(),
                 std::collections::HashSet::new(),
                 state::AgentManualOrder::default(),
+                0.5_f32,
+                Vec::new(),
+                std::collections::HashSet::new(),
+                state::SidebarSectionCollapse::default(),
             )
         } else if let Some(snap) = crate::persist::load() {
             let history = config
@@ -519,6 +545,10 @@ impl App {
                     snap.collapsed_space_keys,
                     snap.collapsed_agent_keys,
                     state::AgentManualOrder::default(),
+                    snap.sidebar_pane_section_split.unwrap_or(0.5),
+                    crate::persist::pane_section_order_keys(snap.pane_section_order.as_ref()),
+                    snap.collapsed_line_split_keys,
+                    crate::persist::sidebar_section_collapse(&snap.sidebar_section_collapse),
                 )
             } else {
                 crate::logging::session_restored(ws.len(), "ok");
@@ -539,6 +569,10 @@ impl App {
                     snap.collapsed_space_keys,
                     snap.collapsed_agent_keys,
                     agent_manual_order,
+                    snap.sidebar_pane_section_split.unwrap_or(0.5),
+                    crate::persist::pane_section_order_keys(snap.pane_section_order.as_ref()),
+                    snap.collapsed_line_split_keys,
+                    crate::persist::sidebar_section_collapse(&snap.sidebar_section_collapse),
                 )
             }
         } else {
@@ -552,8 +586,15 @@ impl App {
                 std::collections::HashSet::new(),
                 std::collections::HashSet::new(),
                 state::AgentManualOrder::default(),
+                0.5_f32,
+                Vec::new(),
+                std::collections::HashSet::new(),
+                state::SidebarSectionCollapse::default(),
             )
         };
+
+        let pane_section_order =
+            state::PaneSectionOrder::from_keys(pane_section_order_keys, &workspaces);
 
         let agent_panel_sort = agent_panel_sort_from_config(config.ui.agent_panel_sort);
 
@@ -675,6 +716,7 @@ impl App {
                 layout: state::ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                pane_section_row_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -716,6 +758,15 @@ impl App {
             sidebar_collapsed: config.ui.sidebar_start_collapsed,
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_section_split,
+            sidebar_pane_section_split,
+            pane_section_scroll: 0,
+            pane_section_order,
+            pane_section_press: None,
+            collapsed_line_split_keys,
+            spaces_section_collapsed: sidebar_section_collapse.spaces,
+            pane_section_collapsed: sidebar_section_collapse.panes,
+            agents_section_collapsed: sidebar_section_collapse.agents,
+            last_pane_section_focus: None,
             agent_panel_sort,
             agent_manual_order,
             pending_agent_reparent: None,
@@ -850,6 +901,7 @@ impl App {
             last_sidebar_divider_click: None,
             last_pane_click: None,
             last_agent_row_click: None,
+            last_pane_section_row_click: None,
             pending_url_click_sources: HashSet::new(),
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
             next_auto_update_check: version_check_enabled
@@ -5053,11 +5105,15 @@ mod tests {
             app.state.selected,
             app.state.sidebar_width,
             app.state.sidebar_section_split,
+            app.state.sidebar_pane_section_split,
             app.state.collapsed_space_keys.clone(),
             app.state.collapsed_agent_keys.clone(),
             app.state
                 .agent_manual_order
                 .to_public_keys(&app.state.workspaces),
+            app.state.collapsed_line_split_keys.clone(),
+            app.state.pane_section_order.to_keys(),
+            app.state.sidebar_section_collapse(),
         );
         let json = serde_json::to_string(&snap).unwrap();
         let parsed: crate::persist::SessionSnapshot = serde_json::from_str(&json).unwrap();
@@ -6947,9 +7003,13 @@ last_pane = "prefix+tab"
             selected: 0,
             sidebar_width: None,
             sidebar_section_split: None,
+            sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
             collapsed_agent_keys: Default::default(),
             agent_manual_order: None,
+            collapsed_line_split_keys: Default::default(),
+            pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         };
         let mut imports = std::collections::HashMap::new();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

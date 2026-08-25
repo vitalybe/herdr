@@ -101,9 +101,10 @@ impl App {
                 Mode::ReleaseNotes => self.handle_release_notes_key(key_event),
                 Mode::ProductAnnouncement => self.handle_product_announcement_key(key_event),
                 Mode::Prefix | Mode::Navigate | Mode::Copy => unreachable!(),
-                Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
-                    self.handle_rename_key_via_api(key_event)
-                }
+                Mode::RenameWorkspace
+                | Mode::RenameTab
+                | Mode::RenamePane
+                | Mode::RenameLineSplit => self.handle_rename_key_via_api(key_event),
                 Mode::NewLinkedWorktree => self.handle_worktree_create_key(key_event),
                 Mode::OpenExistingWorktree => self.handle_worktree_open_key(key_event),
                 Mode::ConfirmRemoveWorktree => self.handle_worktree_remove_key(key_event),
@@ -210,7 +211,7 @@ impl App {
 
     pub(crate) fn paste_into_active_text_input(&mut self, text: &str) -> bool {
         match self.state.mode {
-            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
+            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::RenameLineSplit => {
                 insert_rename_input_text(&mut self.state, text);
                 true
             }
@@ -437,14 +438,12 @@ impl App {
                         source_tab_idx,
                         insert_idx,
                     } => self.move_tab_via_api(ws_idx, source_tab_idx, insert_idx),
-                    MouseAction::MoveAgent {
-                        source_pane_id,
-                        insert_idx,
-                    } => {
-                        // Manual agent order is client-only presentation state, so
-                        // mutate it directly instead of routing through the runtime
-                        // API path used by workspace/tab moves.
-                        self.state.move_agent(source_pane_id, insert_idx);
+                    MouseAction::MoveAgentEntry { source, insert_idx } => {
+                        // Manual agent order (agents + line-splits) is client-only
+                        // presentation state, so mutate it directly instead of
+                        // routing through the runtime API path used by
+                        // workspace/tab moves.
+                        self.state.move_agent_entry(source, insert_idx);
                     }
                     MouseAction::SetSplitRatio { path, ratio } => {
                         self.set_split_ratio_via_api(path, ratio)
@@ -736,9 +735,11 @@ pub(crate) fn is_modal_paste_shortcut(key: &KeyEvent) -> bool {
 
 pub(crate) fn modal_paste_target_active(state: &AppState) -> bool {
     match state.mode {
-        Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::NewLinkedWorktree => {
-            true
-        }
+        Mode::RenameWorkspace
+        | Mode::RenameTab
+        | Mode::RenamePane
+        | Mode::RenameLineSplit
+        | Mode::NewLinkedWorktree => true,
         Mode::OpenExistingWorktree => state
             .worktree_open
             .as_ref()

@@ -260,10 +260,25 @@ fn restore_agent_manual_order(
     let Some(order) = snap.agent_manual_order.as_ref() else {
         return state::AgentManualOrder::default();
     };
-    let keys: Vec<(String, usize)> = order
+    let keys: Vec<state::ManualOrderEntryKey> = order
         .entries
         .iter()
-        .map(|entry| (entry.workspace_id.clone(), entry.pane_number))
+        .map(|entry| match entry {
+            crate::persist::AgentManualEntrySnapshot::Pane {
+                workspace_id,
+                pane_number,
+            } => state::ManualOrderEntryKey::Pane {
+                workspace_id: workspace_id.clone(),
+                pane_number: *pane_number,
+            },
+            crate::persist::AgentManualEntrySnapshot::LineSplit {
+                line_split_id,
+                name,
+            } => state::ManualOrderEntryKey::LineSplit {
+                id: *line_split_id,
+                name: name.clone(),
+            },
+        })
         .collect();
     state::AgentManualOrder::from_public_keys(&keys, workspaces)
 }
@@ -605,6 +620,7 @@ impl App {
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
             rename_pane_target: None,
+            rename_line_split_target: None,
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
@@ -1958,7 +1974,7 @@ impl App {
             Mode::Copy => {
                 self.handle_copy_mode_key(key);
             }
-            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
+            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::RenameLineSplit => {
                 self.handle_rename_key_via_api(key_event);
             }
             Mode::NewLinkedWorktree => {
@@ -2275,6 +2291,7 @@ mod tests {
             Mode::RenameWorkspace,
             Mode::RenameTab,
             Mode::RenamePane,
+            Mode::RenameLineSplit,
             Mode::NewLinkedWorktree,
             Mode::OpenExistingWorktree,
             Mode::Settings,

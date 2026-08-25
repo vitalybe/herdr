@@ -84,8 +84,9 @@ pub(crate) fn apply_agent_view(app: &AppState, entries: &mut Vec<AgentPanelEntry
                 .order
                 .iter()
                 .enumerate()
-                .map(|(idx, entry)| match entry {
-                    crate::app::state::ManualEntry::Pane(pane_id) => (*pane_id, idx),
+                .filter_map(|(idx, entry)| match entry {
+                    crate::app::state::ManualEntry::Pane(pane_id) => Some((*pane_id, idx)),
+                    crate::app::state::ManualEntry::LineSplit { .. } => None,
                 })
                 .collect();
             entries

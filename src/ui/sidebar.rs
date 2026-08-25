@@ -12,7 +12,7 @@ use self::tokens::{ResolvedToken, ResolvedTokenKind, SpaceTokenContext};
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
 use super::status::{state_icon, state_label, state_label_color};
 use super::text::{display_width, display_width_u16, truncate_end};
-use crate::app::state::{AgentPanelSort, Palette};
+use crate::app::state::{AgentPanelSort, LineSplitId, ManualEntry, Palette};
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
@@ -44,14 +44,17 @@ pub(crate) struct AgentPanelEntry {
 /// entries. Client-only presentation state.
 pub(crate) enum AgentPanelRow {
     Agent(AgentPanelEntry),
+    LineSplit { id: LineSplitId, name: String },
 }
 
 impl AgentPanelRow {
     /// Content-row height of this row, excluding its trailing gap. Agent rows
-    /// use the configured token row count from `sidebar_agents`.
+    /// use the configured token row count from `sidebar_agents`; a line-split is
+    /// a single rule.
     fn height_in_body(&self, app: &AppState, body_height: u16) -> u16 {
         match self {
             AgentPanelRow::Agent(entry) => agent_entry_height_in_body(app, entry, body_height),
+            AgentPanelRow::LineSplit { .. } => 1u16.min(body_height),
         }
     }
 }
@@ -605,14 +608,60 @@ pub(crate) fn agent_panel_rows_from(
     agent_panel_rows_with_runtimes(app, Some(terminal_runtimes))
 }
 
+/// In Spaces/Priority the rows are the sorted agent entries. In Manual, agents
+/// and line-splits are interleaved by walking `agent_manual_order.order`; agents
+/// not yet placed in the order fall back to the end. Pure.
 fn agent_panel_rows_with_runtimes(
     app: &AppState,
     terminal_runtimes: Option<&TerminalRuntimeRegistry>,
 ) -> Vec<AgentPanelRow> {
-    agent_panel_entries_with_runtimes(app, terminal_runtimes)
+    let entries = agent_panel_entries_with_runtimes(app, terminal_runtimes);
+    if !matches!(app.agent_panel_sort, AgentPanelSort::Manual) {
+        return entries.into_iter().map(AgentPanelRow::Agent).collect();
+    }
+
+    // Index agents by pane so the flat order can pull them in position.
+    let mut by_pane: std::collections::HashMap<crate::layout::PaneId, AgentPanelEntry> = entries
         .into_iter()
-        .map(AgentPanelRow::Agent)
-        .collect()
+        .map(|entry| (entry.pane_id, entry))
+        .collect();
+
+    let mut rows = Vec::new();
+    for entry in &app.agent_manual_order.order {
+        match entry {
+            ManualEntry::Pane(pane_id) => {
+                if let Some(agent) = by_pane.remove(pane_id) {
+                    rows.push(AgentPanelRow::Agent(agent));
+                }
+            }
+            ManualEntry::LineSplit { id, name } => {
+                rows.push(AgentPanelRow::LineSplit {
+                    id: *id,
+                    name: name.clone(),
+                });
+            }
+        }
+    }
+    // Any agents not present in the manual order (not yet reconciled) land last,
+    // in natural order.
+    for entry in agent_panel_entries_with_runtimes(app, terminal_runtimes) {
+        if let Some(agent) = by_pane.remove(&entry.pane_id) {
+            rows.push(AgentPanelRow::Agent(agent));
+        }
+    }
+
+    rows
+}
+
+/// Row index (in the full [`agent_panel_rows`] list) of the agent row for
+/// `pane_id`, if present.
+pub(crate) fn agent_panel_row_index_of_pane(
+    app: &AppState,
+    pane_id: crate::layout::PaneId,
+) -> Option<usize> {
+    agent_panel_rows(app)
+        .iter()
+        .position(|row| matches!(row, AgentPanelRow::Agent(entry) if entry.pane_id == pane_id))
 }
 
 /// Trailing gap after the row at `row_idx`, mirroring [`agent_entry_gap`].
@@ -1522,6 +1571,69 @@ fn agent_panel_drop_indicator_row(
     None
 }
 
+const AGENT_PANEL_SPLIT_LABEL: &str = "+ split";
+
+/// Mouse-first "+ split" affordance rect, placed just left of the sort toggle in
+/// the agents header. Only meaningful in manual mode; returns the empty rect
+/// otherwise or when there is no room.
+pub(crate) fn agent_panel_split_button_rect(area: Rect, sort: AgentPanelSort) -> Rect {
+    if !matches!(sort, AgentPanelSort::Manual) || area.width == 0 || area.height < 2 {
+        return Rect::default();
+    }
+    let toggle = agent_panel_toggle_rect(area, sort);
+    if toggle == Rect::default() {
+        return Rect::default();
+    }
+    let width = display_width_u16(AGENT_PANEL_SPLIT_LABEL);
+    // One-column gap between the affordance and the toggle.
+    let right = toggle.x.saturating_sub(1);
+    if right <= area.x || width == 0 {
+        return Rect::default();
+    }
+    let x = right.saturating_sub(width);
+    if x < area.x {
+        return Rect::default();
+    }
+    Rect::new(x, area.y + 1, width, 1)
+}
+
+/// Draw a named line-split divider as a full-width rule with the name embedded,
+/// e.g. `── scheduled ─────`. An empty name renders as a plain rule.
+fn render_line_split_row(frame: &mut Frame, rect: Rect, name: &str, p: &Palette) {
+    let width = rect.width as usize;
+    if width == 0 {
+        return;
+    }
+    let dash_style = Style::default().fg(p.surface_dim);
+    // The split name uses the same color the agent rows give the workspace
+    // token, so the label stays legible while the rule stays subtly dim.
+    let name_style = Style::default().fg(p.subtext0);
+    let trimmed = name.trim();
+    let line = if trimmed.is_empty() {
+        Line::from(Span::styled("─".repeat(width), dash_style))
+    } else {
+        let prefix = "── ";
+        let label = format!("{trimmed} ");
+        let used = display_width(prefix) + display_width(&label);
+        if used >= width {
+            Line::from(Span::styled(
+                truncate_end(&format!("{prefix}{label}"), width),
+                name_style,
+            ))
+        } else {
+            Line::from(vec![
+                Span::styled(prefix.to_string(), dash_style),
+                Span::styled(label, name_style),
+                Span::styled("─".repeat(width - used), dash_style),
+            ])
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(line),
+        Rect::new(rect.x, rect.y, rect.width, 1),
+    );
+}
+
 /// Draw one agent row's configured token lines inside `rect`.
 fn render_agent_row(app: &AppState, frame: &mut Frame, rect: Rect, detail: &AgentPanelEntry) {
     let p = &app.palette;
@@ -1611,6 +1723,19 @@ fn render_agent_detail(
         );
     }
 
+    if app.mouse_capture {
+        let split_rect = agent_panel_split_button_rect(area, app.agent_panel_sort);
+        if split_rect != Rect::default() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    AGENT_PANEL_SPLIT_LABEL,
+                    Style::default().fg(p.overlay0),
+                )),
+                split_rect,
+            );
+        }
+    }
+
     let panel_rows = agent_panel_rows_from(app, terminal_runtimes);
     let metrics = agent_panel_scroll_metrics(app, area);
     let scrollbar_rect = agent_panel_scrollbar_rect(app, area);
@@ -1633,6 +1758,9 @@ fn render_agent_detail(
         match &panel_rows[area_row.row_idx] {
             AgentPanelRow::Agent(detail) => {
                 render_agent_row(app, frame, area_row.rect, detail);
+            }
+            AgentPanelRow::LineSplit { name, .. } => {
+                render_line_split_row(frame, area_row.rect, name, p);
             }
         }
     }

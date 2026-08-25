@@ -6,8 +6,8 @@ use tracing::warn;
 use crate::{
     app::state::{
         AgentPanelSort, AgentPressState, AppState, ContextMenuKind, ContextMenuState, DragState,
-        DragTarget, MenuListState, Mode, RightClickPassthroughGesture, TabPressState, ViewLayout,
-        WorkspacePressState,
+        DragTarget, ManualEntryRef, MenuListState, Mode, RightClickPassthroughGesture,
+        TabPressState, ViewLayout, WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
     selection::Selection,
@@ -51,8 +51,8 @@ pub(super) enum MouseAction {
         source_tab_idx: usize,
         insert_idx: usize,
     },
-    MoveAgent {
-        source_pane_id: crate::layout::PaneId,
+    MoveAgentEntry {
+        source: ManualEntryRef,
         insert_idx: usize,
     },
     SetSplitRatio {
@@ -396,7 +396,10 @@ impl AppState {
 
                 if matches!(
                     self.mode,
-                    Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane
+                    Mode::RenameWorkspace
+                        | Mode::RenameTab
+                        | Mode::RenamePane
+                        | Mode::RenameLineSplit
                 ) {
                     let action = self
                         .rename_modal_inner()
@@ -616,6 +619,18 @@ impl AppState {
                         return None;
                     }
 
+                    if self.mouse_capture
+                        && matches!(self.agent_panel_sort, AgentPanelSort::Manual)
+                        && self.on_agent_panel_split_button(mouse.column, mouse.row)
+                    {
+                        // Insert a new empty line-split at the top of the order and
+                        // immediately open rename so the user can name it.
+                        let id = self.agent_manual_order.new_line_split(String::new(), 0);
+                        self.mark_session_dirty();
+                        super::modal::open_rename_line_split(self, id);
+                        return None;
+                    }
+
                     if let Some(target) =
                         self.agent_panel_scrollbar_target_at(mouse.column, mouse.row)
                     {
@@ -632,23 +647,24 @@ impl AppState {
                         return None;
                     }
 
-                    if let Some((ws_idx, _tab_idx, pane_id)) =
-                        self.agent_detail_target_at(mouse.row)
-                    {
-                        if matches!(self.agent_panel_sort, AgentPanelSort::Manual) {
-                            // Manual mode: record a press so a drag can promote to
-                            // a reorder. A plain click (Up without drag) still
-                            // focuses the pane below.
+                    if matches!(self.agent_panel_sort, AgentPanelSort::Manual) {
+                        if let Some(entry) = self.agent_panel_entry_ref_at_row(mouse.row) {
+                            // Manual mode: record a press so a drag can promote to a
+                            // reorder. On release without a drag, an agent row
+                            // focuses its pane while a line-split row is a no-op.
                             self.agent_presses.insert(
                                 source_id,
                                 AgentPressState {
-                                    pane_id,
+                                    entry,
                                     start_col: mouse.column,
                                     start_row: mouse.row,
                                 },
                             );
                             return None;
                         }
+                    } else if let Some((ws_idx, _tab_idx, pane_id)) =
+                        self.agent_detail_target_at(mouse.row)
+                    {
                         self.mode = Mode::Terminal;
                         return Some(MouseAction::FocusPane { ws_idx, pane_id });
                     }
@@ -717,7 +733,7 @@ impl AppState {
                             self.drag = Some(DragState {
                                 target: DragTarget::AgentReorder {
                                     source_id,
-                                    source_pane_id: press.pane_id,
+                                    source: press.entry,
                                     insert_idx: agent_drop_index,
                                 },
                             });
@@ -973,15 +989,12 @@ impl AppState {
                     Some(DragState {
                         target:
                             DragTarget::AgentReorder {
-                                source_pane_id,
+                                source,
                                 insert_idx: Some(insert_idx),
                                 ..
                             },
                     }) => {
-                        return Some(MouseAction::MoveAgent {
-                            source_pane_id,
-                            insert_idx,
-                        });
+                        return Some(MouseAction::MoveAgentEntry { source, insert_idx });
                     }
                     Some(_) => {}
                     None => {
@@ -1142,6 +1155,14 @@ impl AppState {
                         .unwrap_or(ContextMenuKind::Workspace { ws_idx: idx });
                     self.context_menu = Some(ContextMenuState {
                         kind,
+                        x: mouse.column,
+                        y: mouse.row,
+                        list: MenuListState::new(0),
+                    });
+                    self.mode = Mode::ContextMenu;
+                } else if let Some(id) = self.agent_panel_line_split_at_row(mouse.row) {
+                    self.context_menu = Some(ContextMenuState {
+                        kind: ContextMenuKind::LineSplit { id },
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
@@ -1564,17 +1585,17 @@ impl AppState {
             }
         }
         if let Some(press) = agent_press {
-            // A plain click on an agent row in manual mode focuses its pane.
-            if let Some(ws_idx) = self
-                .workspaces
-                .iter()
-                .position(|ws| ws.pane_state(press.pane_id).is_some())
-            {
-                self.mode = Mode::Terminal;
-                return Some(MouseAction::FocusPane {
-                    ws_idx,
-                    pane_id: press.pane_id,
-                });
+            // A plain click focuses an agent pane; a line-split row click is a
+            // no-op.
+            if let ManualEntryRef::Pane(pane_id) = press.entry {
+                if let Some(ws_idx) = self
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.pane_state(pane_id).is_some())
+                {
+                    self.mode = Mode::Terminal;
+                    return Some(MouseAction::FocusPane { ws_idx, pane_id });
+                }
             }
         }
         None

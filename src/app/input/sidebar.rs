@@ -1,6 +1,6 @@
 use ratatui::layout::Rect;
 
-use crate::app::state::{AgentPanelSort, AppState, ViewLayout};
+use crate::app::state::{AgentPanelSort, AppState, LineSplitId, ManualEntryRef, ViewLayout};
 
 use super::ScrollbarClickTarget;
 
@@ -556,14 +556,66 @@ impl AppState {
         let (_, rows, areas) = self.agent_panel_row_areas_at()?;
         for area in &areas {
             if row >= area.rect.y && row < area.rect.y + area.rect.height {
+                // Left-click on a line-split row is a no-op (no pane focus).
                 return match &rows[area.row_idx] {
                     crate::ui::AgentPanelRow::Agent(detail) => {
                         Some((detail.ws_idx, detail.tab_idx, detail.pane_id))
                     }
+                    crate::ui::AgentPanelRow::LineSplit { .. } => None,
                 };
             }
         }
         None
+    }
+
+    /// Manual-order entry (agent or line-split) under the given row, for drag
+    /// pickup. Returns `None` outside manual mode or outside any row.
+    pub(super) fn agent_panel_entry_ref_at_row(&self, row: u16) -> Option<ManualEntryRef> {
+        if !matches!(self.agent_panel_sort, AgentPanelSort::Manual) {
+            return None;
+        }
+        let (_, rows, areas) = self.agent_panel_row_areas_at()?;
+        for area in &areas {
+            if row >= area.rect.y && row < area.rect.y + area.rect.height {
+                return Some(match &rows[area.row_idx] {
+                    crate::ui::AgentPanelRow::Agent(detail) => ManualEntryRef::Pane(detail.pane_id),
+                    crate::ui::AgentPanelRow::LineSplit { id, .. } => {
+                        ManualEntryRef::LineSplit(*id)
+                    }
+                });
+            }
+        }
+        None
+    }
+
+    /// Line-split id under the given row, if any (for the right-click menu).
+    pub(super) fn agent_panel_line_split_at_row(&self, row: u16) -> Option<LineSplitId> {
+        if !matches!(self.agent_panel_sort, AgentPanelSort::Manual) {
+            return None;
+        }
+        let (_, rows, areas) = self.agent_panel_row_areas_at()?;
+        for area in &areas {
+            if row >= area.rect.y && row < area.rect.y + area.rect.height {
+                return match &rows[area.row_idx] {
+                    crate::ui::AgentPanelRow::LineSplit { id, .. } => Some(*id),
+                    crate::ui::AgentPanelRow::Agent(_) => None,
+                };
+            }
+        }
+        None
+    }
+
+    pub(super) fn on_agent_panel_split_button(&self, col: u16, row: u16) -> bool {
+        if self.sidebar_collapsed {
+            return false;
+        }
+        let detail_area = self.agent_panel_rect();
+        let rect = crate::ui::agent_panel_split_button_rect(detail_area, self.agent_panel_sort);
+        rect.width > 0
+            && col >= rect.x
+            && col < rect.x + rect.width
+            && row >= rect.y
+            && row < rect.y + rect.height
     }
 }
 
@@ -899,7 +951,9 @@ mod tests {
 
         let mut covered = std::collections::HashSet::new();
         for area in &areas {
-            let crate::ui::AgentPanelRow::Agent(entry) = &rows[area.row_idx];
+            let crate::ui::AgentPanelRow::Agent(entry) = &rows[area.row_idx] else {
+                panic!("expected an agent row");
+            };
             for row in area.rect.y..area.rect.y + area.rect.height {
                 covered.insert(row);
                 assert_eq!(
@@ -2121,6 +2175,43 @@ mod tests {
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
 
         assert_eq!(manual_panel_pane_ids(&app), vec![last_pane, source_pane]);
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn clicking_split_button_inserts_a_line_split_and_opens_rename() {
+        let mut app = app_with_two_manual_agents();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let detail_area = app.state.agent_panel_rect();
+        let rect =
+            crate::ui::agent_panel_split_button_rect(detail_area, app.state.agent_panel_sort);
+        assert_ne!(rect, Rect::default());
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            rect.x,
+            rect.y,
+        ));
+
+        assert_eq!(app.state.mode, Mode::RenameLineSplit);
+        assert!(app.state.rename_line_split_target.is_some());
+        assert_eq!(app.state.agent_manual_order.order.len(), 3);
+
+        // Name it, then confirm the row is hit-tested as a line-split, not an agent.
+        app.state.name_input = "scheduled".into();
+        app.state.name_input_replace_on_type = false;
+        app.handle_rename_key_via_api(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::empty(),
+        ));
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let body = crate::ui::agent_panel_body_rect(app.state.agent_panel_rect(), false);
+        let split_row = (body.y..body.y + body.height)
+            .find(|&r| app.state.agent_panel_line_split_at_row(r).is_some())
+            .expect("line-split row is visible");
+        assert_eq!(app.state.agent_detail_target_at(split_row), None);
         app.state.assert_invariants_for_test();
     }
 

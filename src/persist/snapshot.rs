@@ -39,10 +39,20 @@ pub struct AgentManualOrderSnapshot {
     pub entries: Vec<AgentManualEntrySnapshot>,
 }
 
+/// A single persisted manual-order entry. Panes keep the stable
+/// (workspace id + public pane number) keying; line-splits carry their id and
+/// name. Untagged so pane entries stay plain objects on disk.
 #[derive(Serialize, Deserialize, Clone)]
-pub struct AgentManualEntrySnapshot {
-    pub workspace_id: String,
-    pub pane_number: usize,
+#[serde(untagged)]
+pub enum AgentManualEntrySnapshot {
+    Pane {
+        workspace_id: String,
+        pane_number: usize,
+    },
+    LineSplit {
+        line_split_id: u64,
+        name: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -292,15 +302,26 @@ pub fn capture(
     sidebar_width: u16,
     sidebar_section_split: f32,
     collapsed_space_keys: std::collections::HashSet<String>,
-    agent_manual_order_keys: Vec<(String, usize)>,
+    agent_manual_order_keys: Vec<crate::app::state::ManualOrderEntryKey>,
 ) -> SessionSnapshot {
     let agent_manual_order =
         (!agent_manual_order_keys.is_empty()).then(|| AgentManualOrderSnapshot {
             entries: agent_manual_order_keys
                 .into_iter()
-                .map(|(workspace_id, pane_number)| AgentManualEntrySnapshot {
-                    workspace_id,
-                    pane_number,
+                .map(|key| match key {
+                    crate::app::state::ManualOrderEntryKey::Pane {
+                        workspace_id,
+                        pane_number,
+                    } => AgentManualEntrySnapshot::Pane {
+                        workspace_id,
+                        pane_number,
+                    },
+                    crate::app::state::ManualOrderEntryKey::LineSplit { id, name } => {
+                        AgentManualEntrySnapshot::LineSplit {
+                            line_split_id: id,
+                            name,
+                        }
+                    }
                 })
                 .collect(),
         });

@@ -311,6 +311,30 @@ fn dedupe_same_name_tab_panes(app: &AppState, rows: Vec<PaneSectionRow>) -> Vec<
         .collect()
 }
 
+/// All non-agent panes across every workspace, ordered by the client-only Panes
+/// section ordering. Line-splits are excluded, so this is the pane-only view used
+/// for focus/enumeration (keyboard navigation and scroll targeting skip splits).
+pub(crate) fn sidebar_pane_section_entries(app: &AppState) -> Vec<PaneSectionEntry> {
+    sidebar_pane_section_rows(app)
+        .into_iter()
+        .filter_map(|row| match row {
+            PaneSectionRow::Pane(entry) => Some(entry),
+            PaneSectionRow::LineSplit { .. } => None,
+        })
+        .collect()
+}
+
+/// Row index (in the full [`sidebar_pane_section_rows`] list) of the pane row for
+/// `pane_id`, if present.
+pub(crate) fn pane_section_row_index_of_pane(
+    app: &AppState,
+    pane_id: crate::layout::PaneId,
+) -> Option<usize> {
+    sidebar_pane_section_rows(app)
+        .iter()
+        .position(|row| matches!(row, PaneSectionRow::Pane(entry) if entry.pane_id == pane_id))
+}
+
 /// Visible-row layout for the Panes section, walking rows from `scroll` and
 /// laying out variable-height rows (with a one-row gap) inside `body`. The single
 /// source of Panes-section row geometry: both the renderer and mouse hit-testing

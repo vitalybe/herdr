@@ -465,6 +465,12 @@ impl App {
             tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),
             scroll,
+            parent: pane.parent.as_ref().map(|parent| {
+                crate::workspace::public_pane_id_for_number(
+                    &parent.workspace_id,
+                    parent.pane_number,
+                )
+            }),
             revision: terminal.revision,
         })
     }

@@ -109,6 +109,10 @@ pub struct PaneSnapshot {
     pub agent_session: Option<PaneAgentSessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    /// Stable reference to this pane's parent agent (workspace id + public pane
+    /// number). Present only for child agents started with `--parent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<crate::pane::PaneParentRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +256,10 @@ fn first_pane_id_in_layout(layout: &LayoutSnapshot) -> Option<u32> {
 }
 
 /// Capture the current app state into a serializable snapshot.
+// Snapshot capture legitimately aggregates the many independent persisted
+// facets (geometry, collapse state, orderings) into one owned snapshot; a
+// parameter object would just move the same fields elsewhere.
+#[allow(clippy::too_many_arguments)]
 pub fn capture(
     workspaces: &[Workspace],
     terminals: &std::collections::HashMap<
@@ -387,6 +395,7 @@ fn capture_tab(
                     value: session.session_ref.value.clone(),
                 })
         });
+        let parent = tab.panes.get(id).and_then(|pane| pane.parent.clone());
         panes.insert(
             id.raw(),
             PaneSnapshot {
@@ -396,6 +405,7 @@ fn capture_tab(
                 managed_agent_kind,
                 agent_session,
                 launch_argv,
+                parent,
             },
         );
     }
@@ -552,6 +562,65 @@ mod tests {
         state
     }
 
+    #[test]
+    fn pane_parent_link_survives_capture_and_parse() {
+        let mut state = AppState::test_new();
+        let mut ws = Workspace::test_new("one");
+        ws.active_tab = 0;
+        let parent = ws.tabs[0].root_pane;
+        let child = ws.test_split(ratatui::layout::Direction::Horizontal);
+        let parent_number = ws.public_pane_number(parent).unwrap();
+        let child_number = ws.public_pane_number(child).unwrap();
+        let workspace_id = ws.id.clone();
+        ws.pane_state_mut(child).unwrap().parent = Some(crate::pane::PaneParentRef {
+            workspace_id: workspace_id.clone(),
+            pane_number: parent_number,
+        });
+        state.workspaces = vec![ws];
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.selected = 0;
+
+        let child_raw = child.raw();
+        let snap = capture_from_state(&state);
+        let json = serde_json::to_string(&snap).unwrap();
+        let parsed = parse_snapshot(&json).unwrap();
+
+        let restored_pane = parsed.workspaces[0].tabs[0]
+            .panes
+            .get(&child_raw)
+            .expect("child pane persisted");
+        let parent_ref = restored_pane
+            .parent
+            .as_ref()
+            .expect("parent link persisted");
+        assert_eq!(parent_ref.workspace_id, workspace_id);
+        assert_eq!(parent_ref.pane_number, parent_number);
+
+        // The reference is by stable public number, so it survives the PaneId
+        // remap: a fresh state whose panes carry different PaneIds but the same
+        // workspace id + public numbers still resolves the parent.
+        let mut remapped = AppState::test_new();
+        let mut ws2 = Workspace::test_new("one");
+        ws2.id = workspace_id.clone();
+        ws2.active_tab = 0;
+        let new_parent = ws2.tabs[0].root_pane;
+        let new_child = ws2.test_split(ratatui::layout::Direction::Horizontal);
+        // Force the same public numbers the snapshot referenced.
+        ws2.public_pane_numbers.clear();
+        ws2.public_pane_numbers.insert(new_parent, parent_number);
+        ws2.public_pane_numbers.insert(new_child, child_number);
+        ws2.pane_state_mut(new_child).unwrap().parent = Some(parent_ref.clone());
+        remapped.workspaces = vec![ws2];
+        remapped.ensure_test_terminals();
+        assert_ne!(new_parent, parent, "remap uses a fresh PaneId");
+        let (ws_idx, resolved) = remapped
+            .resolve_pane_parent(parent_ref)
+            .expect("stable ref resolves after remap");
+        assert_eq!(ws_idx, 0);
+        assert_eq!(resolved, new_parent);
+    }
+
     fn capture_from_state(state: &AppState) -> SessionSnapshot {
         let terminal_runtimes = TerminalRuntimeRegistry::new();
         capture_from_state_with_runtimes(state, &terminal_runtimes)
@@ -677,6 +746,7 @@ mod tests {
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
+                parent: None,
             },
         );
         panes.insert(
@@ -688,6 +758,7 @@ mod tests {
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
+                parent: None,
             },
         );
 
@@ -1237,6 +1308,7 @@ mod tests {
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
+                parent: None,
             },
         );
         panes.insert(
@@ -1250,6 +1322,7 @@ mod tests {
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
+                parent: None,
             },
         );
 

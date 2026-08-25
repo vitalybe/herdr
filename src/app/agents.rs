@@ -392,6 +392,7 @@ impl App {
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,
+            parent: pane.parent,
             revision: pane.revision,
         })
     }

@@ -219,6 +219,10 @@ pub struct AgentInfo {
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
+    /// Public pane id (e.g. `"w1:p2"`) of this agent's parent, when it was
+    /// started as a child with `--parent`. Absent for root agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     pub revision: u64,
 }
 

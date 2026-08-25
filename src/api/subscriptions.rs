@@ -623,6 +623,7 @@ mod tests {
             label: None,
             agent: None,
             title: None,
+            parent: None,
             terminal_title: None,
             terminal_title_stripped: None,
             display_agent: None,

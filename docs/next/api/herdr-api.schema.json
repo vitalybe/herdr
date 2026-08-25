@@ -808,6 +808,13 @@
             "pane_id": {
               "type": "string"
             },
+            "parent": {
+              "description": "Public pane id (e.g. `\"w1:p2\"`) of this pane's parent agent, when it was\nstarted as a child with `--parent`. Absent for root agents.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "revision": {
               "format": "uint64",
               "minimum": 0,
@@ -6167,6 +6174,13 @@
             "pane_id": {
               "type": "string"
             },
+            "parent": {
+              "description": "Public pane id (e.g. `\"w1:p2\"`) of this agent's parent, when it was\nstarted as a child with `--parent`. Absent for root agents.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "revision": {
               "format": "uint64",
               "minimum": 0,
@@ -7441,6 +7455,13 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "parent": {
+              "description": "Public pane id (e.g. `\"w1:p2\"`) of this pane's parent agent, when it was\nstarted as a child with `--parent`. Absent for root agents.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "revision": {
               "format": "uint64",

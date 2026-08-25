@@ -948,6 +948,7 @@ mod tests {
             foreground_cwd: None,
             label: None,
             agent: Some("pi".into()),
+            parent: None,
             title: None,
             terminal_title: None,
             terminal_title_stripped: None,

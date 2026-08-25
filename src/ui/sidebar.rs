@@ -606,12 +606,12 @@ fn apply_pane_line_split_collapse(
     let mut i = 0;
     while i < n {
         if let PaneSectionRow::LineSplit { id, .. } = &rows[i] {
-            let collapsed = app
-                .collapsed_line_split_keys
-                .contains(&crate::app::state::line_split_collapse_key(
+            let collapsed = app.collapsed_line_split_keys.contains(
+                &crate::app::state::line_split_collapse_key(
                     crate::app::state::LineSplitSection::Panes,
                     *id,
-                ));
+                ),
+            );
             let mut count = 0;
             let mut j = i + 1;
             while j < n && matches!(rows[j], PaneSectionRow::Pane(_)) {
@@ -1419,12 +1419,12 @@ fn apply_agent_line_split_collapse(app: &AppState, rows: Vec<AgentPanelRow>) -> 
     let mut i = 0;
     while i < n {
         if let AgentPanelRow::LineSplit { id, .. } = &rows[i] {
-            let collapsed = app
-                .collapsed_line_split_keys
-                .contains(&crate::app::state::line_split_collapse_key(
+            let collapsed = app.collapsed_line_split_keys.contains(
+                &crate::app::state::line_split_collapse_key(
                     crate::app::state::LineSplitSection::Agents,
                     *id,
-                ));
+                ),
+            );
             let mut count = 0;
             let mut j = i + 1;
             while j < n && matches!(rows[j], AgentPanelRow::Agent(_)) {
@@ -1726,9 +1726,19 @@ pub(crate) fn agent_panel_row_index_of_pane(
         .position(|row| matches!(row, AgentPanelRow::Agent(entry) if entry.pane_id == pane_id))
 }
 
-/// Trailing gap after the row at `row_idx`, mirroring [`agent_entry_gap`].
-fn agent_panel_row_gap(app: &AppState, row_idx: usize, row_count: usize) -> u16 {
-    agent_entry_gap(app, row_idx, row_count)
+/// Trailing gap after the row at `row_idx`, mirroring [`agent_entry_gap`]. A
+/// line-split divider also gets at least one blank row on each side, so it reads
+/// as a break between groups instead of another packed row.
+fn agent_panel_row_gap(app: &AppState, rows: &[AgentPanelRow], row_idx: usize) -> u16 {
+    let gap = agent_entry_gap(app, row_idx, rows.len());
+    let touches_divider = [row_idx, row_idx + 1]
+        .iter()
+        .any(|idx| matches!(rows.get(*idx), Some(AgentPanelRow::LineSplit { .. })));
+    if touches_divider && row_idx + 1 < rows.len() {
+        gap.max(1)
+    } else {
+        gap
+    }
 }
 
 /// Visible-row layout for the agent panel: walks the ordered rows from `scroll`,
@@ -1757,7 +1767,7 @@ pub(crate) fn compute_agent_panel_row_areas(
         });
         row_y = row_y
             .saturating_add(height)
-            .saturating_add(agent_panel_row_gap(app, row_idx, rows.len()))
+            .saturating_add(agent_panel_row_gap(app, rows, row_idx))
             .min(body_bottom);
     }
     areas
@@ -1774,7 +1784,7 @@ fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let mut used_rows = 0u16;
     let mut start = rows.len();
     for (row_idx, row) in rows.iter().enumerate().rev() {
-        let gap = agent_panel_row_gap(app, row_idx, rows.len());
+        let gap = agent_panel_row_gap(app, &rows, row_idx);
         let needed = row.height_in_body(app, body.height).saturating_add(gap);
         if used_rows.saturating_add(needed) > body.height {
             break;
@@ -3483,6 +3493,83 @@ mod tests {
 
         app.toggle_line_split_collapse(crate::app::state::LineSplitSection::Panes, split);
         assert_eq!(sidebar_pane_section_rows(&app).len(), 3);
+    }
+
+    #[test]
+    fn agents_line_split_keeps_a_blank_row_on_each_side() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.active = Some(0);
+        app.mode = Mode::Terminal;
+        app.ensure_test_terminals();
+        for workspace in &app.workspaces {
+            let pane_id = workspace.tabs[0].root_pane;
+            let terminal_id = workspace.tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        }
+        app.agent_panel_sort = AgentPanelSort::Manual;
+        app.reconcile_agent_manual_order();
+        // Divider between the two agents, so it has a row above and below.
+        app.agent_manual_order
+            .new_line_split("group".to_string(), 1);
+        assert_eq!(app.sidebar_agents.row_gap, 0, "packed rows by default");
+
+        let rows = agent_panel_rows(&app);
+        let body = Rect::new(0, 0, 26, 40);
+        let areas = compute_agent_panel_row_areas(&app, &rows, body, 0);
+        assert_eq!(areas.len(), 3);
+        let gap_above = areas[1].rect.y - (areas[0].rect.y + areas[0].rect.height);
+        let gap_below = areas[2].rect.y - (areas[1].rect.y + areas[1].rect.height);
+        assert_eq!((gap_above, gap_below), (1, 1));
+    }
+
+    #[test]
+    fn collapsing_an_agents_line_split_hides_its_segment() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.active = Some(0);
+        app.mode = Mode::Terminal;
+        app.ensure_test_terminals();
+        for workspace in &app.workspaces {
+            let pane_id = workspace.tabs[0].root_pane;
+            let terminal_id = workspace.tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        }
+        app.agent_panel_sort = AgentPanelSort::Manual;
+        app.reconcile_agent_manual_order();
+        let split = app
+            .agent_manual_order
+            .new_line_split("group".to_string(), 0);
+
+        let rows = agent_panel_rows(&app);
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(
+            &rows[0],
+            AgentPanelRow::LineSplit {
+                count: 2,
+                collapsed: false,
+                ..
+            }
+        ));
+
+        app.toggle_line_split_collapse(crate::app::state::LineSplitSection::Agents, split);
+        let rows = agent_panel_rows(&app);
+        assert_eq!(rows.len(), 1, "the segment's agent rows are hidden");
+        assert!(matches!(
+            &rows[0],
+            AgentPanelRow::LineSplit {
+                count: 2,
+                collapsed: true,
+                ..
+            }
+        ));
+
+        app.toggle_line_split_collapse(crate::app::state::LineSplitSection::Agents, split);
+        assert_eq!(agent_panel_rows(&app).len(), 3);
     }
 
     #[test]

@@ -46,7 +46,7 @@ Landed on the upstream base:
 | Session navigator opens in search mode | Typing filters immediately. Escape returns to browse and keeps the query, which is upstream's tested behaviour. |
 | Workspace home tab | `Workspace::home_tab` is the tab a space returns to, so restore and space switching do not land on whatever agent tab was focused last. |
 | Agents panel row model | `AgentPanelRow` over upstream's entries, with one `compute_agent_panel_row_areas` consumed by both render and hit-testing. Upstream's token/height engine is unchanged underneath. |
-| Named line-splits | Divider rows a user can insert, rename, drag, and (in the panes band) collapse. Both bands share one renderer; the collapse indicator is optional. |
+| Named line-splits | Divider rows a user can insert, rename, drag, and collapse. A collapsed divider hides its segment down to the next divider and shows the hidden row count. Both bands share one renderer, and collapse state is keyed by `LineSplitSection` so ids from the two counters cannot collide. |
 | Manual agent order | A `Manual` sort alongside upstream's sort orders, with drag-to-reorder, persisted per space. |
 | Agent parent/child tree in the sidebar | Indented children, collapsed-subtree summaries, `collapsed_agent_keys`, tree-order cycling, and drag-to-reparent with a confirm modal. |
 | Double-click rename | Double-clicking an agent row renames its tab; a click on a collapse glyph does not open the modal. |

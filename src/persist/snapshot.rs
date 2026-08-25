@@ -9,7 +9,7 @@ use crate::terminal::TerminalRuntimeRegistry;
 use crate::workspace::Workspace;
 
 /// Current snapshot format version.
-pub(super) const SNAPSHOT_VERSION: u32 = 3;
+pub(super) const SNAPSHOT_VERSION: u32 = 4;
 
 /// Serializable snapshot of the entire herdr session.
 #[derive(Serialize, Deserialize)]
@@ -24,8 +24,45 @@ pub struct SessionSnapshot {
     pub sidebar_width: Option<u16>,
     #[serde(default)]
     pub sidebar_section_split: Option<f32>,
+    /// Ratio of the sidebar region below the Spaces band allocated to the Panes
+    /// band. Optional for back-compat.
+    #[serde(default)]
+    pub sidebar_pane_section_split: Option<f32>,
     #[serde(default)]
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    /// Section-namespaced keys of collapsed line-split dividers (TUI
+    /// presentation state). Optional for back-compat.
+    #[serde(default)]
+    pub collapsed_line_split_keys: std::collections::HashSet<String>,
+    /// Flat Panes-section ordering (TUI presentation state). Serialized by stable
+    /// (workspace id + public pane number) references so it survives the PaneId
+    /// remap on restore. Optional for back-compat; older snapshots omit it and
+    /// the section rebuilds from the current panes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_section_order: Option<PaneSectionOrderSnapshot>,
+}
+
+/// Persisted flat Panes-section ordering. Pane entries reference non-agent panes
+/// by stable keys (workspace id + public pane number) rather than a positional
+/// index; line-splits carry their id and name.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct PaneSectionOrderSnapshot {
+    pub entries: Vec<PaneSectionEntrySnapshot>,
+}
+
+/// A single persisted Panes-section entry. Untagged so a bare pane object still
+/// parses as the `Pane` variant.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum PaneSectionEntrySnapshot {
+    Pane {
+        workspace_id: String,
+        pane_number: usize,
+    },
+    LineSplit {
+        line_split_id: u64,
+        name: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -190,7 +227,13 @@ struct RawSessionSnapshot {
     #[serde(default)]
     sidebar_section_split: Option<f32>,
     #[serde(default)]
+    sidebar_pane_section_split: Option<f32>,
+    #[serde(default)]
     collapsed_space_keys: std::collections::HashSet<String>,
+    #[serde(default)]
+    collapsed_line_split_keys: std::collections::HashSet<String>,
+    #[serde(default)]
+    pane_section_order: Option<PaneSectionOrderSnapshot>,
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -205,7 +248,10 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
         selected: raw.selected,
         sidebar_width: raw.sidebar_width,
         sidebar_section_split: raw.sidebar_section_split,
+        sidebar_pane_section_split: raw.sidebar_pane_section_split,
         collapsed_space_keys: raw.collapsed_space_keys,
+        collapsed_line_split_keys: raw.collapsed_line_split_keys,
+        pane_section_order: raw.pane_section_order,
     })
 }
 
@@ -271,8 +317,32 @@ pub fn capture(
     selected: usize,
     sidebar_width: u16,
     sidebar_section_split: f32,
+    sidebar_pane_section_split: f32,
     collapsed_space_keys: std::collections::HashSet<String>,
+    collapsed_line_split_keys: std::collections::HashSet<String>,
+    pane_section_order_keys: Vec<crate::app::state::PaneManualEntryKey>,
 ) -> SessionSnapshot {
+    let pane_section_order =
+        (!pane_section_order_keys.is_empty()).then(|| PaneSectionOrderSnapshot {
+            entries: pane_section_order_keys
+                .into_iter()
+                .map(|key| match key {
+                    crate::app::state::PaneManualEntryKey::Pane {
+                        workspace_id,
+                        pane_number,
+                    } => PaneSectionEntrySnapshot::Pane {
+                        workspace_id,
+                        pane_number,
+                    },
+                    crate::app::state::PaneManualEntryKey::LineSplit { id, name } => {
+                        PaneSectionEntrySnapshot::LineSplit {
+                            line_split_id: id,
+                            name,
+                        }
+                    }
+                })
+                .collect(),
+        });
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
         workspaces: workspaces
@@ -283,8 +353,41 @@ pub fn capture(
         selected,
         sidebar_width: Some(sidebar_width),
         sidebar_section_split: Some(sidebar_section_split),
+        sidebar_pane_section_split: Some(sidebar_pane_section_split),
         collapsed_space_keys,
+        collapsed_line_split_keys,
+        pane_section_order,
     }
+}
+
+/// The persisted Panes-section order as state-level keys, in order.
+pub fn pane_section_order_keys(
+    order: Option<&PaneSectionOrderSnapshot>,
+) -> Vec<crate::app::state::PaneManualEntryKey> {
+    order
+        .map(|order| {
+            order
+                .entries
+                .iter()
+                .map(|entry| match entry {
+                    PaneSectionEntrySnapshot::Pane {
+                        workspace_id,
+                        pane_number,
+                    } => crate::app::state::PaneManualEntryKey::Pane {
+                        workspace_id: workspace_id.clone(),
+                        pane_number: *pane_number,
+                    },
+                    PaneSectionEntrySnapshot::LineSplit {
+                        line_split_id,
+                        name,
+                    } => crate::app::state::PaneManualEntryKey::LineSplit {
+                        id: *line_split_id,
+                        name: name.clone(),
+                    },
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Capture a workspace snapshot for the undo-close stack. Unlike the session
@@ -638,7 +741,10 @@ mod tests {
             state.selected,
             state.sidebar_width,
             state.sidebar_section_split,
+            state.sidebar_pane_section_split,
             state.collapsed_space_keys.clone(),
+            state.collapsed_line_split_keys.clone(),
+            state.pane_section_order.to_keys(),
         )
     }
 
@@ -702,7 +808,10 @@ mod tests {
             selected: 0,
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
+            sidebar_pane_section_split: None,
             collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_line_split_keys: Default::default(),
+            pane_section_order: None,
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored = parse_snapshot(&json).unwrap();
@@ -792,7 +901,10 @@ mod tests {
             selected: 0,
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
+            sidebar_pane_section_split: None,
             collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_line_split_keys: Default::default(),
+            pane_section_order: None,
             version: SNAPSHOT_VERSION,
         };
 
@@ -934,6 +1046,53 @@ mod tests {
         assert_eq!(captured_ids, ids);
         assert_eq!(snapshot.active, state.active);
         assert_eq!(snapshot.selected, state.selected);
+    }
+
+    #[test]
+    fn capture_roundtrip_preserves_pane_section_order_and_split() {
+        let mut state = state_with_workspaces(&["one", "two"]);
+        state.reconcile_pane_section_order();
+        state.sidebar_pane_section_split = 0.4;
+        let split = state
+            .pane_section_order
+            .new_line_split("scheduled".to_string(), 1);
+        state.collapsed_line_split_keys.insert("panes:0".into());
+
+        let snapshot = capture_from_state(&state);
+        assert_eq!(snapshot.sidebar_pane_section_split, Some(0.4));
+        assert!(snapshot.collapsed_line_split_keys.contains("panes:0"));
+
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let restored: SessionSnapshot = serde_json::from_str(&json).unwrap();
+        let keys = pane_section_order_keys(restored.pane_section_order.as_ref());
+        assert_eq!(keys.len(), state.pane_section_order.order.len());
+        assert!(matches!(
+            &keys[1],
+            crate::app::state::PaneManualEntryKey::LineSplit { id, name }
+                if *id == split.0 && name == "scheduled"
+        ));
+
+        // Rebuilding drops entries whose workspace is gone and keeps the counter
+        // above every restored line-split id.
+        let rebuilt = crate::app::state::PaneSectionOrder::from_keys(keys, &state.workspaces[..1]);
+        assert!(rebuilt.seeded);
+        assert!(rebuilt.next_line_split_id > split.0);
+        assert_eq!(rebuilt.order.len(), 2);
+    }
+
+    #[test]
+    fn legacy_snapshot_without_pane_section_fields_still_loads() {
+        let raw = serde_json::json!({
+            "version": 3,
+            "workspaces": [],
+            "active": null,
+            "selected": 0,
+        });
+        let snapshot: SessionSnapshot =
+            migrate_snapshot(serde_json::from_value(raw).unwrap()).unwrap();
+        assert_eq!(snapshot.sidebar_pane_section_split, None);
+        assert!(snapshot.pane_section_order.is_none());
+        assert!(snapshot.collapsed_line_split_keys.is_empty());
     }
 
     #[test]
@@ -1357,7 +1516,10 @@ mod tests {
             selected: 0,
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
+            sidebar_pane_section_split: None,
             collapsed_space_keys: std::collections::HashSet::new(),
+            collapsed_line_split_keys: Default::default(),
+            pane_section_order: None,
         };
 
         let json = serde_json::to_string(&snap).unwrap();

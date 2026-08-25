@@ -98,6 +98,23 @@ impl PaneClickState {
     }
 }
 
+/// One recorded left-click on a sidebar Panes-section row, used to detect the
+/// double-click that opens the pane rename modal.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PaneSectionRowClickState {
+    pub(crate) ws_idx: usize,
+    pub(crate) pane_id: crate::layout::PaneId,
+    pub(crate) at: Instant,
+}
+
+impl PaneSectionRowClickState {
+    pub(crate) fn is_double_click_for(self, next: Self) -> bool {
+        self.ws_idx == next.ws_idx
+            && self.pane_id == next.pane_id
+            && next.at.duration_since(self.at) <= PANE_DOUBLE_CLICK_WINDOW
+    }
+}
+
 pub struct App {
     pub state: AppState,
     pub(crate) pane_graphics: pane_graphics::Runtime,
@@ -129,6 +146,7 @@ pub struct App {
     pub(crate) next_api_worktree_operation_id: u64,
     pub(crate) last_sidebar_divider_click: Option<Instant>,
     pub(crate) last_pane_click: Option<PaneClickState>,
+    pub(crate) last_pane_section_row_click: Option<PaneSectionRowClickState>,
     pub(crate) pending_url_click_sources: HashSet<InputSourceId>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_auto_update_check: Option<Instant>,
@@ -419,6 +437,9 @@ impl App {
             sidebar_width_source,
             sidebar_section_split,
             collapsed_space_keys,
+            sidebar_pane_section_split,
+            pane_section_order_keys,
+            collapsed_line_split_keys,
         ) = if no_session {
             (
                 Vec::new(),
@@ -427,6 +448,9 @@ impl App {
                 config.ui.sidebar_width,
                 state::SidebarWidthSource::ConfigDefault,
                 0.5_f32,
+                std::collections::HashSet::new(),
+                0.5_f32,
+                Vec::new(),
                 std::collections::HashSet::new(),
             )
         } else if let Some(snap) = crate::persist::load() {
@@ -464,6 +488,9 @@ impl App {
                     },
                     snap.sidebar_section_split.unwrap_or(0.5),
                     snap.collapsed_space_keys,
+                    snap.sidebar_pane_section_split.unwrap_or(0.5),
+                    crate::persist::pane_section_order_keys(snap.pane_section_order.as_ref()),
+                    snap.collapsed_line_split_keys,
                 )
             } else {
                 crate::logging::session_restored(ws.len(), "ok");
@@ -481,6 +508,9 @@ impl App {
                     },
                     snap.sidebar_section_split.unwrap_or(0.5),
                     snap.collapsed_space_keys,
+                    snap.sidebar_pane_section_split.unwrap_or(0.5),
+                    crate::persist::pane_section_order_keys(snap.pane_section_order.as_ref()),
+                    snap.collapsed_line_split_keys,
                 )
             }
         } else {
@@ -492,8 +522,14 @@ impl App {
                 state::SidebarWidthSource::ConfigDefault,
                 0.5_f32,
                 std::collections::HashSet::new(),
+                0.5_f32,
+                Vec::new(),
+                std::collections::HashSet::new(),
             )
         };
+
+        let pane_section_order =
+            state::PaneSectionOrder::from_keys(pane_section_order_keys, &workspaces);
 
         let agent_panel_sort = agent_panel_sort_from_config(config.ui.agent_panel_sort);
 
@@ -613,6 +649,7 @@ impl App {
                 layout: state::ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                pane_section_row_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -653,6 +690,12 @@ impl App {
             sidebar_collapsed: config.ui.sidebar_start_collapsed,
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_section_split,
+            sidebar_pane_section_split,
+            pane_section_scroll: 0,
+            pane_section_order,
+            pane_section_press: None,
+            collapsed_line_split_keys,
+            rename_line_split_target: None,
             agent_panel_sort,
             status_indicators: config.ui.status_indicators,
             agent_view_override: None,
@@ -783,6 +826,7 @@ impl App {
             next_api_worktree_operation_id: 1,
             last_sidebar_divider_click: None,
             last_pane_click: None,
+            last_pane_section_row_click: None,
             pending_url_click_sources: HashSet::new(),
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
             next_auto_update_check: version_check_enabled
@@ -1931,7 +1975,7 @@ impl App {
             Mode::Copy => {
                 self.handle_copy_mode_key(key);
             }
-            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
+            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::RenameLineSplit => {
                 self.handle_rename_key_via_api(key_event);
             }
             Mode::NewLinkedWorktree => {
@@ -4979,7 +5023,10 @@ mod tests {
             app.state.selected,
             app.state.sidebar_width,
             app.state.sidebar_section_split,
+            app.state.sidebar_pane_section_split,
             app.state.collapsed_space_keys.clone(),
+            app.state.collapsed_line_split_keys.clone(),
+            app.state.pane_section_order.to_keys(),
         );
         let json = serde_json::to_string(&snap).unwrap();
         let parsed: crate::persist::SessionSnapshot = serde_json::from_str(&json).unwrap();
@@ -6869,7 +6916,10 @@ last_pane = "prefix+tab"
             selected: 0,
             sidebar_width: None,
             sidebar_section_split: None,
+            sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
+            collapsed_line_split_keys: Default::default(),
+            pane_section_order: None,
         };
         let mut imports = std::collections::HashMap::new();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

@@ -78,13 +78,16 @@ pub(crate) use self::{
     sidebar::{
         agent_entry_gap, agent_entry_height_in_body, agent_panel_body_rect, agent_panel_entries,
         agent_panel_scroll_for_target, agent_panel_scroll_metrics, agent_panel_scrollbar_rect,
-        agent_panel_toggle_rect, all_agent_panel_entries, collapsed_sidebar_sections,
-        collapsed_sidebar_toggle_rect, compute_workspace_card_areas, expanded_sidebar_sections,
-        expanded_sidebar_toggle_rect, normalized_workspace_scroll, sidebar_section_divider_rect,
-        workspace_drop_slots, workspace_group_chevron_rect, workspace_list_entries,
-        workspace_list_entries_expanded, workspace_list_rect, workspace_list_scroll_metrics,
-        workspace_list_scrollbar_rect, workspace_parent_group_state, AgentPanelEntry,
-        WorkspaceListEntry,
+        agent_panel_toggle_rect, agents_detail_rect, all_agent_panel_entries,
+        collapsed_sidebar_sections, collapsed_sidebar_toggle_rect, compute_pane_section_row_areas,
+        compute_workspace_card_areas, expanded_sidebar_sections3, expanded_sidebar_toggle_rect,
+        normalized_workspace_scroll, pane_section_body_rect, pane_section_rect,
+        pane_section_scroll_metrics, pane_section_scrollbar_rect, pane_section_split_button_rect,
+        sidebar_pane_section_divider_rect, sidebar_section_divider_rect,
+        sidebar_shows_pane_section, workspace_drop_slots, workspace_group_chevron_rect,
+        workspace_list_entries, workspace_list_entries_expanded, workspace_list_rect,
+        workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
+        AgentPanelEntry, WorkspaceListEntry,
     },
 };
 
@@ -219,6 +222,11 @@ fn compute_view_internal(
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
+    // Mutation phase: keep the client-only Panes-section order reconciled with
+    // the live pane set before any pure render reads it. Runs for both desktop
+    // and mobile.
+    app.reconcile_pane_section_order();
+
     if is_mobile_width(area, app.mobile_width_threshold) {
         compute_mobile_view(app, terminal_runtimes, area, resize_panes, cell_size);
         return;
@@ -243,22 +251,37 @@ fn compute_view_internal(
         .map(|ws| desktop_tab_bar_and_terminal_area(app, ws, main_area))
         .unwrap_or((Rect::default(), main_area));
 
+    let show_pane_section = sidebar_shows_pane_section(app);
+    let (_, pane_section_area, agents_area) = expanded_sidebar_sections3(
+        sidebar_area,
+        app.sidebar_section_split,
+        app.sidebar_pane_section_split,
+        show_pane_section,
+    );
     if !app.sidebar_collapsed {
         app.workspace_scroll = normalized_workspace_scroll(app, sidebar_area, app.workspace_scroll);
-        let (_, detail_area) = expanded_sidebar_sections(sidebar_area, app.sidebar_section_split);
-        let max_agent_scroll = agent_panel_scroll_metrics(app, detail_area).max_offset_from_bottom;
+        let max_agent_scroll = agent_panel_scroll_metrics(app, agents_area).max_offset_from_bottom;
         app.agent_panel_scroll = app.agent_panel_scroll.min(max_agent_scroll);
+        let max_pane_section_scroll =
+            pane_section_scroll_metrics(app, pane_section_area).max_offset_from_bottom;
+        app.pane_section_scroll = app.pane_section_scroll.min(max_pane_section_scroll);
     } else {
         app.workspace_scroll = app
             .workspace_scroll
             .min(app.workspaces.len().saturating_sub(1));
         app.agent_panel_scroll = 0;
+        app.pane_section_scroll = 0;
     }
 
     let workspace_card_areas = if app.sidebar_collapsed {
         Vec::new()
     } else {
         compute_workspace_card_areas(app, sidebar_area)
+    };
+    let pane_section_row_areas = if app.sidebar_collapsed || !show_pane_section {
+        Vec::new()
+    } else {
+        compute_pane_section_row_areas(app, pane_section_area)
     };
 
     let tab_bar_view = app
@@ -308,6 +331,7 @@ fn compute_view_internal(
         layout: ViewLayout::Desktop,
         sidebar_rect: sidebar_area,
         workspace_card_areas,
+        pane_section_row_areas,
         tab_bar_rect,
         tab_hit_areas: tab_bar_view.tab_hit_areas,
         tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
@@ -371,6 +395,7 @@ fn compute_mobile_view(
         layout: ViewLayout::Mobile,
         sidebar_rect: Rect::default(),
         workspace_card_areas: Vec::new(),
+        pane_section_row_areas: Vec::new(),
         tab_bar_rect: Rect::default(),
         tab_hit_areas: Vec::new(),
         tab_scroll_left_hit_area: Rect::default(),
@@ -446,7 +471,7 @@ pub fn render_with_runtime_registry(
             render_context_menu(app, frame);
         }
         Mode::Settings => render_settings_overlay(app, frame, frame.area()),
-        Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
+        Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::RenameLineSplit => {
             render_rename_overlay(app, frame, frame.area())
         }
         Mode::NewLinkedWorktree => render_new_linked_worktree_overlay(app, frame, frame.area()),

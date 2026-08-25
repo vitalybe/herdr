@@ -48,7 +48,10 @@ impl App {
                 self.state.selected,
                 self.state.sidebar_width,
                 self.state.sidebar_section_split,
+                self.state.sidebar_pane_section_split,
                 self.state.collapsed_space_keys.clone(),
+                self.state.collapsed_line_split_keys.clone(),
+                self.state.pane_section_order.to_keys(),
             );
             let history = self.persist_pane_history.then(|| {
                 crate::persist::capture_history(&self.state.workspaces, &self.terminal_runtimes)

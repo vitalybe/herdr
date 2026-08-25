@@ -716,6 +716,29 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
+/// What one visible row of the sidebar Panes section points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneSectionRowContent {
+    Pane {
+        ws_idx: usize,
+        tab_idx: usize,
+        pane_id: PaneId,
+    },
+    LineSplit {
+        id: LineSplitId,
+    },
+}
+
+/// Screen placement of one visible Panes-section row. `order_idx` is the flat
+/// index into [`PaneSectionOrder`]; `content` carries whether the row is a pane
+/// or a line-split divider. Client-only presentation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneSectionRowArea {
+    pub order_idx: usize,
+    pub content: PaneSectionRowContent,
+    pub rect: Rect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -871,6 +894,9 @@ pub struct ViewState {
     pub layout: ViewLayout,
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
+    /// Screen placement of the visible sidebar Panes-section rows. Shared by
+    /// render and mouse hit-testing so both agree on the same rects.
+    pub pane_section_row_areas: Vec<PaneSectionRowArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -896,6 +922,7 @@ pub enum Mode {
     RenameWorkspace,
     RenameTab,
     RenamePane,
+    RenameLineSplit,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
@@ -1195,6 +1222,143 @@ pub(crate) enum WorkspaceDropTarget {
     End,
 }
 
+/// Identity of a user-created named line-split divider. Handed out by a
+/// per-section monotonic counter, so ids are unique within their section only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LineSplitId(pub(crate) u64);
+
+/// Stable reference to a single pane, independent of its position. Panes are
+/// addressed by their owning workspace id plus their stable public pane number
+/// (which survives reorders and the `PaneId` remap on restore), so a
+/// `PaneSectionRef` can be persisted and rebuilt directly. Client-only
+/// presentation state; never enters the server/runtime protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PaneSectionRef {
+    pub(crate) workspace_id: String,
+    pub(crate) pane_number: usize,
+}
+
+/// One slot in the flat Panes-section order: either a non-agent pane (keyed by
+/// its stable [`PaneSectionRef`]) or a user-created named line-split divider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PaneManualEntry {
+    Pane(PaneSectionRef),
+    LineSplit { id: LineSplitId, name: String },
+}
+
+/// A Panes-section order slot as picked up by a drag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PaneManualEntryRef {
+    Pane(PaneSectionRef),
+    LineSplit(LineSplitId),
+}
+
+/// Persistable form of a Panes-section order slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PaneManualEntryKey {
+    Pane {
+        workspace_id: String,
+        pane_number: usize,
+    },
+    LineSplit {
+        id: u64,
+        name: String,
+    },
+}
+
+/// Flat, client-only ordering of the sidebar Panes section.
+///
+/// This is TUI presentation state: it never enters the server/runtime protocol
+/// and never changes the real pane order inside any tab. `order` drives the
+/// display order across all spaces, `known` tracks which panes have already been
+/// placed (so genuinely new panes get the placement rule), and `seeded` records
+/// whether the natural order has been captured at least once.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PaneSectionOrder {
+    pub(crate) order: Vec<PaneManualEntry>,
+    pub(crate) known: std::collections::HashSet<PaneSectionRef>,
+    pub(crate) seeded: bool,
+    /// Monotonic counter handing out [`LineSplitId`]s for this section. Never
+    /// reused, so ids stay stable while the session lives.
+    pub(crate) next_line_split_id: u64,
+}
+
+impl PaneSectionOrder {
+    /// Insert a new named line-split at flat index `at`, returning its new id.
+    pub(crate) fn new_line_split(&mut self, name: String, at: usize) -> LineSplitId {
+        let id = LineSplitId(self.next_line_split_id);
+        self.next_line_split_id = self.next_line_split_id.saturating_add(1);
+        let at = at.min(self.order.len());
+        self.order
+            .insert(at, PaneManualEntry::LineSplit { id, name });
+        id
+    }
+
+    /// Rebuild a Panes-section order from persisted keys, keeping only pane
+    /// entries whose workspace still exists. `seeded` is set because a snapshot
+    /// was present, so reconcile treats later arrivals as genuinely new panes
+    /// rather than reseeding from the natural order.
+    pub(crate) fn from_keys(
+        keys: Vec<PaneManualEntryKey>,
+        workspaces: &[crate::workspace::Workspace],
+    ) -> Self {
+        let live_ids: std::collections::HashSet<&str> =
+            workspaces.iter().map(|ws| ws.id.as_str()).collect();
+        let mut order = Vec::new();
+        let mut known = std::collections::HashSet::new();
+        let mut next_line_split_id = 0u64;
+        for key in keys {
+            match key {
+                PaneManualEntryKey::Pane {
+                    workspace_id,
+                    pane_number,
+                } => {
+                    if !live_ids.contains(workspace_id.as_str()) {
+                        continue;
+                    }
+                    let pane_ref = PaneSectionRef {
+                        workspace_id,
+                        pane_number,
+                    };
+                    if known.insert(pane_ref.clone()) {
+                        order.push(PaneManualEntry::Pane(pane_ref));
+                    }
+                }
+                PaneManualEntryKey::LineSplit { id, name } => {
+                    next_line_split_id = next_line_split_id.max(id.saturating_add(1));
+                    order.push(PaneManualEntry::LineSplit {
+                        id: LineSplitId(id),
+                        name,
+                    });
+                }
+            }
+        }
+        Self {
+            order,
+            known,
+            seeded: true,
+            next_line_split_id,
+        }
+    }
+
+    /// Snapshot the current order as persistable keys.
+    pub(crate) fn to_keys(&self) -> Vec<PaneManualEntryKey> {
+        self.order
+            .iter()
+            .map(|entry| match entry {
+                PaneManualEntry::Pane(pane_ref) => PaneManualEntryKey::Pane {
+                    workspace_id: pane_ref.workspace_id.clone(),
+                    pane_number: pane_ref.pane_number,
+                },
+                PaneManualEntry::LineSplit { id, name } => PaneManualEntryKey::LineSplit {
+                    id: id.0,
+                    name: name.clone(),
+                },
+            })
+            .collect()
+    }
+}
+
 pub(crate) enum DragTarget {
     WorkspaceReorder {
         source_id: crate::app::InputSourceId,
@@ -1211,6 +1375,17 @@ pub(crate) enum DragTarget {
         grab_row_offset: u16,
     },
     AgentPanelScrollbar {
+        grab_row_offset: u16,
+    },
+    /// Reorder of a slot within the flat, client-only Panes-section ordering.
+    /// Cross-workspace moves are allowed; this only changes the sidebar's visual
+    /// order, never the real pane order inside any tab. `insert_idx` is a flat
+    /// index into the Panes-section order.
+    PaneSectionReorder {
+        source: PaneManualEntryRef,
+        insert_idx: Option<usize>,
+    },
+    PaneSectionScrollbar {
         grab_row_offset: u16,
     },
     PaneSplit {
@@ -1233,7 +1408,11 @@ pub(crate) enum DragTarget {
         grab_row_offset: u16,
     },
     SidebarDivider,
-    SidebarSectionDivider,
+    /// Drag of one of the sidebar section dividers. `index` selects which
+    /// divider: 0 = Spaces/Panes, 1 = Panes/Agents.
+    SidebarSectionDivider {
+        index: usize,
+    },
 }
 
 /// Active mouse drag on a split border or sidebar divider.
@@ -1250,6 +1429,15 @@ pub(crate) struct WorkspacePressState {
 pub(crate) struct TabPressState {
     pub ws_idx: usize,
     pub tab_idx: usize,
+    pub start_col: u16,
+    pub start_row: u16,
+}
+
+/// Pending left-press on a sidebar Panes-section row. Promotes to a reorder drag
+/// once the pointer moves far enough; a release without a drag focuses the pane
+/// (or toggles a line-split).
+pub(crate) struct PaneSectionPressState {
+    pub entry: PaneManualEntryRef,
     pub start_col: u16,
     pub start_row: u16,
 }
@@ -1276,6 +1464,10 @@ pub enum ContextMenuKind {
         source_pane_id: Option<PaneId>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+    },
+    /// Right-click on a named line-split divider in the sidebar Panes section.
+    LineSplit {
+        id: LineSplitId,
     },
 }
 
@@ -1335,6 +1527,7 @@ impl ContextMenuState {
                 items.push("Close pane");
                 items
             }
+            ContextMenuKind::LineSplit { .. } => vec!["Rename", "Delete"],
         }
     }
 }
@@ -1660,6 +1853,19 @@ pub struct AppState {
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
+    /// Ratio of the sidebar region below the Spaces band allocated to the Panes
+    /// band, leaving the rest for the Agents band.
+    pub sidebar_pane_section_split: f32,
+    /// Scroll offset (in flat row index) for the sidebar Panes section.
+    pub pane_section_scroll: usize,
+    /// Flat, client-only ordering of the sidebar Panes section.
+    pub(crate) pane_section_order: PaneSectionOrder,
+    pub(crate) pane_section_press: Option<PaneSectionPressState>,
+    /// Section-namespaced keys of collapsed line-split dividers (client-only).
+    pub collapsed_line_split_keys: std::collections::HashSet<String>,
+    /// Target line-split for the rename modal (client-only; mirrors
+    /// `rename_pane_target`). Set only while `mode == Mode::RenameLineSplit`.
+    pub(crate) rename_line_split_target: Option<LineSplitId>,
 }
 
 impl AppState {
@@ -1949,6 +2155,7 @@ impl AppState {
                 layout: ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                pane_section_row_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -2070,6 +2277,12 @@ impl AppState {
             host_mouse_pixels: None,
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
+            sidebar_pane_section_split: 0.5,
+            pane_section_scroll: 0,
+            pane_section_order: PaneSectionOrder::default(),
+            pane_section_press: None,
+            collapsed_line_split_keys: std::collections::HashSet::new(),
+            rename_line_split_target: None,
         }
     }
 
@@ -2400,7 +2613,29 @@ impl AppState {
                         assert_live_pane(source_pane_id, "context menu source pane");
                     }
                 }
+                ContextMenuKind::LineSplit { id } => assert!(
+                    self.pane_section_order.order.iter().any(
+                        |entry| matches!(entry, PaneManualEntry::LineSplit { id: entry_id, .. } if *entry_id == id)
+                    ),
+                    "context menu references unknown Panes-section line-split {id:?}"
+                ),
             }
+        }
+        for entry in &self.pane_section_order.order {
+            if let PaneManualEntry::LineSplit { id, .. } = entry {
+                assert!(
+                    id.0 < self.pane_section_order.next_line_split_id,
+                    "Panes-section line-split id {} is not below the counter {}",
+                    id.0,
+                    self.pane_section_order.next_line_split_id
+                );
+            }
+        }
+        if self.mode != Mode::RenameLineSplit {
+            assert!(
+                self.rename_line_split_target.is_none(),
+                "rename line-split target must be cleared outside RenameLineSplit mode"
+            );
         }
     }
 

@@ -12,13 +12,17 @@ use self::tokens::{ResolvedToken, ResolvedTokenKind, SpaceTokenContext};
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
 use super::status::{state_icon, state_label, state_label_color};
 use super::text::{display_width, display_width_u16, truncate_end};
-use crate::app::state::{AgentPanelSort, Palette};
+use crate::app::state::{AgentPanelSort, LineSplitId, Palette, PaneManualEntry};
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
+/// Separator rule plus the "panes" title row above the Panes band body.
+const PANE_SECTION_HEADER_ROWS: u16 = 2;
+/// Content height of one Panes-section pane row (pane name over space name).
+const PANE_SECTION_ROW_HEIGHT: u16 = 2;
 
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
@@ -76,6 +80,316 @@ pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect
 
     let (ws_h, _) = sidebar_section_heights(content.height, split_ratio);
     Rect::new(content.x, content.y + ws_h, content.width, 1)
+}
+
+/// Partition the sidebar content height into three stacked bands
+/// (Spaces / Panes / Agents). `spaces_ratio` allocates the Spaces band out of the
+/// total height; `pane_section_ratio` then allocates the Panes band out of the
+/// remaining height, leaving the rest for Agents. Reuses the two-band split so
+/// the Spaces band matches the historical geometry exactly.
+///
+/// When `show_pane_section` is false (no non-agent panes exist) the Panes band
+/// collapses to zero height and the Agents band takes the whole region below
+/// Spaces, so agent-only sidebars keep the historical two-band geometry.
+pub(crate) fn expanded_sidebar_sections3(
+    area: Rect,
+    spaces_ratio: f32,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
+) -> (Rect, Rect, Rect) {
+    let (spaces_area, rest) = expanded_sidebar_sections(area, spaces_ratio);
+    if rest.width == 0 || rest.height == 0 {
+        return (spaces_area, Rect::default(), rest);
+    }
+    if !show_pane_section {
+        let pane_section_area = Rect::new(rest.x, rest.y, rest.width, 0);
+        return (spaces_area, pane_section_area, rest);
+    }
+    let (pane_section_h, agents_h) = sidebar_section_heights(rest.height, pane_section_ratio);
+    let pane_section_area = Rect::new(rest.x, rest.y, rest.width, pane_section_h);
+    let agents_area = Rect::new(rest.x, rest.y + pane_section_h, rest.width, agents_h);
+    (spaces_area, pane_section_area, agents_area)
+}
+
+/// The Panes band as the middle of three stacked sidebar sections.
+pub(crate) fn pane_section_rect(
+    area: Rect,
+    spaces_ratio: f32,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
+) -> Rect {
+    let (_, pane_section_area, _) =
+        expanded_sidebar_sections3(area, spaces_ratio, pane_section_ratio, show_pane_section);
+    pane_section_area
+}
+
+/// The Agents (detail) band as the third of three stacked sidebar sections.
+pub(crate) fn agents_detail_rect(
+    area: Rect,
+    spaces_ratio: f32,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
+) -> Rect {
+    let (_, _, agents_area) =
+        expanded_sidebar_sections3(area, spaces_ratio, pane_section_ratio, show_pane_section);
+    agents_area
+}
+
+/// The draggable divider between the Panes and Agents bands (divider index 1),
+/// adjusting `pane_section_ratio`. Empty unless the Panes band is shown, since
+/// the ratio only splits the two bands then. Derived from the same geometry the
+/// bands are drawn from so the hit-test lines up with the drawn boundary.
+pub(crate) fn sidebar_pane_section_divider_rect(
+    area: Rect,
+    spaces_ratio: f32,
+    pane_section_ratio: f32,
+    show_pane_section: bool,
+) -> Rect {
+    if !show_pane_section {
+        return Rect::default();
+    }
+    let (_, pane_section_area, agents_area) =
+        expanded_sidebar_sections3(area, spaces_ratio, pane_section_ratio, show_pane_section);
+    // Match the setter: pane_section_ratio splits the Panes and Agents bands, so
+    // hide the divider when that shared region is too short to resize.
+    let region_h = pane_section_area.height + agents_area.height;
+    if pane_section_area.width == 0 || region_h < 6 {
+        return Rect::default();
+    }
+    Rect::new(
+        pane_section_area.x,
+        pane_section_area.y + pane_section_area.height,
+        pane_section_area.width,
+        1,
+    )
+}
+
+/// Whether the sidebar Panes section has any content to show. When false, the
+/// Panes band takes no height and the Agents band keeps the historical geometry.
+pub(crate) fn sidebar_shows_pane_section(app: &AppState) -> bool {
+    !sidebar_pane_section_rows(app).is_empty()
+}
+
+/// Body (scrolling content) region of the Panes band, below its header rows.
+/// Reserves the rightmost column for the scrollbar when `has_scrollbar`.
+pub(crate) fn pane_section_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
+    if area.width == 0 || area.height <= PANE_SECTION_HEADER_ROWS {
+        return Rect::default();
+    }
+    let body_y = area.y.saturating_add(PANE_SECTION_HEADER_ROWS);
+    let body_height = (area.y + area.height).saturating_sub(body_y);
+    let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
+    Rect::new(area.x, body_y, body_width, body_height)
+}
+
+/// A single non-agent pane surfaced in the Panes section, resolved from the
+/// client-only [`crate::app::state::PaneSectionOrder`]. `tab_idx` is the pane's
+/// containing tab (used for the display name) and `pane_id` addresses the pane
+/// itself for focus.
+pub(crate) struct PaneSectionEntry {
+    pub order_idx: usize,
+    pub ws_idx: usize,
+    pub tab_idx: usize,
+    pub pane_id: crate::layout::PaneId,
+}
+
+/// A single visible row in the Panes section: either a non-agent pane entry or a
+/// named line-split divider. Client-only presentation state.
+pub(crate) enum PaneSectionRow {
+    Pane(PaneSectionEntry),
+    LineSplit {
+        order_idx: usize,
+        id: LineSplitId,
+        name: String,
+    },
+}
+
+impl PaneSectionRow {
+    /// Content-row height of this row (excluding the trailing gap). Pane rows
+    /// render two lines; line-splits are a single rule.
+    fn content_height(&self) -> u16 {
+        match self {
+            PaneSectionRow::Pane(_) => PANE_SECTION_ROW_HEIGHT,
+            PaneSectionRow::LineSplit { .. } => 1,
+        }
+    }
+
+    /// Flat index of this row into `PaneSectionOrder::order`.
+    fn order_idx(&self) -> usize {
+        match self {
+            PaneSectionRow::Pane(entry) => entry.order_idx,
+            PaneSectionRow::LineSplit { order_idx, .. } => *order_idx,
+        }
+    }
+}
+
+/// Full ordered list of visible Panes-section rows, walking the client-only
+/// order and interleaving panes and line-splits. Pane entries whose pane no
+/// longer resolves are skipped; line-splits are always kept.
+pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
+    let mut lookup: std::collections::HashMap<
+        (&str, usize),
+        (usize, usize, crate::layout::PaneId),
+    > = std::collections::HashMap::new();
+    for (ws_idx, ws) in app.workspaces.iter().enumerate() {
+        for (tab_idx, pane_id, pane_number) in ws.non_agent_panes(&app.terminals) {
+            lookup.insert((ws.id.as_str(), pane_number), (ws_idx, tab_idx, pane_id));
+        }
+    }
+    app.pane_section_order
+        .order
+        .iter()
+        .enumerate()
+        .filter_map(|(order_idx, entry)| match entry {
+            PaneManualEntry::Pane(pane_ref) => lookup
+                .get(&(pane_ref.workspace_id.as_str(), pane_ref.pane_number))
+                .map(|&(ws_idx, tab_idx, pane_id)| {
+                    PaneSectionRow::Pane(PaneSectionEntry {
+                        order_idx,
+                        ws_idx,
+                        tab_idx,
+                        pane_id,
+                    })
+                }),
+            PaneManualEntry::LineSplit { id, name } => Some(PaneSectionRow::LineSplit {
+                order_idx,
+                id: *id,
+                name: name.clone(),
+            }),
+        })
+        .collect()
+}
+
+/// Visible-row layout for the Panes section, walking rows from `scroll` and
+/// laying out variable-height rows (with a one-row gap) inside `body`. The single
+/// source of Panes-section row geometry: both the renderer and mouse hit-testing
+/// consume its output.
+fn pane_section_row_areas_in(
+    app: &AppState,
+    body: Rect,
+    scroll: usize,
+) -> Vec<crate::app::state::PaneSectionRowArea> {
+    use crate::app::state::PaneSectionRowContent;
+    let mut areas = Vec::new();
+    if body.width == 0 || body.height == 0 {
+        return areas;
+    }
+    let body_bottom = body.y + body.height;
+    let mut row_y = body.y;
+    for row in sidebar_pane_section_rows(app).into_iter().skip(scroll) {
+        let height = row.content_height();
+        if row_y.saturating_add(height) > body_bottom {
+            break;
+        }
+        let content = match &row {
+            PaneSectionRow::Pane(entry) => PaneSectionRowContent::Pane {
+                ws_idx: entry.ws_idx,
+                tab_idx: entry.tab_idx,
+                pane_id: entry.pane_id,
+            },
+            PaneSectionRow::LineSplit { id, .. } => PaneSectionRowContent::LineSplit { id: *id },
+        };
+        areas.push(crate::app::state::PaneSectionRowArea {
+            order_idx: row.order_idx(),
+            content,
+            rect: Rect::new(body.x, row_y, body.width, height),
+        });
+        row_y = row_y.saturating_add(height);
+        if row_y < body_bottom {
+            row_y = row_y.saturating_add(1);
+        }
+    }
+    areas
+}
+
+fn pane_section_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
+    let body = pane_section_body_rect(area, false);
+    pane_section_row_areas_in(app, body, scroll).len()
+}
+
+pub(crate) fn pane_section_scroll_metrics(
+    app: &AppState,
+    area: Rect,
+) -> crate::pane::ScrollMetrics {
+    let total_rows = sidebar_pane_section_rows(app).len();
+    let scroll = app.pane_section_scroll.min(total_rows.saturating_sub(1));
+    let viewport_rows = pane_section_visible_count(app, area, scroll);
+    let max_offset_from_bottom = total_rows.saturating_sub(viewport_rows);
+    let offset_from_bottom = total_rows
+        .saturating_sub(app.pane_section_scroll)
+        .saturating_sub(viewport_rows);
+
+    crate::pane::ScrollMetrics {
+        offset_from_bottom,
+        max_offset_from_bottom,
+        viewport_rows,
+    }
+}
+
+pub(crate) fn pane_section_scrollbar_rect(app: &AppState, area: Rect) -> Option<Rect> {
+    let metrics = pane_section_scroll_metrics(app, area);
+    let body = pane_section_body_rect(area, true);
+    (should_show_scrollbar(metrics) && body.width > 0 && body.height > 0).then_some(Rect::new(
+        area.x + area.width.saturating_sub(1),
+        body.y,
+        1,
+        body.height,
+    ))
+}
+
+/// Screen placement of the visible Panes-section rows, honoring the current
+/// scroll offset and reserving space for the scrollbar when one is shown.
+pub(crate) fn compute_pane_section_row_areas(
+    app: &AppState,
+    area: Rect,
+) -> Vec<crate::app::state::PaneSectionRowArea> {
+    let metrics = pane_section_scroll_metrics(app, area);
+    let body = pane_section_body_rect(area, should_show_scrollbar(metrics));
+    pane_section_row_areas_in(app, body, app.pane_section_scroll)
+}
+
+/// Row (y) of the drop indicator for a Panes-section reorder targeting flat
+/// `insert_idx`.
+pub(crate) fn pane_section_drop_indicator_row(
+    areas: &[crate::app::state::PaneSectionRowArea],
+    body: Rect,
+    insert_idx: usize,
+) -> Option<u16> {
+    if body.height == 0 {
+        return None;
+    }
+    let body_bottom = body.y + body.height;
+    if let Some(area) = areas.iter().find(|area| area.order_idx == insert_idx) {
+        let y = if area.rect.y == body.y {
+            body.y
+        } else {
+            area.rect.y.saturating_sub(1)
+        };
+        return (y < body_bottom).then_some(y);
+    }
+    if let Some(last) = areas.last() {
+        if insert_idx >= last.order_idx.saturating_add(1) {
+            let y = last.rect.y.saturating_add(last.rect.height);
+            return (y < body_bottom).then_some(y);
+        }
+    }
+    None
+}
+
+const PANE_SECTION_SPLIT_LABEL: &str = "+ split";
+
+/// Mouse-first "+ split" affordance rect for the Panes section, right-aligned on
+/// the "panes" header title row. Returns the empty rect when there is no room.
+pub(crate) fn pane_section_split_button_rect(area: Rect) -> Rect {
+    if area.width == 0 || area.height < 2 {
+        return Rect::default();
+    }
+    let width = display_width_u16(PANE_SECTION_SPLIT_LABEL);
+    if width == 0 || width >= area.width {
+        return Rect::default();
+    }
+    let x = area.x + area.width.saturating_sub(width);
+    Rect::new(x, area.y + 1, width, 1)
 }
 
 fn agent_panel_sort_label(sort: AgentPanelSort) -> &'static str {
@@ -978,6 +1292,237 @@ pub(crate) fn workspace_drop_indicator_row(
         .find_map(|(candidate, row)| (candidate == target).then_some(row))
 }
 
+/// The pane's own effective name (manual label / terminal title), independent of
+/// its containing tab. `None` when the pane has no name of its own.
+fn pane_section_pane_own_name(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    pane_id: crate::layout::PaneId,
+) -> Option<String> {
+    ws.pane_state(pane_id)
+        .and_then(|pane| {
+            app.terminals
+                .get(&pane.attached_terminal_id)
+                .and_then(|terminal| terminal.border_label(false))
+        })
+        .filter(|label| !label.trim().is_empty())
+}
+
+/// The display name shown for a Panes-section row: the pane's own effective name
+/// (manual label / terminal title) when it has one, otherwise the containing
+/// tab's name, otherwise a positional fallback.
+fn pane_section_row_name(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    row_pane_id: crate::layout::PaneId,
+    tab_idx: usize,
+) -> String {
+    pane_section_pane_own_name(app, ws, row_pane_id).unwrap_or_else(|| {
+        ws.tab_display_name(tab_idx)
+            .unwrap_or_else(|| (tab_idx + 1).to_string())
+    })
+}
+
+/// Render a named line-split divider row: `── name ─────`.
+fn render_line_split_row(frame: &mut Frame, body: Rect, y: u16, name: &str, p: &Palette) {
+    let width = body.width as usize;
+    if width == 0 {
+        return;
+    }
+    let dash_style = Style::default().fg(p.surface_dim);
+    let name_style = Style::default().fg(p.overlay1);
+    let trimmed = name.trim();
+
+    let prefix = "── ";
+    let name_text = if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed} ")
+    };
+    let used = display_width(prefix) + display_width(&name_text);
+
+    let line = if used >= width {
+        Line::from(Span::styled(
+            truncate_end(&format!("{prefix}{name_text}"), width),
+            name_style,
+        ))
+    } else {
+        Line::from(vec![
+            Span::styled(prefix.to_string(), dash_style),
+            Span::styled(name_text, name_style),
+            Span::styled("─".repeat(width - used), dash_style),
+        ])
+    };
+    frame.render_widget(Paragraph::new(line), Rect::new(body.x, y, body.width, 1));
+}
+
+/// Render the Panes section: every non-agent pane across all spaces as a
+/// two-line row (pane name over its space name) interleaved with named
+/// line-split dividers, ordered by the client-only Panes-section order, with a
+/// drop indicator during a reorder drag.
+fn render_pane_section(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    use crate::app::state::{PaneManualEntryRef, PaneSectionRowContent};
+    let p = &app.palette;
+    if area.height < 3 {
+        return;
+    }
+
+    let sep_line = "─".repeat(area.width as usize);
+    frame.render_widget(
+        Paragraph::new(Span::styled(&sep_line, Style::default().fg(p.surface_dim))),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            " panes",
+            Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+        )])),
+        Rect::new(area.x, area.y + 1, area.width, 1),
+    );
+    if app.mouse_capture {
+        let split_rect = pane_section_split_button_rect(area);
+        if split_rect != Rect::default() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    PANE_SECTION_SPLIT_LABEL,
+                    Style::default().fg(p.overlay0),
+                )),
+                split_rect,
+            );
+        }
+    }
+
+    let metrics = pane_section_scroll_metrics(app, area);
+    let scrollbar_rect = pane_section_scrollbar_rect(app, area);
+    let body = pane_section_body_rect(area, should_show_scrollbar(metrics));
+    if body == Rect::default() {
+        return;
+    }
+
+    let dragged = match app.drag.as_ref().map(|drag| &drag.target) {
+        Some(crate::app::state::DragTarget::PaneSectionReorder { source, .. }) => {
+            Some(source.clone())
+        }
+        _ => None,
+    };
+
+    // Line-split labels live in the flat order; index them by order slot so the
+    // (name-less, Copy) row areas can render their rule.
+    let split_names: std::collections::HashMap<usize, String> = sidebar_pane_section_rows(app)
+        .into_iter()
+        .filter_map(|row| match row {
+            PaneSectionRow::LineSplit {
+                order_idx, name, ..
+            } => Some((order_idx, name)),
+            PaneSectionRow::Pane(_) => None,
+        })
+        .collect();
+
+    let areas = &app.view.pane_section_row_areas;
+    let max_width = body.width as usize;
+    for row in areas {
+        match row.content {
+            PaneSectionRowContent::Pane {
+                ws_idx,
+                tab_idx,
+                pane_id,
+            } => {
+                let Some(ws) = app.workspaces.get(ws_idx) else {
+                    continue;
+                };
+                let is_active = app.is_active_pane(ws_idx, tab_idx, pane_id);
+                let is_dragged = matches!(
+                    &dragged,
+                    Some(PaneManualEntryRef::Pane(source))
+                        if source.workspace_id == ws.id
+                            && ws.public_pane_number(pane_id) == Some(source.pane_number)
+                );
+
+                if is_active || is_dragged {
+                    let bg = if is_dragged {
+                        p.surface1
+                    } else {
+                        p.surface_dim
+                    };
+                    let buf = frame.buffer_mut();
+                    for y in row.rect.y..row.rect.y + row.rect.height {
+                        for x in row.rect.x..row.rect.x + row.rect.width {
+                            buf[(x, y)].set_style(Style::default().bg(bg));
+                        }
+                    }
+                }
+
+                let name_style = if is_active || is_dragged {
+                    Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(p.text)
+                };
+                let pane_name = pane_section_row_name(app, ws, pane_id, tab_idx);
+                let space_name = ws.display_name_from(&app.terminals, terminal_runtimes);
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(
+                        format!(" {}", truncate_end(&pane_name, max_width.saturating_sub(1))),
+                        name_style,
+                    )])),
+                    Rect::new(body.x, row.rect.y, body.width, 1),
+                );
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(
+                        format!(
+                            " {}",
+                            truncate_end(&space_name, max_width.saturating_sub(1))
+                        ),
+                        Style::default().fg(p.overlay0),
+                    )])),
+                    Rect::new(body.x, row.rect.y + 1, body.width, 1),
+                );
+            }
+            PaneSectionRowContent::LineSplit { id } => {
+                let is_dragged = matches!(&dragged, Some(PaneManualEntryRef::LineSplit(source)) if *source == id);
+                if is_dragged {
+                    let buf = frame.buffer_mut();
+                    for x in row.rect.x..row.rect.x + row.rect.width {
+                        buf[(x, row.rect.y)].set_style(Style::default().bg(p.surface1));
+                    }
+                }
+                let name = split_names
+                    .get(&row.order_idx)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                render_line_split_row(frame, body, row.rect.y, name, p);
+            }
+        }
+    }
+
+    if let Some(insert_idx) = match app.drag.as_ref().map(|drag| &drag.target) {
+        Some(crate::app::state::DragTarget::PaneSectionReorder {
+            insert_idx: Some(insert_idx),
+            ..
+        }) => Some(*insert_idx),
+        _ => None,
+    } {
+        if let Some(y) = pane_section_drop_indicator_row(areas, body, insert_idx) {
+            let indicator_right = scrollbar_rect
+                .map(|rect| rect.x)
+                .unwrap_or(body.x + body.width);
+            let buf = frame.buffer_mut();
+            for x in body.x..indicator_right {
+                buf[(x, y)].set_symbol("─");
+                buf[(x, y)].set_style(Style::default().fg(p.accent));
+            }
+        }
+    }
+
+    if let Some(track) = scrollbar_rect {
+        render_scrollbar(frame, metrics, track, p.surface_dim, p.overlay0, "▕");
+    }
+}
+
 pub(super) fn render_sidebar(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -1002,9 +1547,18 @@ pub(super) fn render_sidebar(
         buf[(sep_x, y)].set_style(sep_style);
     }
 
-    let (ws_area, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+    let show_pane_section = sidebar_shows_pane_section(app);
+    let (ws_area, pane_section_area, detail_area) = expanded_sidebar_sections3(
+        area,
+        app.sidebar_section_split,
+        app.sidebar_pane_section_split,
+        show_pane_section,
+    );
 
     render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
+    if show_pane_section {
+        render_pane_section(app, terminal_runtimes, frame, pane_section_area);
+    }
     render_agent_detail(app, terminal_runtimes, frame, detail_area);
     render_sidebar_toggle(app, frame, area, false, p);
 }
@@ -1617,6 +2171,162 @@ mod tests {
                     row_text(buffer, row, width)
                 )
             })
+    }
+
+    /// App state with two spaces, each holding one plain shell pane, and the
+    /// Panes-section order seeded from them.
+    fn app_with_two_shell_panes() -> crate::app::state::AppState {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+        app.ensure_test_terminals();
+        app.reconcile_pane_section_order();
+        app
+    }
+
+    #[test]
+    fn three_band_split_keeps_the_spaces_band_geometry() {
+        let area = Rect::new(0, 0, 26, 30);
+        let (ws_two_band, rest) = expanded_sidebar_sections(area, 0.5);
+        let (ws, panes, agents) = expanded_sidebar_sections3(area, 0.5, 0.5, true);
+
+        assert_eq!(ws, ws_two_band);
+        // The Panes and Agents bands tile the region below Spaces without gaps.
+        assert_eq!(panes.y, rest.y);
+        assert_eq!(agents.y, panes.y + panes.height);
+        assert_eq!(panes.height + agents.height, rest.height);
+    }
+
+    #[test]
+    fn hidden_pane_section_keeps_two_band_geometry() {
+        let area = Rect::new(0, 0, 26, 30);
+        let (ws_two_band, detail_two_band) = expanded_sidebar_sections(area, 0.4);
+        let (ws, panes, agents) = expanded_sidebar_sections3(area, 0.4, 0.5, false);
+
+        assert_eq!(ws, ws_two_band);
+        assert_eq!(panes.height, 0);
+        assert_eq!(agents, detail_two_band);
+    }
+
+    #[test]
+    fn pane_section_divider_sits_on_the_panes_agents_boundary() {
+        let area = Rect::new(0, 0, 26, 30);
+        let (_, panes, _) = expanded_sidebar_sections3(area, 0.5, 0.5, true);
+        let divider = sidebar_pane_section_divider_rect(area, 0.5, 0.5, true);
+
+        assert_eq!(divider.y, panes.y + panes.height);
+        assert_eq!(divider.height, 1);
+        // Without a Panes band the ratio splits nothing, so there is no divider.
+        assert_eq!(
+            sidebar_pane_section_divider_rect(area, 0.5, 0.5, false),
+            Rect::default()
+        );
+    }
+
+    #[test]
+    fn pane_section_rows_follow_the_manual_order_and_skip_dead_panes() {
+        let mut app = app_with_two_shell_panes();
+        let first = app.workspaces[0].tabs[0].root_pane;
+        let second = app.workspaces[1].tabs[0].root_pane;
+        assert_eq!(
+            sidebar_pane_section_rows(&app)
+                .iter()
+                .filter_map(|row| match row {
+                    PaneSectionRow::Pane(entry) => Some(entry.pane_id),
+                    PaneSectionRow::LineSplit { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+
+        // A line-split is a row of its own, in its manual-order slot.
+        app.pane_section_order
+            .new_line_split("later".to_string(), 1);
+        let rows = sidebar_pane_section_rows(&app);
+        assert!(matches!(&rows[1], PaneSectionRow::LineSplit { name, .. } if name == "later"));
+
+        // Agent panes are not Panes-section rows.
+        let terminal_id = app.workspaces[1].tabs[0].panes[&second]
+            .attached_terminal_id
+            .clone();
+        app.terminals
+            .get_mut(&terminal_id)
+            .expect("terminal")
+            .detected_agent = Some(Agent::Pi);
+        app.reconcile_pane_section_order();
+        assert!(!sidebar_pane_section_rows(&app)
+            .iter()
+            .any(|row| matches!(row, PaneSectionRow::Pane(entry) if entry.pane_id == second)));
+    }
+
+    #[test]
+    fn pane_section_row_areas_are_shared_by_render_and_hit_testing() {
+        let mut app = app_with_two_shell_panes();
+        app.pane_section_order.new_line_split("top".to_string(), 0);
+        let area = Rect::new(0, 0, 26, 40);
+        let pane_area = pane_section_rect(area, 0.5, 0.5, true);
+        let areas = compute_pane_section_row_areas(&app, pane_area);
+        assert_eq!(areas.len(), 3);
+
+        // Rows are laid out inside the band body, below its header rows, and the
+        // rects the renderer draws into are the ones input hit-tests.
+        let body = pane_section_body_rect(pane_area, false);
+        assert!(areas.iter().all(
+            |row| row.rect.y >= body.y && row.rect.y + row.rect.height <= body.y + body.height
+        ));
+        app.view.pane_section_row_areas = areas.clone();
+
+        let mut terminal = Terminal::new(TestBackend::new(26, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_pane_section(&app, &TerminalRuntimeRegistry::new(), frame, pane_area)
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let split_row = areas[0].rect.y;
+        assert!(row_text(&buffer, split_row, 26).starts_with("── top"));
+        assert!(app.pane_section_row_at(split_row).is_none());
+
+        for row in areas.iter().skip(1) {
+            let (order_idx, ws_idx, pane_id) = app
+                .pane_section_row_at(row.rect.y)
+                .expect("pane row hit-tests to its own rect");
+            assert_eq!(order_idx, row.order_idx);
+            assert_eq!(
+                crate::app::state::PaneSectionRowContent::Pane {
+                    ws_idx,
+                    tab_idx: 0,
+                    pane_id
+                },
+                row.content
+            );
+            let name = app.workspaces[ws_idx]
+                .tab_display_name(0)
+                .unwrap_or_default();
+            assert!(row_text(&buffer, row.rect.y, 26).contains(&name));
+        }
+    }
+
+    #[test]
+    fn pane_section_scroll_metrics_follow_the_visible_row_count() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = (0..6)
+            .map(|i| Workspace::test_new(&format!("space{i}")))
+            .collect();
+        app.active = Some(0);
+        app.selected = 0;
+        app.ensure_test_terminals();
+        app.reconcile_pane_section_order();
+
+        let area = Rect::new(0, 0, 26, 30);
+        let pane_area = pane_section_rect(area, 0.5, 0.5, true);
+        let metrics = pane_section_scroll_metrics(&app, pane_area);
+        assert!(metrics.viewport_rows < 6);
+        assert_eq!(metrics.max_offset_from_bottom, 6 - metrics.viewport_rows);
+        assert!(pane_section_scrollbar_rect(&app, pane_area).is_some());
     }
 
     #[test]

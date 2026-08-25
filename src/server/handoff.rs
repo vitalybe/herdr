@@ -484,7 +484,10 @@ mod tests {
             selected: 0,
             sidebar_width: None,
             sidebar_section_split: None,
+            sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
+            collapsed_line_split_keys: Default::default(),
+            pane_section_order: None,
         }
     }
 

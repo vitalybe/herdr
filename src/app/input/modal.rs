@@ -406,6 +406,74 @@ pub(super) fn open_rename_active_tab(state: &mut AppState, replace_on_type: bool
     }
 }
 
+/// Current name of a Panes-section line-split, or `None` when it no longer
+/// exists.
+fn line_split_current_name(state: &AppState, id: crate::app::state::LineSplitId) -> Option<String> {
+    use crate::app::state::PaneManualEntry;
+    state
+        .pane_section_order
+        .order
+        .iter()
+        .find_map(|entry| match entry {
+            PaneManualEntry::LineSplit { id: entry_id, name } if *entry_id == id => {
+                Some(name.clone())
+            }
+            _ => None,
+        })
+}
+
+/// Open the rename modal targeting a Panes-section line-split divider.
+pub(super) fn open_rename_line_split(state: &mut AppState, id: crate::app::state::LineSplitId) {
+    let Some(name) = line_split_current_name(state, id) else {
+        return;
+    };
+    state.creating_new_tab = false;
+    state.requested_new_tab_name = None;
+    state.pending_workspace_create_cwd = None;
+    state.rename_pane_target = None;
+    state.rename_line_split_target = Some(id);
+    let replace_on_type = name.is_empty();
+    state.set_name_input(name);
+    state.name_input_replace_on_type = replace_on_type;
+    state.mode = Mode::RenameLineSplit;
+}
+
+/// Write `name` into the line-split identified by `rename_line_split_target`.
+/// Empty names are allowed: a nameless split still renders as a plain rule.
+fn commit_line_split_rename(state: &mut AppState, name: String) {
+    use crate::app::state::PaneManualEntry;
+    let Some(id) = state.rename_line_split_target else {
+        return;
+    };
+    for entry in &mut state.pane_section_order.order {
+        if let PaneManualEntry::LineSplit {
+            id: entry_id,
+            name: entry_name,
+        } = entry
+        {
+            if *entry_id == id {
+                *entry_name = name;
+                state.mark_session_dirty();
+                break;
+            }
+        }
+    }
+}
+
+/// Remove a line-split divider from the Panes-section order.
+fn delete_line_split(state: &mut AppState, id: crate::app::state::LineSplitId) {
+    use crate::app::state::PaneManualEntry;
+    let before = state.pane_section_order.order.len();
+    state
+        .pane_section_order
+        .order
+        .retain(|entry| !matches!(entry, PaneManualEntry::LineSplit { id: entry_id, .. } if *entry_id == id));
+    if state.pane_section_order.order.len() != before {
+        state.mark_session_dirty();
+    }
+    leave_modal(state);
+}
+
 pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::PaneId) {
     let Some(ws) = state.active.and_then(|i| state.workspaces.get(i)) else {
         return;
@@ -565,6 +633,9 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                         }
                     }
                 }
+                Mode::RenameLineSplit => {
+                    commit_line_split_rename(state, new_name);
+                }
                 Mode::RenamePane => {
                     if let (Some(ws_idx), Some(pane_id)) = (state.active, state.rename_pane_target)
                     {
@@ -584,6 +655,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
             state.creating_new_tab = false;
             state.pending_workspace_create_cwd = None;
             state.rename_pane_target = None;
+            state.rename_line_split_target = None;
             clear_rename_input(state);
             leave_modal(state);
         }
@@ -595,6 +667,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
             state.requested_new_tab_name = None;
             state.pending_workspace_create_cwd = None;
             state.rename_pane_target = None;
+            state.rename_line_split_target = None;
             clear_rename_input(state);
             leave_modal(state);
         }
@@ -944,6 +1017,12 @@ pub(super) fn apply_context_menu_action(
                 };
             }
         }
+        (ContextMenuKind::LineSplit { id }, Some("Rename")) => {
+            open_rename_line_split(state, id);
+        }
+        (ContextMenuKind::LineSplit { id }, Some("Delete")) => {
+            delete_line_split(state, id);
+        }
         (ContextMenuKind::Pane { pane_id, .. }, Some("Rename pane")) => {
             open_rename_pane(state, pane_id);
         }
@@ -1180,6 +1259,9 @@ impl App {
                     }
                 }
             }
+            Mode::RenameLineSplit => {
+                commit_line_split_rename(&mut self.state, new_name);
+            }
             Mode::RenamePane => {
                 if let (Some(ws_idx), Some(pane_id)) =
                     (self.state.active, self.state.rename_pane_target)
@@ -1366,6 +1448,12 @@ impl App {
                     leave_modal(&mut self.state);
                 }
             }
+            (ContextMenuKind::LineSplit { id }, Some("Rename")) => {
+                open_rename_line_split(&mut self.state, id);
+            }
+            (ContextMenuKind::LineSplit { id }, Some("Delete")) => {
+                delete_line_split(&mut self.state, id);
+            }
             (ContextMenuKind::Pane { pane_id, .. }, Some("Rename pane")) => {
                 open_rename_pane(&mut self.state, pane_id);
             }
@@ -1489,6 +1577,7 @@ fn cancel_rename_modal(state: &mut AppState) {
     state.requested_new_tab_name = None;
     state.pending_workspace_create_cwd = None;
     state.rename_pane_target = None;
+    state.rename_line_split_target = None;
     clear_rename_input(state);
     leave_modal(state);
 }

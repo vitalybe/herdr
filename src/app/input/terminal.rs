@@ -1558,7 +1558,10 @@ mod tests {
             app.state.selected,
             app.state.sidebar_width,
             app.state.sidebar_section_split,
+            app.state.sidebar_pane_section_split,
             app.state.collapsed_space_keys.clone(),
+            app.state.collapsed_line_split_keys.clone(),
+            app.state.pane_section_order.to_keys(),
         );
         assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 1);
         assert!(matches!(

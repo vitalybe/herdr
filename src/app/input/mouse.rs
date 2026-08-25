@@ -6,8 +6,8 @@ use tracing::warn;
 use crate::{
     app::state::{
         AgentPanelSort, AppState, ContextMenuKind, ContextMenuState, DragState, DragTarget,
-        MenuListState, Mode, RightClickPassthroughGesture, TabPressState, ViewLayout,
-        WorkspacePressState,
+        MenuListState, Mode, PaneManualEntryRef, PaneSectionPressState,
+        RightClickPassthroughGesture, TabPressState, ViewLayout, WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
     selection::Selection,
@@ -54,6 +54,10 @@ pub(super) enum MouseAction {
     SetSplitRatio {
         path: Vec<bool>,
         ratio: f32,
+    },
+    MovePaneSectionEntry {
+        source: PaneManualEntryRef,
+        insert_idx: usize,
     },
     RenameModal(ModalAction),
     ConfirmCloseAccept,
@@ -392,7 +396,10 @@ impl AppState {
 
                 if matches!(
                     self.mode,
-                    Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane
+                    Mode::RenameWorkspace
+                        | Mode::RenameTab
+                        | Mode::RenamePane
+                        | Mode::RenameLineSplit
                 ) {
                     let action = self
                         .rename_modal_inner()
@@ -432,11 +439,11 @@ impl AppState {
                     return None;
                 }
 
-                if self.on_sidebar_section_divider(mouse.column, mouse.row) {
+                if let Some(index) = self.on_sidebar_section_divider(mouse.column, mouse.row) {
                     self.drag = Some(DragState {
-                        target: DragTarget::SidebarSectionDivider,
+                        target: DragTarget::SidebarSectionDivider { index },
                     });
-                    self.set_sidebar_section_split(mouse.row);
+                    self.set_sidebar_section_split(index, mouse.row);
                     return None;
                 }
 
@@ -601,6 +608,44 @@ impl AppState {
                         return None;
                     }
 
+                    if let Some(target) =
+                        self.pane_section_scrollbar_target_at(mouse.column, mouse.row)
+                    {
+                        match target {
+                            ScrollbarClickTarget::Thumb { grab_row_offset } => {
+                                self.drag = Some(DragState {
+                                    target: DragTarget::PaneSectionScrollbar { grab_row_offset },
+                                });
+                            }
+                            ScrollbarClickTarget::Track { offset_from_bottom } => {
+                                self.set_pane_section_offset_from_bottom(offset_from_bottom);
+                            }
+                        }
+                        return None;
+                    }
+
+                    if self.mouse_capture
+                        && self.on_pane_section_split_button(mouse.column, mouse.row)
+                    {
+                        // Insert a new empty line-split at the top of the Panes
+                        // order and immediately open rename so the user can name it.
+                        let id = self.pane_section_order.new_line_split(String::new(), 0);
+                        self.mark_session_dirty();
+                        super::modal::open_rename_line_split(self, id);
+                        return None;
+                    }
+
+                    if let Some(entry) = self.pane_section_entry_ref_at_row(mouse.row) {
+                        // Record a press so a drag can promote to a reorder. On
+                        // release without a drag, a pane row focuses its pane.
+                        self.pane_section_press = Some(PaneSectionPressState {
+                            entry,
+                            start_col: mouse.column,
+                            start_row: mouse.row,
+                        });
+                        return None;
+                    }
+
                     if self.on_agent_panel_sort_toggle(mouse.column, mouse.row) {
                         self.agent_panel_sort = match self.agent_panel_sort {
                             AgentPanelSort::Spaces => AgentPanelSort::Priority,
@@ -689,7 +734,24 @@ impl AppState {
 
                 let workspace_drop_target = self.workspace_drop_target_at_row(mouse.row);
                 let tab_drop_index = self.tab_drop_index_at(mouse.column, mouse.row);
+                let pane_section_drop_index = self.pane_section_drop_index_at_row(mouse.row);
                 if self.drag.is_none() {
+                    if let Some(press) = &self.pane_section_press {
+                        let delta_col = mouse.column.abs_diff(press.start_col);
+                        let delta_row = mouse.row.abs_diff(press.start_row);
+                        if delta_col >= WORKSPACE_DRAG_THRESHOLD
+                            || delta_row >= WORKSPACE_DRAG_THRESHOLD
+                        {
+                            self.drag = Some(DragState {
+                                target: DragTarget::PaneSectionReorder {
+                                    source: press.entry.clone(),
+                                    insert_idx: pane_section_drop_index,
+                                },
+                            });
+                            self.pane_section_press = None;
+                            return None;
+                        }
+                    }
                     if let Some(press) = self.workspace_presses.get(&source_id) {
                         let delta_col = mouse.column.abs_diff(press.start_col);
                         let delta_row = mouse.row.abs_diff(press.start_row);
@@ -755,9 +817,23 @@ impl AppState {
                     if *drag_source_id == source_id && self.active == Some(*ws_idx) {
                         *insert_idx = tab_drop_index;
                     }
+                } else if let Some(DragState {
+                    target: DragTarget::PaneSectionReorder { insert_idx, .. },
+                }) = &mut self.drag
+                {
+                    *insert_idx = pane_section_drop_index;
                 } else if let Some(drag) = &self.drag {
                     match &drag.target {
-                        DragTarget::WorkspaceReorder { .. } | DragTarget::TabReorder { .. } => {}
+                        DragTarget::WorkspaceReorder { .. }
+                        | DragTarget::TabReorder { .. }
+                        | DragTarget::PaneSectionReorder { .. } => {}
+                        DragTarget::PaneSectionScrollbar { grab_row_offset } => {
+                            if let Some(offset_from_bottom) =
+                                self.pane_section_offset_for_drag_row(mouse.row, *grab_row_offset)
+                            {
+                                self.set_pane_section_offset_from_bottom(offset_from_bottom);
+                            }
+                        }
                         DragTarget::WorkspaceListScrollbar { grab_row_offset } => {
                             if let Some(offset_from_bottom) =
                                 self.workspace_list_offset_for_drag_row(mouse.row, *grab_row_offset)
@@ -820,8 +896,8 @@ impl AppState {
                         DragTarget::SidebarDivider => {
                             self.set_manual_sidebar_width(mouse.column);
                         }
-                        DragTarget::SidebarSectionDivider => {
-                            self.set_sidebar_section_split(mouse.row);
+                        DragTarget::SidebarSectionDivider { index } => {
+                            self.set_sidebar_section_split(*index, mouse.row);
                         }
                         DragTarget::ReleaseNotesScrollbar { .. }
                         | DragTarget::ProductAnnouncementScrollbar { .. }
@@ -867,8 +943,13 @@ impl AppState {
 
                 let workspace_press = self.workspace_presses.remove(&source_id);
                 let tab_press = self.tab_presses.remove(&source_id);
+                let pane_section_press = self.pane_section_press.take();
                 if foreign_chrome_drag {
-                    return self.chrome_press_action(workspace_press, tab_press);
+                    return self.chrome_press_action(
+                        workspace_press,
+                        tab_press,
+                        pane_section_press,
+                    );
                 }
 
                 match self.drag.take() {
@@ -923,8 +1004,23 @@ impl AppState {
                             });
                         }
                     }
+                    Some(DragState {
+                        target:
+                            DragTarget::PaneSectionReorder {
+                                source,
+                                insert_idx: Some(insert_idx),
+                            },
+                    }) => {
+                        return Some(MouseAction::MovePaneSectionEntry { source, insert_idx });
+                    }
                     Some(_) => {}
-                    None => return self.chrome_press_action(workspace_press, tab_press),
+                    None => {
+                        return self.chrome_press_action(
+                            workspace_press,
+                            tab_press,
+                            pane_section_press,
+                        )
+                    }
                 }
             }
 
@@ -985,42 +1081,10 @@ impl AppState {
             }
 
             MouseEventKind::ScrollUp if in_sidebar => {
-                let agent_area = self.agent_panel_rect();
-                let over_agent_panel = agent_area != Rect::default()
-                    && mouse.row >= agent_area.y
-                    && mouse.row < agent_area.y + agent_area.height;
-                if over_agent_panel {
-                    if crate::ui::should_show_scrollbar(crate::ui::agent_panel_scroll_metrics(
-                        self, agent_area,
-                    )) {
-                        self.scroll_agent_panel(-1);
-                    }
-                } else if crate::ui::should_show_scrollbar(
-                    crate::ui::workspace_list_scroll_metrics(self, self.workspace_list_rect()),
-                ) {
-                    self.scroll_workspace_list(-1);
-                } else {
-                    self.move_selected_workspace_by_visible_delta(-1);
-                }
+                self.scroll_sidebar_band(mouse.row, -1);
             }
             MouseEventKind::ScrollDown if in_sidebar => {
-                let agent_area = self.agent_panel_rect();
-                let over_agent_panel = agent_area != Rect::default()
-                    && mouse.row >= agent_area.y
-                    && mouse.row < agent_area.y + agent_area.height;
-                if over_agent_panel {
-                    if crate::ui::should_show_scrollbar(crate::ui::agent_panel_scroll_metrics(
-                        self, agent_area,
-                    )) {
-                        self.scroll_agent_panel(1);
-                    }
-                } else if crate::ui::should_show_scrollbar(
-                    crate::ui::workspace_list_scroll_metrics(self, self.workspace_list_rect()),
-                ) {
-                    self.scroll_workspace_list(1);
-                } else {
-                    self.move_selected_workspace_by_visible_delta(1);
-                }
+                self.scroll_sidebar_band(mouse.row, 1);
             }
 
             MouseEventKind::Moved if self.mode == Mode::ContextMenu => {
@@ -1042,6 +1106,16 @@ impl AppState {
                     .workspace_list_scrollbar_target_at(mouse.column, mouse.row)
                     .is_some()
                 {
+                    return None;
+                }
+                if let Some(id) = self.pane_section_line_split_at_row(mouse.row) {
+                    self.context_menu = Some(ContextMenuState {
+                        kind: ContextMenuKind::LineSplit { id },
+                        x: mouse.column,
+                        y: mouse.row,
+                        list: MenuListState::new(0),
+                    });
+                    self.mode = Mode::ContextMenu;
                     return None;
                 }
                 if let Some(idx) = self.workspace_at_row(mouse.row) {
@@ -1483,6 +1557,7 @@ impl AppState {
         &mut self,
         workspace_press: Option<WorkspacePressState>,
         tab_press: Option<TabPressState>,
+        pane_section_press: Option<PaneSectionPressState>,
     ) -> Option<MouseAction> {
         if let Some(press) = workspace_press {
             self.mode = Mode::Terminal;
@@ -1496,6 +1571,17 @@ impl AppState {
                 return Some(MouseAction::FocusTab {
                     tab_idx: press.tab_idx,
                 });
+            }
+        }
+        if let Some(press) = pane_section_press {
+            // A plain click on a Panes-section pane row focuses that pane in its
+            // workspace (which may be a different space), switching workspace and
+            // tab as needed. Line-split rows are not focusable.
+            if let PaneManualEntryRef::Pane(pane_ref) = &press.entry {
+                if let Some((ws_idx, pane_id)) = self.resolve_pane_section_ref(pane_ref) {
+                    self.mode = Mode::Terminal;
+                    return Some(MouseAction::FocusPane { ws_idx, pane_id });
+                }
             }
         }
         None

@@ -4,7 +4,7 @@ use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use tracing::warn;
 
-use crate::app::PaneClickState;
+use crate::app::{PaneClickState, PaneSectionRowClickState};
 use crate::input::TerminalKey;
 #[cfg(test)]
 use ratatui::layout::Direction;
@@ -100,9 +100,10 @@ impl App {
                 Mode::ReleaseNotes => self.handle_release_notes_key(key_event),
                 Mode::ProductAnnouncement => self.handle_product_announcement_key(key_event),
                 Mode::Prefix | Mode::Navigate | Mode::Copy => unreachable!(),
-                Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
-                    self.handle_rename_key_via_api(key_event)
-                }
+                Mode::RenameWorkspace
+                | Mode::RenameTab
+                | Mode::RenamePane
+                | Mode::RenameLineSplit => self.handle_rename_key_via_api(key_event),
                 Mode::NewLinkedWorktree => self.handle_worktree_create_key(key_event),
                 Mode::OpenExistingWorktree => self.handle_worktree_open_key(key_event),
                 Mode::ConfirmRemoveWorktree => self.handle_worktree_remove_key(key_event),
@@ -209,7 +210,7 @@ impl App {
 
     pub(crate) fn paste_into_active_text_input(&mut self, text: &str) -> bool {
         match self.state.mode {
-            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane => {
+            Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::RenameLineSplit => {
                 insert_rename_input_text(&mut self.state, text);
                 true
             }
@@ -384,6 +385,10 @@ impl App {
             return;
         }
 
+        if self.handle_pane_section_row_double_click(mouse) {
+            return;
+        }
+
         let handled_pane_double_click = self.handle_pane_double_click(mouse);
         if !handled_pane_double_click {
             self.focus_pane_before_mouse_press(mouse);
@@ -436,6 +441,12 @@ impl App {
                         source_tab_idx,
                         insert_idx,
                     } => self.move_tab_via_api(ws_idx, source_tab_idx, insert_idx),
+                    MouseAction::MovePaneSectionEntry { source, insert_idx } => {
+                        // The Panes-section order is client-only presentation
+                        // state and never changes the real pane order, so mutate
+                        // it directly instead of routing through the runtime API.
+                        self.state.move_pane_section_entry(source, insert_idx);
+                    }
                     MouseAction::SetSplitRatio { path, ratio } => {
                         self.set_split_ratio_via_api(path, ratio)
                     }
@@ -650,6 +661,59 @@ impl App {
         self.select_double_clicked_word(click)
     }
 
+    /// Detects a double-click on a Panes-section row and opens the pane rename
+    /// modal targeting that pane. The first click is recorded and left to normal
+    /// single-click activation; only the qualifying second click is consumed.
+    fn handle_pane_section_row_double_click(&mut self, mouse: MouseEvent) -> bool {
+        // A left drag starts a reorder gesture; invalidate any pending pane-row
+        // click so a drag is never mistaken for the first half of a double-click.
+        if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) {
+            self.last_pane_section_row_click = None;
+            return false;
+        }
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+        if !mouse.modifiers.is_empty() {
+            self.last_pane_section_row_click = None;
+            return false;
+        }
+
+        let sidebar = self.state.view.sidebar_rect;
+        let in_sidebar = sidebar.width > 0
+            && mouse.column >= sidebar.x
+            && mouse.column < sidebar.x + sidebar.width
+            && mouse.row >= sidebar.y
+            && mouse.row < sidebar.y + sidebar.height;
+        if !in_sidebar {
+            self.last_pane_section_row_click = None;
+            return false;
+        }
+
+        let Some((_order_idx, ws_idx, pane_id)) = self.state.pane_section_row_at(mouse.row) else {
+            self.last_pane_section_row_click = None;
+            return false;
+        };
+
+        let click = PaneSectionRowClickState {
+            ws_idx,
+            pane_id,
+            at: std::time::Instant::now(),
+        };
+        if self
+            .last_pane_section_row_click
+            .is_some_and(|last| last.is_double_click_for(click))
+        {
+            self.last_pane_section_row_click = None;
+            self.focus_pane_internal_via_api(ws_idx, pane_id);
+            modal::open_rename_pane(&mut self.state, pane_id);
+            return true;
+        }
+
+        self.last_pane_section_row_click = Some(click);
+        false
+    }
+
     fn pane_click_candidate(&mut self, mouse: MouseEvent) -> Option<PaneClickState> {
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             return None;
@@ -726,9 +790,11 @@ pub(crate) fn is_modal_paste_shortcut(key: &KeyEvent) -> bool {
 
 pub(crate) fn modal_paste_target_active(state: &AppState) -> bool {
     match state.mode {
-        Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane | Mode::NewLinkedWorktree => {
-            true
-        }
+        Mode::RenameWorkspace
+        | Mode::RenameTab
+        | Mode::RenamePane
+        | Mode::RenameLineSplit
+        | Mode::NewLinkedWorktree => true,
         Mode::OpenExistingWorktree => state
             .worktree_open
             .as_ref()
@@ -874,7 +940,10 @@ fn capture_snapshot(state: &AppState) -> crate::persist::SessionSnapshot {
         state.selected,
         state.sidebar_width,
         state.sidebar_section_split,
+        state.sidebar_pane_section_split,
         state.collapsed_space_keys.clone(),
+        state.collapsed_line_split_keys.clone(),
+        state.pane_section_order.to_keys(),
     )
 }
 

@@ -99,6 +99,36 @@ impl Workspace {
             .unwrap_or((AgentState::Unknown, true))
     }
 
+    /// Non-agent panes in natural display order (tabs x panes), each paired with
+    /// its containing tab index, `PaneId`, and stable public pane number. A pane
+    /// is "non-agent" when its attached terminal is not an agent terminal (or has
+    /// no resolved terminal). Panes without a public number are skipped. Used to
+    /// build and reconcile the client-only sidebar Panes section.
+    pub fn non_agent_panes(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> Vec<(usize, PaneId, usize)> {
+        let mut out = Vec::new();
+        for (tab_idx, tab) in self.tabs.iter().enumerate() {
+            for pane_id in tab.layout.pane_ids() {
+                let Some(pane) = tab.panes.get(&pane_id) else {
+                    continue;
+                };
+                let is_agent = terminals
+                    .get(&pane.attached_terminal_id)
+                    .is_some_and(|terminal| terminal.is_agent_terminal());
+                if is_agent {
+                    continue;
+                }
+                let Some(pane_number) = self.public_pane_number(pane_id) else {
+                    continue;
+                };
+                out.push((tab_idx, pane_id, pane_number));
+            }
+        }
+        out
+    }
+
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
         let multi_tab = self.tabs.len() > 1;
         self.tabs

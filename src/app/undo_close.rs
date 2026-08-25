@@ -141,7 +141,7 @@ impl App {
             insert_idx
         };
 
-        self.state.switch_workspace_tab(ws_idx, insert_idx);
+        self.state.switch_workspace_tab_sticky(ws_idx, insert_idx);
         self.state.mode = Mode::Terminal;
         self.state.tab_scroll_follow_active = true;
         self.state.refresh_tab_bar_view();
@@ -184,11 +184,13 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.active = Some(0);
         app.state.selected = 0;
-        app.state.workspaces[0].switch_tab(1);
+        app.state.workspaces[0].switch_tab_sticky(1);
 
         app.state.close_tab();
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
         assert_eq!(app.state.closed_entries.len(), 1);
+        // Closing the home tab leaves the home tab in bounds.
+        assert_eq!(app.state.workspaces[0].home_tab, 0);
 
         assert!(app.undo_last_close());
         assert_eq!(app.state.workspaces[0].tabs.len(), 2);
@@ -198,6 +200,11 @@ mod tests {
             app.state.workspaces[0].tabs[1].custom_name.as_deref(),
             Some("logs")
         );
+        // Reopening is a deliberate selection, so the reopened tab is where the
+        // workspace returns to.
+        assert_eq!(app.state.workspaces[0].active_tab, 1);
+        assert_eq!(app.state.workspaces[0].home_tab, 1);
+        app.state.workspaces[0].assert_invariants_for_test();
     }
 
     #[tokio::test]

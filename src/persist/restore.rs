@@ -579,6 +579,7 @@ fn restore_workspace(
             next_public_pane_number,
             next_public_tab_number,
             active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
+            home_tab: snap.home_tab.min(tabs.len().saturating_sub(1)),
             tabs,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
@@ -1368,6 +1369,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                home_tab: 0,
             }],
             active: Some(0),
             selected: 0,
@@ -1464,6 +1466,7 @@ mod tests {
                     root_pane: Some(10),
                 }],
                 active_tab: 0,
+                home_tab: 0,
             }],
             active: Some(0),
             selected: 0,
@@ -1577,6 +1580,7 @@ mod tests {
                     },
                 ],
                 active_tab: 3,
+                home_tab: 0,
             }],
             active: Some(0),
             selected: 0,
@@ -1640,6 +1644,7 @@ mod tests {
                 root_pane: Some(10),
             }],
             active_tab: 0,
+            home_tab: 0,
         };
         let mut next_public_pane_number = 1;
 
@@ -1691,6 +1696,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                home_tab: 0,
             }],
             active: Some(0),
             selected: 0,
@@ -1807,6 +1813,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                home_tab: 0,
             }],
             active: Some(0),
             selected: 0,
@@ -1981,6 +1988,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                home_tab: 0,
             }],
             active: Some(0),
             selected: 0,
@@ -2093,6 +2101,7 @@ mod tests {
                 root_pane: Some(10),
             }],
             active_tab: 0,
+            home_tab: 0,
         };
 
         let parts = restore_one_workspace(

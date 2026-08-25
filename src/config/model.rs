@@ -99,6 +99,7 @@ pub enum AgentPanelSortConfig {
     #[serde(alias = "workspaces")]
     Spaces,
     Priority,
+    Manual,
 }
 
 impl AgentPanelSortConfig {
@@ -106,6 +107,7 @@ impl AgentPanelSortConfig {
         match self {
             Self::Spaces => "spaces",
             Self::Priority => "priority",
+            Self::Manual => "manual",
         }
     }
 }

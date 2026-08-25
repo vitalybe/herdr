@@ -219,6 +219,10 @@ fn compute_view_internal(
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
+    // Mutation phase: keep the manual agent order reconciled with the live pane
+    // set before any pure render reads it. Runs for both desktop and mobile.
+    app.reconcile_agent_manual_order();
+
     if is_mobile_width(area, app.mobile_width_threshold) {
         compute_mobile_view(app, terminal_runtimes, area, resize_panes, cell_size);
         return;

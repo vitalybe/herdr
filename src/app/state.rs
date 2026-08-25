@@ -1074,6 +1074,92 @@ pub enum AgentPanelSort {
     #[default]
     Spaces,
     Priority,
+    Manual,
+}
+
+/// A single entry in the manual agent ordering. Modeled as an enum so
+/// structural entries can be interleaved with agent panes.
+#[derive(Debug, Clone)]
+pub(crate) enum ManualEntry {
+    Pane(PaneId),
+}
+
+impl ManualEntry {
+    fn pane_id(&self) -> PaneId {
+        match self {
+            ManualEntry::Pane(pane_id) => *pane_id,
+        }
+    }
+}
+
+/// Flat, client-only manual ordering of agent panes for the agents panel.
+///
+/// This is TUI presentation state: it never enters the server/runtime protocol.
+/// `order` drives the display order, `known` tracks which panes have already
+/// been placed (so genuinely new agents get the placement rule), and `seeded`
+/// records whether the natural order has been captured at least once.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AgentManualOrder {
+    pub(crate) order: Vec<ManualEntry>,
+    pub(crate) known: std::collections::HashSet<PaneId>,
+    pub(crate) seeded: bool,
+}
+
+impl AgentManualOrder {
+    /// Rebuild a manual order from persisted stable keys (workspace id + public
+    /// pane number) resolved against the restored workspaces. Entries whose
+    /// workspace or pane number no longer resolve are dropped. `seeded` is set
+    /// because a snapshot was present, so reconcile treats later arrivals as
+    /// genuinely new agents rather than reseeding.
+    pub(crate) fn from_public_keys(
+        keys: &[(String, usize)],
+        workspaces: &[crate::workspace::Workspace],
+    ) -> Self {
+        let mut number_to_pane: std::collections::HashMap<(&str, usize), PaneId> =
+            std::collections::HashMap::new();
+        for ws in workspaces {
+            for (pane_id, number) in &ws.public_pane_numbers {
+                number_to_pane.insert((ws.id.as_str(), *number), *pane_id);
+            }
+        }
+
+        let mut order = Vec::new();
+        let mut known = std::collections::HashSet::new();
+        for (workspace_id, number) in keys {
+            if let Some(pane_id) = number_to_pane.get(&(workspace_id.as_str(), *number)) {
+                if known.insert(*pane_id) {
+                    order.push(ManualEntry::Pane(*pane_id));
+                }
+            }
+        }
+
+        Self {
+            order,
+            known,
+            seeded: true,
+        }
+    }
+
+    /// Serialize `order` to stable keys (workspace id + public pane number) so
+    /// the ordering survives the PaneId remap that happens on restore. Entries
+    /// whose pane cannot be resolved to a public number are skipped.
+    pub(crate) fn to_public_keys(
+        &self,
+        workspaces: &[crate::workspace::Workspace],
+    ) -> Vec<(String, usize)> {
+        let mut pane_to_key: std::collections::HashMap<PaneId, (String, usize)> =
+            std::collections::HashMap::new();
+        for ws in workspaces {
+            for (pane_id, number) in &ws.public_pane_numbers {
+                pane_to_key.insert(*pane_id, (ws.id.clone(), *number));
+            }
+        }
+
+        self.order
+            .iter()
+            .filter_map(|entry| pane_to_key.get(&entry.pane_id()).cloned())
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,6 +1293,14 @@ pub(crate) enum DragTarget {
         source_tab_idx: usize,
         insert_idx: Option<usize>,
     },
+    /// Reorder of an agent pane within the flat manual agent ordering.
+    /// Cross-workspace moves are allowed; `insert_idx` is a flat index into the
+    /// manual order.
+    AgentReorder {
+        source_id: crate::app::InputSourceId,
+        source_pane_id: PaneId,
+        insert_idx: Option<usize>,
+    },
     WorkspaceListScrollbar {
         grab_row_offset: u16,
     },
@@ -1250,6 +1344,12 @@ pub(crate) struct WorkspacePressState {
 pub(crate) struct TabPressState {
     pub ws_idx: usize,
     pub tab_idx: usize,
+    pub start_col: u16,
+    pub start_row: u16,
+}
+
+pub(crate) struct AgentPressState {
+    pub pane_id: PaneId,
     pub start_col: u16,
     pub start_row: u16,
 }
@@ -1533,6 +1633,7 @@ pub struct AppState {
     pub(crate) workspace_presses:
         std::collections::HashMap<crate::app::InputSourceId, WorkspacePressState>,
     pub(crate) tab_presses: std::collections::HashMap<crate::app::InputSourceId, TabPressState>,
+    pub(crate) agent_presses: std::collections::HashMap<crate::app::InputSourceId, AgentPressState>,
     pub selection: Option<Selection>,
     pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub context_menu: Option<ContextMenuState>,
@@ -1565,6 +1666,8 @@ pub struct AppState {
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
     pub agent_panel_sort: AgentPanelSort,
+    /// Flat client-only manual ordering of agent panes (TUI presentation state).
+    pub(crate) agent_manual_order: AgentManualOrder,
     pub status_indicators: crate::config::StatusIndicatorStyle,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
@@ -1964,6 +2067,7 @@ impl AppState {
             drag: None,
             workspace_presses: std::collections::HashMap::new(),
             tab_presses: std::collections::HashMap::new(),
+            agent_presses: std::collections::HashMap::new(),
             selection: None,
             selection_autoscroll: None,
             context_menu: None,
@@ -1993,6 +2097,7 @@ impl AppState {
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
             agent_panel_sort: AgentPanelSort::Spaces,
+            agent_manual_order: AgentManualOrder::default(),
             status_indicators: crate::config::StatusIndicatorStyle::Dots,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
@@ -2169,6 +2274,18 @@ impl AppState {
             assert!(
                 self.tab_presses.is_empty(),
                 "empty app state must not keep tab press state"
+            );
+            assert!(
+                self.agent_presses.is_empty(),
+                "empty app state must not keep agent press state"
+            );
+            assert!(
+                self.agent_manual_order.order.is_empty(),
+                "empty app state must not keep manual agent order entries"
+            );
+            assert!(
+                self.agent_manual_order.known.is_empty(),
+                "empty app state must not keep known manual agent panes"
             );
             assert!(
                 self.context_menu.is_none(),
@@ -2361,6 +2478,21 @@ impl AppState {
                 DragTarget::PaneScrollbar { pane_id, .. } => {
                     assert_live_pane(*pane_id, "pane scrollbar drag")
                 }
+                DragTarget::AgentReorder {
+                    source_pane_id,
+                    insert_idx,
+                    ..
+                } => {
+                    assert_live_pane(*source_pane_id, "agent reorder drag source");
+                    if let Some(insert_idx) = insert_idx {
+                        assert!(
+                            *insert_idx <= self.agent_manual_order.order.len(),
+                            "agent reorder insert index {} out of bounds for {} manual entries",
+                            insert_idx,
+                            self.agent_manual_order.order.len()
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -2369,6 +2501,20 @@ impl AppState {
         }
         for press in self.tab_presses.values() {
             assert_tab_index(press.ws_idx, press.tab_idx, "tab press");
+        }
+        for press in self.agent_presses.values() {
+            assert_live_pane(press.pane_id, "agent press");
+        }
+        for entry in &self.agent_manual_order.order {
+            let pane_id = entry.pane_id();
+            assert_live_pane(pane_id, "manual agent order");
+            assert!(
+                self.agent_manual_order.known.contains(&pane_id),
+                "manual agent order entry {pane_id:?} missing from known set"
+            );
+        }
+        for pane_id in &self.agent_manual_order.known {
+            assert_live_pane(*pane_id, "known manual agent pane");
         }
         if let Some(menu) = &self.context_menu {
             match menu.kind {

@@ -107,6 +107,7 @@ fn agent_panel_sort_label(sort: AgentPanelSort) -> &'static str {
     match sort {
         AgentPanelSort::Spaces => "grouped",
         AgentPanelSort::Priority => "priority",
+        AgentPanelSort::Manual => "manual",
     }
 }
 
@@ -1491,6 +1492,36 @@ fn render_workspace_list(
     }
 }
 
+/// Screen row for the manual-agent drop indicator at flat `insert_idx`, computed
+/// from the visible row areas. The indicator sits at the top of the target slot
+/// (the gap row above the row, or the panel top for the first slot); inserting
+/// past the last visible row draws in the gap below it.
+fn agent_panel_drop_indicator_row(
+    areas: &[AgentPanelRowArea],
+    body: Rect,
+    insert_idx: usize,
+) -> Option<u16> {
+    if body.height == 0 {
+        return None;
+    }
+    let body_bottom = body.y + body.height;
+    if let Some(area) = areas.iter().find(|area| area.row_idx == insert_idx) {
+        let y = if area.rect.y == body.y {
+            body.y
+        } else {
+            area.rect.y.saturating_sub(1)
+        };
+        return (y < body_bottom).then_some(y);
+    }
+    if let Some(last) = areas.last() {
+        if insert_idx >= last.row_idx.saturating_add(1) {
+            let y = last.rect.y.saturating_add(last.rect.height);
+            return (y < body_bottom).then_some(y);
+        }
+    }
+    None
+}
+
 /// Draw one agent row's configured token lines inside `rect`.
 fn render_agent_row(app: &AppState, frame: &mut Frame, rect: Rect, detail: &AgentPanelEntry) {
     let p = &app.palette;
@@ -1602,6 +1633,23 @@ fn render_agent_detail(
         match &panel_rows[area_row.row_idx] {
             AgentPanelRow::Agent(detail) => {
                 render_agent_row(app, frame, area_row.rect, detail);
+            }
+        }
+    }
+
+    if let Some(crate::app::state::DragTarget::AgentReorder {
+        insert_idx: Some(insert_idx),
+        ..
+    }) = app.drag.as_ref().map(|drag| &drag.target)
+    {
+        if let Some(y) = agent_panel_drop_indicator_row(&areas, body, *insert_idx) {
+            let indicator_right = scrollbar_rect
+                .map(|rect| rect.x)
+                .unwrap_or(body.x + body.width);
+            let buf = frame.buffer_mut();
+            for x in body.x..indicator_right {
+                buf[(x, y)].set_symbol("─");
+                buf[(x, y)].set_style(Style::default().fg(p.accent));
             }
         }
     }

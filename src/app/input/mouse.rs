@@ -431,6 +431,15 @@ impl AppState {
                     return None;
                 }
 
+                // A band header's collapse/expand toggle takes priority over the
+                // section dividers and over any body interaction in that band: a
+                // collapsed band's header row doubles as the divider row, and the
+                // toggle has to stay reachable there.
+                if let Some(band) = self.sidebar_section_header_toggle_at(mouse.column, mouse.row) {
+                    self.toggle_sidebar_section(band);
+                    return None;
+                }
+
                 if self.on_sidebar_divider(mouse.column, mouse.row) {
                     self.drag = Some(DragState {
                         target: DragTarget::SidebarDivider,

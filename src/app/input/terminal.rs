@@ -1562,6 +1562,7 @@ mod tests {
             app.state.collapsed_space_keys.clone(),
             app.state.collapsed_line_split_keys.clone(),
             app.state.pane_section_order.to_keys(),
+            app.state.sidebar_section_collapse(),
         );
         assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 1);
         assert!(matches!(

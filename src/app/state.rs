@@ -1273,6 +1273,14 @@ pub(crate) enum PaneManualEntryKey {
 /// display order across all spaces, `known` tracks which panes have already been
 /// placed (so genuinely new panes get the placement rule), and `seeded` records
 /// whether the natural order has been captured at least once.
+/// Which stacked sidebar bands the user has collapsed to a header row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SidebarSectionCollapse {
+    pub spaces: bool,
+    pub panes: bool,
+    pub agents: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PaneSectionOrder {
     pub(crate) order: Vec<PaneManualEntry>,
@@ -1866,6 +1874,12 @@ pub struct AppState {
     /// Target line-split for the rename modal (client-only; mirrors
     /// `rename_pane_target`). Set only while `mode == Mode::RenameLineSplit`.
     pub(crate) rename_line_split_target: Option<LineSplitId>,
+    /// Collapse state of the three stacked sidebar bands. Each collapsed band
+    /// shows a single header row; client-only presentation state, persisted so a
+    /// collapsed sidebar survives a restart.
+    pub spaces_section_collapsed: bool,
+    pub pane_section_collapsed: bool,
+    pub agents_section_collapsed: bool,
     /// Last pane focused within the sidebar Panes section this session. Lets a
     /// pane-nav key jump back to the last selected pane when focus is currently
     /// outside the section. Client-only TUI presentation state; ephemeral, not
@@ -2062,6 +2076,16 @@ impl AppState {
         let ws = self.workspaces.get(ws_idx)?;
         let pane_id = ws.focused_pane_id()?;
         self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+    }
+
+    /// Collapse state of the three stacked sidebar bands, as the layout and
+    /// hit-testing helpers take it.
+    pub(crate) fn sidebar_section_collapse(&self) -> SidebarSectionCollapse {
+        SidebarSectionCollapse {
+            spaces: self.spaces_section_collapsed,
+            panes: self.pane_section_collapsed,
+            agents: self.agents_section_collapsed,
+        }
     }
 
     pub fn is_active_pane(
@@ -2288,6 +2312,9 @@ impl AppState {
             pane_section_press: None,
             collapsed_line_split_keys: std::collections::HashSet::new(),
             rename_line_split_target: None,
+            spaces_section_collapsed: false,
+            pane_section_collapsed: false,
+            agents_section_collapsed: false,
             last_pane_section_focus: None,
         }
     }

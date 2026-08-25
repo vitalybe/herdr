@@ -40,6 +40,21 @@ pub struct SessionSnapshot {
     /// the section rebuilds from the current panes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_section_order: Option<PaneSectionOrderSnapshot>,
+    /// Collapse state of the three stacked sidebar bands (TUI presentation
+    /// state). Defaults to all expanded for older snapshots.
+    #[serde(default)]
+    pub sidebar_section_collapse: SidebarSectionCollapseSnapshot,
+}
+
+/// Persisted collapse state of the stacked sidebar bands.
+#[derive(Serialize, Deserialize, Clone, Copy, Default)]
+pub struct SidebarSectionCollapseSnapshot {
+    #[serde(default)]
+    pub spaces: bool,
+    #[serde(default)]
+    pub panes: bool,
+    #[serde(default)]
+    pub agents: bool,
 }
 
 /// Persisted flat Panes-section ordering. Pane entries reference non-agent panes
@@ -234,6 +249,8 @@ struct RawSessionSnapshot {
     collapsed_line_split_keys: std::collections::HashSet<String>,
     #[serde(default)]
     pane_section_order: Option<PaneSectionOrderSnapshot>,
+    #[serde(default)]
+    sidebar_section_collapse: SidebarSectionCollapseSnapshot,
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -252,6 +269,7 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
         collapsed_space_keys: raw.collapsed_space_keys,
         collapsed_line_split_keys: raw.collapsed_line_split_keys,
         pane_section_order: raw.pane_section_order,
+        sidebar_section_collapse: raw.sidebar_section_collapse,
     })
 }
 
@@ -321,6 +339,7 @@ pub fn capture(
     collapsed_space_keys: std::collections::HashSet<String>,
     collapsed_line_split_keys: std::collections::HashSet<String>,
     pane_section_order_keys: Vec<crate::app::state::PaneManualEntryKey>,
+    sidebar_section_collapse: crate::app::state::SidebarSectionCollapse,
 ) -> SessionSnapshot {
     let pane_section_order =
         (!pane_section_order_keys.is_empty()).then(|| PaneSectionOrderSnapshot {
@@ -357,6 +376,22 @@ pub fn capture(
         collapsed_space_keys,
         collapsed_line_split_keys,
         pane_section_order,
+        sidebar_section_collapse: SidebarSectionCollapseSnapshot {
+            spaces: sidebar_section_collapse.spaces,
+            panes: sidebar_section_collapse.panes,
+            agents: sidebar_section_collapse.agents,
+        },
+    }
+}
+
+/// The persisted sidebar band collapse state as the state-level struct.
+pub fn sidebar_section_collapse(
+    snapshot: &SidebarSectionCollapseSnapshot,
+) -> crate::app::state::SidebarSectionCollapse {
+    crate::app::state::SidebarSectionCollapse {
+        spaces: snapshot.spaces,
+        panes: snapshot.panes,
+        agents: snapshot.agents,
     }
 }
 
@@ -745,6 +780,7 @@ mod tests {
             state.collapsed_space_keys.clone(),
             state.collapsed_line_split_keys.clone(),
             state.pane_section_order.to_keys(),
+            state.sidebar_section_collapse(),
         )
     }
 
@@ -812,6 +848,7 @@ mod tests {
             collapsed_space_keys: std::collections::HashSet::new(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored = parse_snapshot(&json).unwrap();
@@ -905,6 +942,7 @@ mod tests {
             collapsed_space_keys: std::collections::HashSet::new(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
             version: SNAPSHOT_VERSION,
         };
 
@@ -1520,6 +1558,7 @@ mod tests {
             collapsed_space_keys: std::collections::HashSet::new(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         };
 
         let json = serde_json::to_string(&snap).unwrap();

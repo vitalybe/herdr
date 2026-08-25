@@ -440,6 +440,7 @@ impl App {
             sidebar_pane_section_split,
             pane_section_order_keys,
             collapsed_line_split_keys,
+            sidebar_section_collapse,
         ) = if no_session {
             (
                 Vec::new(),
@@ -452,6 +453,7 @@ impl App {
                 0.5_f32,
                 Vec::new(),
                 std::collections::HashSet::new(),
+                state::SidebarSectionCollapse::default(),
             )
         } else if let Some(snap) = crate::persist::load() {
             let history = config
@@ -491,6 +493,7 @@ impl App {
                     snap.sidebar_pane_section_split.unwrap_or(0.5),
                     crate::persist::pane_section_order_keys(snap.pane_section_order.as_ref()),
                     snap.collapsed_line_split_keys,
+                    crate::persist::sidebar_section_collapse(&snap.sidebar_section_collapse),
                 )
             } else {
                 crate::logging::session_restored(ws.len(), "ok");
@@ -511,6 +514,7 @@ impl App {
                     snap.sidebar_pane_section_split.unwrap_or(0.5),
                     crate::persist::pane_section_order_keys(snap.pane_section_order.as_ref()),
                     snap.collapsed_line_split_keys,
+                    crate::persist::sidebar_section_collapse(&snap.sidebar_section_collapse),
                 )
             }
         } else {
@@ -525,6 +529,7 @@ impl App {
                 0.5_f32,
                 Vec::new(),
                 std::collections::HashSet::new(),
+                state::SidebarSectionCollapse::default(),
             )
         };
 
@@ -696,6 +701,9 @@ impl App {
             pane_section_press: None,
             collapsed_line_split_keys,
             rename_line_split_target: None,
+            spaces_section_collapsed: sidebar_section_collapse.spaces,
+            pane_section_collapsed: sidebar_section_collapse.panes,
+            agents_section_collapsed: sidebar_section_collapse.agents,
             last_pane_section_focus: None,
             agent_panel_sort,
             status_indicators: config.ui.status_indicators,
@@ -5028,6 +5036,7 @@ mod tests {
             app.state.collapsed_space_keys.clone(),
             app.state.collapsed_line_split_keys.clone(),
             app.state.pane_section_order.to_keys(),
+            app.state.sidebar_section_collapse(),
         );
         let json = serde_json::to_string(&snap).unwrap();
         let parsed: crate::persist::SessionSnapshot = serde_json::from_str(&json).unwrap();
@@ -6921,6 +6930,7 @@ last_pane = "prefix+tab"
             collapsed_space_keys: Default::default(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         };
         let mut imports = std::collections::HashMap::new();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

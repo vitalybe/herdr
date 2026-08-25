@@ -84,10 +84,11 @@ pub(crate) use self::{
         normalized_workspace_scroll, pane_section_body_rect, pane_section_rect,
         pane_section_row_index_of_pane, pane_section_scroll_metrics, pane_section_scrollbar_rect,
         pane_section_split_button_rect, sidebar_pane_section_divider_rect,
-        sidebar_pane_section_entries, sidebar_section_divider_rect, sidebar_shows_pane_section,
+        sidebar_pane_section_entries, sidebar_section_divider_rect,
+        sidebar_section_header_toggle_rect, sidebar_shows_pane_section, spaces_list_rect,
         workspace_drop_slots, workspace_group_chevron_rect, workspace_list_entries,
-        workspace_list_entries_expanded, workspace_list_rect, workspace_list_scroll_metrics,
-        workspace_list_scrollbar_rect, workspace_parent_group_state, AgentPanelEntry,
+        workspace_list_entries_expanded, workspace_list_scroll_metrics,
+        workspace_list_scrollbar_rect, workspace_parent_group_state, AgentPanelEntry, SidebarBand,
         WorkspaceListEntry,
     },
 };
@@ -258,6 +259,7 @@ fn compute_view_internal(
         app.sidebar_section_split,
         app.sidebar_pane_section_split,
         show_pane_section,
+        app.sidebar_section_collapse(),
     );
     if !app.sidebar_collapsed {
         app.workspace_scroll = normalized_workspace_scroll(app, sidebar_area, app.workspace_scroll);

@@ -944,6 +944,7 @@ fn capture_snapshot(state: &AppState) -> crate::persist::SessionSnapshot {
         state.collapsed_space_keys.clone(),
         state.collapsed_line_split_keys.clone(),
         state.pane_section_order.to_keys(),
+        state.sidebar_section_collapse(),
     )
 }
 

@@ -210,6 +210,7 @@ mod tests {
             collapsed_space_keys: std::collections::HashSet::new(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         }
     }
 

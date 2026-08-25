@@ -1377,6 +1377,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1476,6 +1477,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1592,6 +1594,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1709,6 +1712,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1828,6 +1832,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -2005,6 +2010,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
+            sidebar_section_collapse: Default::default(),
         };
         (snapshot, history)
     }

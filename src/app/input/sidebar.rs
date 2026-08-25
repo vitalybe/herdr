@@ -10,7 +10,13 @@ impl AppState {
         if self.sidebar_collapsed || sidebar.width <= 1 || sidebar.height == 0 {
             return Rect::default();
         }
-        crate::ui::workspace_list_rect(sidebar, self.sidebar_section_split)
+        crate::ui::spaces_list_rect(
+            sidebar,
+            self.sidebar_section_split,
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
+        )
     }
 
     pub(super) fn agent_panel_rect(&self) -> Rect {
@@ -23,6 +29,7 @@ impl AppState {
             self.sidebar_section_split,
             self.sidebar_pane_section_split,
             crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
         )
     }
 
@@ -36,6 +43,7 @@ impl AppState {
             self.sidebar_section_split,
             self.sidebar_pane_section_split,
             crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
         )
     }
 
@@ -512,6 +520,64 @@ impl AppState {
             && row < rect.y + rect.height
     }
 
+    /// Which stacked sidebar band's collapse/expand toggle sits under the cursor,
+    /// if any. The toggle covers the glyph and title word on the band header.
+    pub(super) fn sidebar_section_header_toggle_at(
+        &self,
+        col: u16,
+        row: u16,
+    ) -> Option<crate::ui::SidebarBand> {
+        if self.sidebar_collapsed {
+            return None;
+        }
+        let collapse = self.sidebar_section_collapse();
+        let bands = [
+            (
+                crate::ui::SidebarBand::Spaces,
+                self.workspace_list_rect(),
+                collapse.spaces,
+            ),
+            (
+                crate::ui::SidebarBand::Panes,
+                self.pane_section_rect(),
+                collapse.panes,
+            ),
+            (
+                crate::ui::SidebarBand::Agents,
+                self.agent_panel_rect(),
+                collapse.agents,
+            ),
+        ];
+        for (band, area, collapsed) in bands {
+            let rect = crate::ui::sidebar_section_header_toggle_rect(area, band, collapsed);
+            if rect.width > 0
+                && col >= rect.x
+                && col < rect.x + rect.width
+                && row >= rect.y
+                && row < rect.y + rect.height
+            {
+                return Some(band);
+            }
+        }
+        None
+    }
+
+    /// Toggle the collapsed state of one stacked sidebar band.
+    pub(super) fn toggle_sidebar_section(&mut self, band: crate::ui::SidebarBand) {
+        match band {
+            crate::ui::SidebarBand::Spaces => {
+                self.spaces_section_collapsed = !self.spaces_section_collapsed;
+            }
+            crate::ui::SidebarBand::Panes => {
+                self.pane_section_collapsed = !self.pane_section_collapsed;
+            }
+            crate::ui::SidebarBand::Agents => {
+                self.agents_section_collapsed = !self.agents_section_collapsed;
+            }
+        }
+        self.mark_session_dirty();
+    }
+
     pub(super) fn set_manual_sidebar_width(&mut self, divider_col: u16) {
         let sidebar = self.view.sidebar_rect;
         let width = divider_col.saturating_sub(sidebar.x).saturating_add(1);
@@ -533,9 +599,15 @@ impl AppState {
                 && row >= rect.y
                 && row < rect.y + rect.height
         };
+        // Each divider rect is collapse-aware and empty when its ratio does not
+        // affect the current layout, so a collapsed band only disables the
+        // divider(s) it actually borders instead of every section divider.
         if hits(crate::ui::sidebar_section_divider_rect(
             self.view.sidebar_rect,
             self.sidebar_section_split,
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
         )) {
             return Some(0);
         }
@@ -544,6 +616,7 @@ impl AppState {
             self.sidebar_section_split,
             self.sidebar_pane_section_split,
             crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
         )) {
             return Some(1);
         }
@@ -555,24 +628,43 @@ impl AppState {
         if sidebar.height < 6 {
             return;
         }
+        // Invert the same collapse-aware geometry the dividers are drawn from, so
+        // a drag maps to the ratio without jumping when a band is collapsed.
+        let collapse = self.sidebar_section_collapse();
+        let (spaces_area, pane_section_area, agents_area) = crate::ui::expanded_sidebar_sections3(
+            sidebar,
+            self.sidebar_section_split,
+            self.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(self),
+            collapse,
+        );
         match index {
             0 => {
-                // The Spaces ratio splits the Spaces band against the whole
-                // region below it, so it maps onto the full sidebar height.
-                let relative_y = row.saturating_sub(sidebar.y);
-                let ratio = (relative_y as f32) / (sidebar.height as f32);
+                // The Spaces ratio splits the Spaces band against the expanded
+                // band(s) below it; a collapsed neighbour contributes only its
+                // header row.
+                let panes_h = if collapse.panes {
+                    0
+                } else {
+                    pane_section_area.height
+                };
+                let agents_h = if collapse.agents {
+                    0
+                } else {
+                    agents_area.height
+                };
+                let region_h = spaces_area.height + panes_h + agents_h;
+                if region_h < 6 {
+                    return;
+                }
+                let relative_y = row.saturating_sub(spaces_area.y);
+                let ratio = (relative_y as f32) / (region_h as f32);
                 self.sidebar_section_split = ratio.clamp(0.1, 0.9);
                 self.mark_session_dirty();
             }
             1 => {
                 // The Panes ratio splits the Panes and Agents bands, which share
-                // the region directly below the Spaces band.
-                let (_, pane_section_area, agents_area) = crate::ui::expanded_sidebar_sections3(
-                    sidebar,
-                    self.sidebar_section_split,
-                    self.sidebar_pane_section_split,
-                    crate::ui::sidebar_shows_pane_section(self),
-                );
+                // the region directly below the (possibly collapsed) Spaces band.
                 let region_h = pane_section_area.height + agents_area.height;
                 if region_h < 6 {
                     return;
@@ -2186,6 +2278,66 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_spaces_band_keeps_panes_agents_divider_draggable() {
+        let mut app = app_with_pane_section();
+        app.state.spaces_section_collapsed = true;
+        let divider = crate::ui::sidebar_pane_section_divider_rect(
+            app.state.view.sidebar_rect,
+            app.state.sidebar_section_split,
+            app.state.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(&app.state),
+            app.state.sidebar_section_collapse(),
+        );
+        assert!(divider.width > 0);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            divider.x + 1,
+            divider.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            divider.x + 1,
+            divider.y + 3,
+        ));
+
+        assert!(app.state.sidebar_pane_section_split > 0.5);
+    }
+
+    #[test]
+    fn clicking_a_band_header_toggle_collapses_and_expands_it() {
+        let mut app = app_with_pane_section();
+        let toggle = crate::ui::sidebar_section_header_toggle_rect(
+            app.state.pane_section_rect(),
+            crate::ui::SidebarBand::Panes,
+            false,
+        );
+        assert!(toggle.width > 0);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            toggle.x,
+            toggle.y,
+        ));
+        assert!(app.state.pane_section_collapsed);
+        let snapshot = capture_snapshot(&app.state);
+        assert!(snapshot.sidebar_section_collapse.panes);
+
+        // The collapsed band's own header row toggles it back open.
+        let toggle = crate::ui::sidebar_section_header_toggle_rect(
+            app.state.pane_section_rect(),
+            crate::ui::SidebarBand::Panes,
+            true,
+        );
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            toggle.x,
+            toggle.y,
+        ));
+        assert!(!app.state.pane_section_collapsed);
+    }
+
+    #[test]
     fn dragging_panes_agents_divider_sets_the_pane_section_ratio() {
         let mut app = app_with_pane_section();
         let divider = crate::ui::sidebar_pane_section_divider_rect(
@@ -2193,6 +2345,7 @@ mod tests {
             app.state.sidebar_section_split,
             app.state.sidebar_pane_section_split,
             crate::ui::sidebar_shows_pane_section(&app.state),
+            app.state.sidebar_section_collapse(),
         );
         assert!(divider.width > 0);
 
@@ -2293,6 +2446,9 @@ mod tests {
         let divider = crate::ui::sidebar_section_divider_rect(
             app.state.view.sidebar_rect,
             app.state.sidebar_section_split,
+            app.state.sidebar_pane_section_split,
+            crate::ui::sidebar_shows_pane_section(&app.state),
+            app.state.sidebar_section_collapse(),
         );
 
         app.handle_mouse(mouse(

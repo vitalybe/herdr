@@ -15,7 +15,7 @@ pub use self::restore::restore;
 pub use self::restore::{handoff_pane_aliases, restore_handoff};
 pub(crate) use self::restore::{restore_one_tab, restore_one_workspace};
 pub use self::snapshot::{
-    capture, capture_history, pane_section_order_keys, DirectionSnapshot, LayoutSnapshot,
-    SessionHistorySnapshot, SessionSnapshot, TabSnapshot, WorkspaceSnapshot,
+    capture, capture_history, pane_section_order_keys, sidebar_section_collapse, DirectionSnapshot,
+    LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot, TabSnapshot, WorkspaceSnapshot,
 };
 pub(crate) use self::snapshot::{capture_tab_for_undo, capture_workspace_for_undo};

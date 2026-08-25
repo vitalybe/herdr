@@ -1736,6 +1736,7 @@ impl AppState {
             self.sidebar_section_split,
             self.sidebar_pane_section_split,
             crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
         );
         let metrics = crate::ui::pane_section_scroll_metrics(self, pane_section_area);
         let visible = metrics.viewport_rows.max(1);
@@ -1813,6 +1814,7 @@ impl AppState {
             self.sidebar_section_split,
             self.sidebar_pane_section_split,
             crate::ui::sidebar_shows_pane_section(self),
+            self.sidebar_section_collapse(),
         );
         self.agent_panel_scroll = crate::ui::agent_panel_scroll_for_target(
             self,

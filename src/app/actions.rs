@@ -819,7 +819,7 @@ impl AppState {
                 if !tab_exists {
                     return false;
                 }
-                self.switch_workspace_tab(ws_idx, tab_idx);
+                self.switch_workspace_tab_sticky(ws_idx, tab_idx);
                 self.mode = Mode::Terminal;
                 true
             }
@@ -1131,10 +1131,12 @@ impl AppState {
             self.mark_session_dirty();
             self.ensure_workspace_visible(idx);
             if let Some(ws) = self.workspaces.get_mut(idx) {
-                let active_tab = ws.active_tab;
-                ws.switch_tab(active_tab);
+                // Restore the deliberately-chosen home tab, not whatever tab a
+                // transient agent-panel jump last displayed.
+                let home_tab = ws.home_tab;
+                ws.switch_tab(home_tab);
                 let tab_id =
-                    public_tab_id_for_index(ws, active_tab).unwrap_or_else(|| workspace_id.clone());
+                    public_tab_id_for_index(ws, home_tab).unwrap_or_else(|| workspace_id.clone());
                 crate::logging::tab_focused(&workspace_id, &tab_id);
             }
             self.tab_scroll_follow_active = true;
@@ -1176,6 +1178,20 @@ impl AppState {
         self.refresh_tab_bar_view();
         self.record_pane_focus_after_navigation(previous_focus);
         self.sync_selection_after_focus_navigation();
+        true
+    }
+
+    /// Like `switch_workspace_tab`, but records `tab_idx` as the workspace's home
+    /// tab. Used by deliberate tab selections (tab bar click, keyboard tab switch,
+    /// new tab, navigator tab target) so the choice survives later transient
+    /// agent-panel jumps.
+    pub(crate) fn switch_workspace_tab_sticky(&mut self, ws_idx: usize, tab_idx: usize) -> bool {
+        if !self.switch_workspace_tab(ws_idx, tab_idx) {
+            return false;
+        }
+        if let Some(ws) = self.workspaces.get_mut(ws_idx) {
+            ws.switch_tab_sticky(tab_idx);
+        }
         true
     }
 
@@ -1265,7 +1281,7 @@ impl AppState {
             let Some(ws) = self.workspaces.get_mut(ws_idx) else {
                 return;
             };
-            ws.switch_tab(idx);
+            ws.switch_tab_sticky(idx);
             let workspace_id = ws.id.clone();
             let tab_id = public_tab_id_for_index(ws, idx).unwrap_or_else(|| workspace_id.clone());
             crate::logging::tab_focused(&workspace_id, &tab_id);
@@ -4775,6 +4791,74 @@ mod tests {
         let mut state = app_with_workspaces(&["a"]);
         state.switch_workspace(5);
         assert_eq!(state.active, Some(0));
+    }
+
+    #[test]
+    fn switch_workspace_restores_home_tab_after_transient_agent_focus() {
+        let mut state = app_with_workspaces(&["one", "two"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let logs_tab = state.workspaces[0].test_add_tab(Some("logs"));
+        state.ensure_test_terminals();
+
+        // Deliberately select the logs tab: it becomes the workspace's home tab.
+        state.switch_workspace_tab_sticky(0, logs_tab);
+        assert_eq!(state.workspaces[0].active_tab, logs_tab);
+        assert_eq!(state.workspaces[0].home_tab, logs_tab);
+
+        // Simulate an agent-panel jump to a pane in the first tab: it moves the
+        // view but must not overwrite the home tab.
+        state.focus_pane_in_workspace(0, root);
+        assert_eq!(state.workspaces[0].active_tab, 0);
+        assert_eq!(state.workspaces[0].home_tab, logs_tab);
+
+        // Leaving and returning to the workspace restores the home tab, not the
+        // transiently-focused tab.
+        state.switch_workspace(1);
+        state.switch_workspace(0);
+        assert_eq!(state.workspaces[0].active_tab, logs_tab);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn only_sticky_tab_switches_update_the_home_tab() {
+        let mut state = app_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let logs_tab = state.workspaces[0].test_add_tab(Some("logs"));
+        state.ensure_test_terminals();
+
+        state.switch_workspace_tab_sticky(0, logs_tab);
+        assert_eq!(state.workspaces[0].home_tab, logs_tab);
+
+        // Focusing a pane (e.g. via the agent panel) is transient.
+        state.focus_pane_in_workspace(0, root);
+        assert_eq!(state.workspaces[0].active_tab, 0);
+        assert_eq!(state.workspaces[0].home_tab, logs_tab);
+
+        // The plain tab switch does not record a home tab; the sticky one does.
+        state.switch_workspace_tab(0, 0);
+        assert_eq!(state.workspaces[0].home_tab, logs_tab);
+        state.switch_workspace_tab_sticky(0, 0);
+        assert_eq!(state.workspaces[0].home_tab, 0);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn adversarial_home_tab_survives_workspace_switching() {
+        let mut state = AppState::test_with_adversarial_identity_state();
+        state
+            .workspaces
+            .push(crate::workspace::Workspace::test_new("other"));
+        state.ensure_test_terminals();
+        let home_root = state.workspaces[0].tabs[state.workspaces[0].home_tab].root_pane;
+
+        state.switch_workspace(1);
+        state.switch_workspace(0);
+
+        assert_eq!(
+            state.workspaces[0].tabs[state.workspaces[0].active_tab].root_pane,
+            home_root
+        );
+        state.assert_invariants_for_test();
     }
 
     #[test]

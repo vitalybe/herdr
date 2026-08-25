@@ -203,7 +203,13 @@ pub struct Workspace {
     pub(crate) next_public_pane_number: usize,
     pub(crate) next_public_tab_number: usize,
     pub tabs: Vec<Tab>,
+    /// Tab currently displayed for this workspace. Any focus change (including
+    /// transient agent-panel jumps) can move this.
     pub active_tab: usize,
+    /// Tab restored when this workspace is switched to. Only deliberate tab
+    /// selections update it, so transient agent-panel jumps do not become the
+    /// restore target.
+    pub home_tab: usize,
     #[cfg(test)]
     pub(crate) test_runtimes: HashMap<PaneId, TerminalRuntime>,
 }
@@ -225,14 +231,25 @@ impl DerefMut for Workspace {
 }
 
 impl Workspace {
-    fn adjust_active_tab_after_removal(&mut self, removed_idx: usize) {
-        if self.tabs.is_empty() {
-            self.active_tab = 0;
-        } else if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        } else if removed_idx <= self.active_tab && self.active_tab > 0 {
-            self.active_tab -= 1;
+    /// Keep a stored tab index valid after the tab at `removed_idx` is removed,
+    /// shifting it left when the removal was at or before it.
+    fn adjust_tab_index_after_removal(idx: usize, removed_idx: usize, new_len: usize) -> usize {
+        if new_len == 0 {
+            0
+        } else if idx >= new_len {
+            new_len - 1
+        } else if removed_idx <= idx && idx > 0 {
+            idx - 1
+        } else {
+            idx
         }
+    }
+
+    fn adjust_active_tab_after_removal(&mut self, removed_idx: usize) {
+        let new_len = self.tabs.len();
+        self.active_tab =
+            Self::adjust_tab_index_after_removal(self.active_tab, removed_idx, new_len);
+        self.home_tab = Self::adjust_tab_index_after_removal(self.home_tab, removed_idx, new_len);
     }
 
     pub(crate) fn from_existing_pane(
@@ -269,6 +286,7 @@ impl Workspace {
             next_public_tab_number: 2,
             tabs: vec![tab],
             active_tab: 0,
+            home_tab: 0,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
         }
@@ -468,6 +486,7 @@ impl Workspace {
                 next_public_tab_number: 2,
                 tabs: vec![tab],
                 active_tab: 0,
+                home_tab: 0,
                 #[cfg(test)]
                 test_runtimes: HashMap::new(),
             },
@@ -510,6 +529,15 @@ impl Workspace {
                     pane.seen = true;
                 }
             }
+        }
+    }
+
+    /// Switch to a tab as a deliberate selection: also records it as the
+    /// workspace's home tab (the tab restored when the workspace is switched to).
+    pub fn switch_tab_sticky(&mut self, idx: usize) {
+        if idx < self.tabs.len() {
+            self.switch_tab(idx);
+            self.home_tab = idx;
         }
     }
 
@@ -634,11 +662,9 @@ impl Workspace {
         for pane_id in tab.panes.keys() {
             self.unregister_pane(*pane_id);
         }
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        } else if idx <= self.active_tab && self.active_tab > 0 {
-            self.active_tab -= 1;
-        }
+        let new_len = self.tabs.len();
+        self.active_tab = Self::adjust_tab_index_after_removal(self.active_tab, idx, new_len);
+        self.home_tab = Self::adjust_tab_index_after_removal(self.home_tab, idx, new_len);
         true
     }
 
@@ -659,9 +685,13 @@ impl Workspace {
         }
 
         let active_root_pane = self.tabs.get(self.active_tab).map(|tab| tab.root_pane);
+        let home_root_pane = self.tabs.get(self.home_tab).map(|tab| tab.root_pane);
         let tab = self.tabs.remove(source_idx);
         self.tabs.insert(target_idx, tab);
         self.active_tab = active_root_pane
+            .and_then(|root_pane| self.tabs.iter().position(|tab| tab.root_pane == root_pane))
+            .unwrap_or(target_idx);
+        self.home_tab = home_root_pane
             .and_then(|root_pane| self.tabs.iter().position(|tab| tab.root_pane == root_pane))
             .unwrap_or(target_idx);
         true
@@ -969,11 +999,10 @@ impl Workspace {
             }
             self.tabs.remove(tab_idx);
             self.unregister_pane(pane_id);
-            if self.active_tab >= self.tabs.len() {
-                self.active_tab = self.tabs.len() - 1;
-            } else if tab_idx <= self.active_tab && self.active_tab > 0 {
-                self.active_tab -= 1;
-            }
+            let new_len = self.tabs.len();
+            self.active_tab =
+                Self::adjust_tab_index_after_removal(self.active_tab, tab_idx, new_len);
+            self.home_tab = Self::adjust_tab_index_after_removal(self.home_tab, tab_idx, new_len);
             return false;
         }
 
@@ -1220,11 +1249,10 @@ impl Workspace {
             }
             self.tabs.remove(tab_idx);
             self.unregister_pane(pane_id);
-            if self.active_tab >= self.tabs.len() {
-                self.active_tab = self.tabs.len() - 1;
-            } else if tab_idx <= self.active_tab && self.active_tab > 0 {
-                self.active_tab -= 1;
-            }
+            let new_len = self.tabs.len();
+            self.active_tab =
+                Self::adjust_tab_index_after_removal(self.active_tab, tab_idx, new_len);
+            self.home_tab = Self::adjust_tab_index_after_removal(self.home_tab, tab_idx, new_len);
             return false;
         }
 
@@ -1308,6 +1336,7 @@ impl Workspace {
             next_public_tab_number: 2,
             tabs: vec![tab],
             active_tab: 0,
+            home_tab: 0,
             test_runtimes: HashMap::new(),
         }
     }
@@ -1366,9 +1395,19 @@ impl Workspace {
         let final_root = ws.tabs[final_tab].root_pane;
         assert!(ws.close_tab(removed_tab));
         assert!(ws.move_tab(0, ws.tabs.len()));
+        // Make the home tab a different tab than the active one so callers see a
+        // deliberate selection that a later transient focus change moved away from.
+        ws.switch_tab_sticky(
+            ws.find_tab_index_for_pane(final_root)
+                .expect("final tab should still exist"),
+        );
         ws.switch_tab(
             ws.find_tab_index_for_pane(survivor_root)
                 .expect("survivor tab should still exist"),
+        );
+        assert_ne!(
+            ws.home_tab, ws.active_tab,
+            "adversarial home tab must differ from the active tab"
         );
 
         assert_ne!(
@@ -1396,6 +1435,13 @@ impl Workspace {
             "workspace {} active_tab {} out of bounds for {} tabs",
             self.id,
             self.active_tab,
+            self.tabs.len()
+        );
+        assert!(
+            self.home_tab < self.tabs.len(),
+            "workspace {} home_tab {} out of bounds for {} tabs",
+            self.id,
+            self.home_tab,
             self.tabs.len()
         );
 
@@ -1812,6 +1858,32 @@ mod tests {
         assert_eq!(ws.tabs[2].number, 1);
         assert_eq!(ws.tabs[2].root_pane, moved_root);
         assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn home_tab_stays_valid_and_follows_its_tab_across_close_and_move() {
+        let mut ws = Workspace::test_new("test");
+        let tab1 = ws.test_add_tab(Some("one"));
+        let tab2 = ws.test_add_tab(Some("two"));
+
+        // Deliberately make tab2 the home tab.
+        ws.switch_tab_sticky(tab2);
+        assert_eq!(ws.home_tab, tab2);
+        let home_root = ws.tabs[ws.home_tab].root_pane;
+
+        // Closing an earlier tab shifts home_tab left with its tab.
+        assert!(ws.close_tab(tab1));
+        assert_eq!(ws.tabs[ws.home_tab].root_pane, home_root);
+        ws.assert_invariants_for_test();
+
+        // Moving the home tab keeps home_tab pointing at the same tab.
+        assert!(ws.move_tab(ws.home_tab, 0));
+        assert_eq!(ws.tabs[ws.home_tab].root_pane, home_root);
+        ws.assert_invariants_for_test();
+
+        // Closing the home tab itself leaves home_tab in bounds.
+        assert!(ws.close_tab(ws.home_tab));
         ws.assert_invariants_for_test();
     }
 }

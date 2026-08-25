@@ -9,7 +9,7 @@ use crate::terminal::TerminalRuntimeRegistry;
 use crate::workspace::Workspace;
 
 /// Current snapshot format version.
-pub(super) const SNAPSHOT_VERSION: u32 = 4;
+pub(super) const SNAPSHOT_VERSION: u32 = 10;
 
 /// Serializable snapshot of the entire herdr session.
 #[derive(Serialize, Deserialize)]

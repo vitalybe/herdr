@@ -535,6 +535,22 @@ On macOS this switches to the current ASCII-capable keyboard layout; on Windows 
 On Windows, support is currently limited to the Korean IME. With an IME for any other language, this setting leaves the input source unchanged.
 :::
 
+## Hide agent-only spaces
+
+If you drive agents mostly from the agents panel, the spaces list can get crowded with agent-only spaces you never switch to directly.
+
+```toml
+[experimental]
+hide_tabs_with_agents = false
+```
+
+When enabled:
+
+- Spaces whose tabs are all agent tabs disappear from the spaces list, the collapsed sidebar rail, and space navigation.
+- Focusing an agent tab no longer highlights its space; the space selection clears while an agent tab is focused.
+
+A tab counts as an agent tab only when every pane in it is an agent. Tabs that mix agents with plain shells are not agent tabs, and spaces containing any non-agent tab stay visible. Tabs are never removed from the top tab bar.
+
 ## Environment variables
 
 | Variable | Purpose |

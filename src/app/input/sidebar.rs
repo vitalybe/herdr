@@ -482,40 +482,48 @@ impl AppState {
             && row < rect.y + rect.height
     }
 
-    pub(super) fn agent_detail_target_at(
+    /// Body rect, ordered rows and visible row areas for the agent panel, shared
+    /// by the pointer hit-testing helpers. Returns `None` when the panel is
+    /// collapsed or has no usable body. Geometry comes from
+    /// `compute_agent_panel_row_areas`, the same function render uses.
+    fn agent_panel_row_areas_at(
         &self,
-        row: u16,
-    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+    ) -> Option<(
+        Rect,
+        Vec<crate::ui::AgentPanelRow>,
+        Vec<crate::ui::AgentPanelRowArea>,
+    )> {
         if self.sidebar_collapsed {
             return None;
         }
-
         let detail_area = self.agent_panel_rect();
         let metrics = crate::ui::agent_panel_scroll_metrics(self, detail_area);
         let body = crate::ui::agent_panel_body_rect(
             detail_area,
             crate::ui::should_show_scrollbar(metrics),
         );
-        if body.height == 0 || row < body.y || row >= body.y + body.height {
+        if body.width == 0 || body.height == 0 {
             return None;
         }
-
-        let mut row_y = body.y;
-        let body_bottom = body.y + body.height;
-        let entries = crate::ui::agent_panel_entries(self);
         let scroll = self.agent_panel_scroll.min(metrics.max_offset_from_bottom);
-        for (index, detail) in entries.iter().enumerate().skip(scroll) {
-            let height = crate::ui::agent_entry_height_in_body(self, detail, body.height);
-            if row_y.saturating_add(height) > body_bottom {
-                break;
+        let rows = crate::ui::agent_panel_rows(self);
+        let areas = crate::ui::compute_agent_panel_row_areas(self, &rows, body, scroll);
+        Some((body, rows, areas))
+    }
+
+    pub(super) fn agent_detail_target_at(
+        &self,
+        row: u16,
+    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+        let (_, rows, areas) = self.agent_panel_row_areas_at()?;
+        for area in &areas {
+            if row >= area.rect.y && row < area.rect.y + area.rect.height {
+                return match &rows[area.row_idx] {
+                    crate::ui::AgentPanelRow::Agent(detail) => {
+                        Some((detail.ws_idx, detail.tab_idx, detail.pane_id))
+                    }
+                };
             }
-            if row >= row_y && row < row_y.saturating_add(height) {
-                return Some((detail.ws_idx, detail.tab_idx, detail.pane_id));
-            }
-            row_y = row_y
-                .saturating_add(height)
-                .saturating_add(crate::ui::agent_entry_gap(self, index, entries.len()))
-                .min(body_bottom);
         }
         None
     }
@@ -797,6 +805,81 @@ mod tests {
             app.state.agent_detail_target_at(body.y + 1),
             Some((1, 0, second_pane))
         );
+    }
+
+    /// Render and hit-testing must read the same rects: every screen row inside
+    /// a computed row area resolves to that row's pane, and the gap rows between
+    /// areas resolve to nothing.
+    #[test]
+    fn render_row_areas_and_hit_testing_agree_on_the_same_rects() {
+        let mut app = app_for_mouse_test();
+        let first = Workspace::test_new("one");
+        let first_pane = first.tabs[0].root_pane;
+        let second = Workspace::test_new("two");
+        let second_pane = second.tabs[0].root_pane;
+        app.state.workspaces = vec![first, second];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        for (ws_idx, pane_id, agent) in
+            [(0, first_pane, Agent::Pi), (1, second_pane, Agent::Claude)]
+        {
+            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .detected_agent = Some(agent);
+        }
+        // Give the two agents different heights so a fixed stride cannot pass.
+        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+        app.state.sidebar_agents.rows_by_agent.insert(
+            "claude".into(),
+            vec![
+                vec![crate::config::AgentSidebarToken::Agent],
+                vec![crate::config::AgentSidebarToken::Workspace],
+            ],
+        );
+        app.state.sidebar_agents.row_gap = 1;
+
+        let detail_area = app.state.agent_panel_rect();
+        let metrics = crate::ui::agent_panel_scroll_metrics(&app.state, detail_area);
+        let body = crate::ui::agent_panel_body_rect(
+            detail_area,
+            crate::ui::should_show_scrollbar(metrics),
+        );
+        let rows = crate::ui::agent_panel_rows(&app.state);
+        let areas = crate::ui::compute_agent_panel_row_areas(
+            &app.state,
+            &rows,
+            body,
+            app.state.agent_panel_scroll,
+        );
+        assert_eq!(areas.len(), 2);
+
+        let mut covered = std::collections::HashSet::new();
+        for area in &areas {
+            let crate::ui::AgentPanelRow::Agent(entry) = &rows[area.row_idx];
+            for row in area.rect.y..area.rect.y + area.rect.height {
+                covered.insert(row);
+                assert_eq!(
+                    app.state.agent_detail_target_at(row),
+                    Some((entry.ws_idx, entry.tab_idx, entry.pane_id)),
+                    "row {row} must hit the agent render put there"
+                );
+            }
+        }
+        for row in body.y..body.y + body.height {
+            if !covered.contains(&row) {
+                assert_eq!(
+                    app.state.agent_detail_target_at(row),
+                    None,
+                    "row {row} is a gap and must not hit any agent"
+                );
+            }
+        }
     }
 
     #[test]

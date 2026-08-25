@@ -39,6 +39,31 @@ pub(crate) struct AgentPanelEntry {
     pub tokens: std::collections::HashMap<String, String>,
 }
 
+/// A single visible row in the agents panel. The panel is a heterogeneous row
+/// list rather than a flat pane list, so structural rows can sit between agent
+/// entries. Client-only presentation state.
+pub(crate) enum AgentPanelRow {
+    Agent(AgentPanelEntry),
+}
+
+impl AgentPanelRow {
+    /// Content-row height of this row, excluding its trailing gap. Agent rows
+    /// use the configured token row count from `sidebar_agents`.
+    fn height_in_body(&self, app: &AppState, body_height: u16) -> u16 {
+        match self {
+            AgentPanelRow::Agent(entry) => agent_entry_height_in_body(app, entry, body_height),
+        }
+    }
+}
+
+/// Screen placement for one visible agent-panel row. The single source of truth
+/// for agent-panel geometry: render, hit-testing, scroll metrics and the drop
+/// indicator all derive from [`compute_agent_panel_row_areas`].
+pub(crate) struct AgentPanelRowArea {
+    pub row_idx: usize,
+    pub rect: Rect,
+}
+
 fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
     if total_h == 0 {
         return (0, 0);
@@ -551,11 +576,7 @@ fn resolved_agent_rows(app: &AppState, entry: &AgentPanelEntry) -> Vec<Vec<Resol
     tokens::agent_rows(&app.sidebar_agents, entry, label)
 }
 
-pub(crate) fn agent_entry_height_in_body(
-    app: &AppState,
-    entry: &AgentPanelEntry,
-    body_height: u16,
-) -> u16 {
+fn agent_entry_height_in_body(app: &AppState, entry: &AgentPanelEntry, body_height: u16) -> u16 {
     (resolved_agent_rows(app, entry)
         .len()
         .max(1)
@@ -563,7 +584,7 @@ pub(crate) fn agent_entry_height_in_body(
         .min(body_height)
 }
 
-pub(crate) fn agent_entry_gap(app: &AppState, entry_idx: usize, entry_count: usize) -> u16 {
+fn agent_entry_gap(app: &AppState, entry_idx: usize, entry_count: usize) -> u16 {
     if entry_idx + 1 < entry_count {
         app.sidebar_agents.row_gap
     } else {
@@ -571,44 +592,85 @@ pub(crate) fn agent_entry_gap(app: &AppState, entry_idx: usize, entry_count: usi
     }
 }
 
-fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> usize {
-    let body = agent_panel_body_rect(area, false);
-    if body.width == 0 || body.height == 0 {
-        return 0;
-    }
+/// Full ordered list of visible agent-panel rows.
+pub(crate) fn agent_panel_rows(app: &AppState) -> Vec<AgentPanelRow> {
+    agent_panel_rows_with_runtimes(app, None)
+}
 
-    let mut used_rows = 0u16;
-    let mut visible = 0usize;
-    let entries = agent_panel_entries(app);
-    for (index, entry) in entries.iter().enumerate().skip(scroll) {
-        let height = agent_entry_height_in_body(app, entry, body.height);
-        if used_rows.saturating_add(height) > body.height {
+pub(crate) fn agent_panel_rows_from(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+) -> Vec<AgentPanelRow> {
+    agent_panel_rows_with_runtimes(app, Some(terminal_runtimes))
+}
+
+fn agent_panel_rows_with_runtimes(
+    app: &AppState,
+    terminal_runtimes: Option<&TerminalRuntimeRegistry>,
+) -> Vec<AgentPanelRow> {
+    agent_panel_entries_with_runtimes(app, terminal_runtimes)
+        .into_iter()
+        .map(AgentPanelRow::Agent)
+        .collect()
+}
+
+/// Trailing gap after the row at `row_idx`, mirroring [`agent_entry_gap`].
+fn agent_panel_row_gap(app: &AppState, row_idx: usize, row_count: usize) -> u16 {
+    agent_entry_gap(app, row_idx, row_count)
+}
+
+/// Visible-row layout for the agent panel: walks the ordered rows from `scroll`,
+/// assigning each a screen rect from its own content height, stopping when the
+/// next row no longer fits. The one place agent-panel geometry is computed.
+pub(crate) fn compute_agent_panel_row_areas(
+    app: &AppState,
+    rows: &[AgentPanelRow],
+    body: Rect,
+    scroll: usize,
+) -> Vec<AgentPanelRowArea> {
+    let mut areas = Vec::new();
+    if body.width == 0 || body.height == 0 {
+        return areas;
+    }
+    let body_bottom = body.y + body.height;
+    let mut row_y = body.y;
+    for (row_idx, row) in rows.iter().enumerate().skip(scroll) {
+        let height = row.height_in_body(app, body.height);
+        if row_y.saturating_add(height) > body_bottom {
             break;
         }
-        used_rows = used_rows.saturating_add(height);
-        visible += 1;
-        used_rows = used_rows
-            .saturating_add(agent_entry_gap(app, index, entries.len()))
-            .min(body.height);
+        areas.push(AgentPanelRowArea {
+            row_idx,
+            rect: Rect::new(body.x, row_y, body.width, height),
+        });
+        row_y = row_y
+            .saturating_add(height)
+            .saturating_add(agent_panel_row_gap(app, row_idx, rows.len()))
+            .min(body_bottom);
     }
-    visible
+    areas
+}
+
+fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> usize {
+    let body = agent_panel_body_rect(area, false);
+    compute_agent_panel_row_areas(app, &agent_panel_rows(app), body, scroll).len()
 }
 
 fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let body = agent_panel_body_rect(area, false);
-    let entries = agent_panel_entries(app);
+    let rows = agent_panel_rows(app);
     let mut used_rows = 0u16;
-    let mut start = entries.len();
-    for (index, entry) in entries.iter().enumerate().rev() {
-        let gap = agent_entry_gap(app, index, entries.len());
-        let needed = agent_entry_height_in_body(app, entry, body.height).saturating_add(gap);
+    let mut start = rows.len();
+    for (row_idx, row) in rows.iter().enumerate().rev() {
+        let gap = agent_panel_row_gap(app, row_idx, rows.len());
+        let needed = row.height_in_body(app, body.height).saturating_add(gap);
         if used_rows.saturating_add(needed) > body.height {
             break;
         }
         used_rows = used_rows.saturating_add(needed);
-        start = index;
+        start = row_idx;
     }
-    start.min(entries.len().saturating_sub(1))
+    start.min(rows.len().saturating_sub(1))
 }
 
 pub(crate) fn agent_panel_scroll_for_target(
@@ -1429,6 +1491,51 @@ fn render_workspace_list(
     }
 }
 
+/// Draw one agent row's configured token lines inside `rect`.
+fn render_agent_row(app: &AppState, frame: &mut Frame, rect: Rect, detail: &AgentPanelEntry) {
+    let p = &app.palette;
+    let label_color = state_label_color(detail.state, detail.seen, p);
+    let rows = resolved_agent_rows(app, detail);
+
+    let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
+    let row_style = if is_active {
+        Style::default().bg(p.active_row_bg)
+    } else {
+        Style::default()
+    };
+    let name_style = if is_active {
+        Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
+    };
+    let status_style = if is_active {
+        Style::default().fg(label_color)
+    } else {
+        Style::default().fg(label_color).add_modifier(Modifier::DIM)
+    };
+    let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
+    let state_icon = state_icon(detail.state, detail.seen, app.status_indicators, p);
+
+    for (row_index, resolved) in rows.iter().take(rect.height as usize).enumerate() {
+        let indent = if row_index == 0 { " " } else { "   " };
+        let mut spans = vec![Span::raw(indent)];
+        spans.extend(resolved_token_spans(
+            resolved,
+            state_icon,
+            status_style,
+            name_style,
+            agent_style,
+            agent_style,
+            p,
+            rect.width.saturating_sub(display_width_u16(indent)) as usize,
+        ));
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(row_style),
+            Rect::new(rect.x, rect.y + row_index as u16, rect.width, 1),
+        );
+    }
+}
+
 fn render_agent_detail(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -1473,14 +1580,14 @@ fn render_agent_detail(
         );
     }
 
-    let details = agent_panel_entries_from(app, terminal_runtimes);
+    let panel_rows = agent_panel_rows_from(app, terminal_runtimes);
     let metrics = agent_panel_scroll_metrics(app, area);
     let scrollbar_rect = agent_panel_scrollbar_rect(app, area);
     let body = agent_panel_body_rect(area, should_show_scrollbar(metrics));
     if body == Rect::default() {
         return;
     }
-    if details.is_empty() && app.agent_view_override.is_some() {
+    if panel_rows.is_empty() && app.agent_view_override.is_some() {
         frame.render_widget(
             Paragraph::new(" no matching agents")
                 .style(Style::default().fg(p.overlay0).add_modifier(Modifier::DIM)),
@@ -1490,57 +1597,13 @@ fn render_agent_detail(
     }
 
     let scroll = app.agent_panel_scroll.min(metrics.max_offset_from_bottom);
-    let mut row_y = body.y;
-    let body_bottom = body.y + body.height;
-    for (index, detail) in details.iter().enumerate().skip(scroll) {
-        let label_color = state_label_color(detail.state, detail.seen, p);
-        let rows = resolved_agent_rows(app, detail);
-        let height = (rows.len().max(1) as u16).min(body.height);
-        if row_y.saturating_add(height) > body_bottom {
-            break;
+    let areas = compute_agent_panel_row_areas(app, &panel_rows, body, scroll);
+    for area_row in &areas {
+        match &panel_rows[area_row.row_idx] {
+            AgentPanelRow::Agent(detail) => {
+                render_agent_row(app, frame, area_row.rect, detail);
+            }
         }
-
-        let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
-        let row_style = if is_active {
-            Style::default().bg(p.active_row_bg)
-        } else {
-            Style::default()
-        };
-        let name_style = if is_active {
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
-        };
-        let status_style = if is_active {
-            Style::default().fg(label_color)
-        } else {
-            Style::default().fg(label_color).add_modifier(Modifier::DIM)
-        };
-        let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
-        let state_icon = state_icon(detail.state, detail.seen, app.status_indicators, p);
-
-        for (row_index, resolved) in rows.iter().take(height as usize).enumerate() {
-            let mut spans = vec![Span::raw(if row_index == 0 { " " } else { "   " })];
-            spans.extend(resolved_token_spans(
-                resolved,
-                state_icon,
-                status_style,
-                name_style,
-                agent_style,
-                agent_style,
-                p,
-                body.width
-                    .saturating_sub(if row_index == 0 { 1 } else { 3 }) as usize,
-            ));
-            frame.render_widget(
-                Paragraph::new(Line::from(spans)).style(row_style),
-                Rect::new(body.x, row_y + row_index as u16, body.width, 1),
-            );
-        }
-        row_y = row_y
-            .saturating_add(height)
-            .saturating_add(agent_entry_gap(app, index, details.len()))
-            .min(body_bottom);
     }
 
     if let Some(track) = scrollbar_rect {

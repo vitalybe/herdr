@@ -58,6 +58,10 @@ pub(crate) const AGENT_TREE_INDENT: usize = 2;
 /// A single visible row in the agents panel. The panel is a heterogeneous row
 /// list rather than a flat pane list, so structural rows can sit between agent
 /// entries. Client-only presentation state.
+// Agent rows carry the full entry while line-splits are just an id and a name.
+// Boxing the entry would add one allocation per agent on every row-list rebuild,
+// which happens on each render and each hit test.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum AgentPanelRow {
     Agent(AgentPanelEntry),
     LineSplit { id: LineSplitId, name: String },

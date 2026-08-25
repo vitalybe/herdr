@@ -2,6 +2,11 @@ use std::time::{Duration, Instant};
 
 use super::{App, SESSION_SAVE_DEBOUNCE};
 
+// The Save variant carries a whole session snapshot while Clear carries
+// nothing. Boxing it would allocate on every debounced save for no benefit: the
+// job is constructed at most once per debounce window and moved straight into
+// the save call.
+#[allow(clippy::large_enum_variant)]
 enum SessionSaveJob {
     Clear,
     Save {

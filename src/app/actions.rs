@@ -361,7 +361,9 @@ impl AppState {
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
     ) {
         self.navigator.query.clear();
-        self.navigator.search_focused = false;
+        // Open focused for search so typing filters immediately; Escape steps
+        // back to the browse view.
+        self.navigator.search_focused = true;
         self.navigator.state_filter = None;
         self.navigator.scroll = 0;
         self.navigator.expanded_workspaces.clear();
@@ -3861,6 +3863,18 @@ mod tests {
             None
         );
         assert_eq!(selected_url("open file:///tmp/report", "file"), None);
+    }
+
+    #[test]
+    fn navigator_opens_focused_for_search() {
+        let mut state = app_with_workspaces(&["one", "two"]);
+        state.ensure_test_terminals();
+
+        state.open_navigator();
+
+        assert!(state.navigator.search_focused);
+        assert!(state.navigator.query.is_empty());
+        assert_eq!(state.navigator.state_filter, None);
     }
 
     #[test]

@@ -37,6 +37,8 @@ Landed on the upstream base:
 | Agent parent/child links | `PaneState.parent`, persisted in the session snapshot and exposed as `parent` on the pane and agent JSON API. |
 | `herdr agent set-parent <target> <parent>` | Reparents a running agent; rejects self-parenting and cycles. |
 | `herdr agent children [target] [--recursive] [--json]` | Lists direct children or the whole descendant subtree in preorder. Target defaults to `$HERDR_PANE_ID`. |
+| Session navigator opens in search mode | Typing filters immediately; Escape steps back to the browse view. |
+| Workspace home tab | `Workspace::home_tab` records deliberate tab selections (tab bar click, keyboard tab switch, new tab, navigator, undo-close) while `active_tab` follows every focus change. Switching to a space restores the home tab instead of a transient agent-panel jump. Persisted in the session snapshot. |
 
 ## Deferred: the sidebar port
 
@@ -58,9 +60,7 @@ input.
 
 Waiting on that port: named line-splits, manual agent order with drag-and-drop, the
 agents-panel tree UI and its collapse state (`collapsed_agent_keys`), tree-order agent
-cycling, the sidebar panes section, hide-non-agent-panes, collapsible sidebar bands, and
-`home_tab` stickiness (`src/app/undo_close.rs` currently calls `switch_workspace_tab`,
-not the fork's sticky variant).
+cycling, the sidebar panes section, hide-non-agent-panes, and collapsible sidebar bands.
 
 ## Dropped
 

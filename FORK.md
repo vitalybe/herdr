@@ -16,13 +16,19 @@ git remote add source https://github.com/ogulcancelik/herdr.git   # if missing
 git fetch source
 ```
 
-## Backup branch
+## Backups
 
-`backup/fork-pre-upstream-rebase` — the fork's `master` as it stood before the first
-rebase onto upstream (`b5dd479c`, 43 commits on the pre-rebase base `f54d8e8c` from
-2026-06-30). Keep it until the rebased line has been running as the daily build long
-enough to trust; it is the only place several fork implementations still exist (see
-*Dropped*).
+| What | Where |
+| --- | --- |
+| The fork's pre-rebase `master` | `backup/fork-pre-upstream-rebase` (`b5dd479c`, 43 commits on the pre-rebase base `f54d8e8c` from 2026-06-30) |
+| The last herdr build the old tooling ran against | `~/.herdr/binaries/herdr-0.7.1-fork` |
+| The tooling migrated to this line's CLI | branch `herdr-rebase-migration` in `~/hq` and in `~/hq/skills-marketplace` |
+
+Keep the backup branch until the rebased line has been running as the daily build
+long enough to trust; it is the only place several fork implementations still
+exist (see *Dropped*). The binary copy matters because the installed `herdr` on
+PATH is the build artifact in the main checkout, so a `cargo build` there
+overwrites the binary currently serving the session.
 
 ## Fork features
 
@@ -32,35 +38,34 @@ Landed on the upstream base:
 | --- | --- |
 | Agent resume recovery | Recovers from stale persisted session refs, and skips resume when the pane's saved cwd is gone. |
 | Movable caret in rename dialogs | Caret moves by char/word, Home/End, insert and delete at the caret, CJK-safe. Merged with upstream's IME host-cursor anchoring: the frame carries the caret position only, so the host terminal's inverted cell *is* the caret. |
-| Undo close | Reopens the most recently closed tab or workspace (`keys.undo_close`, `prefix+u`). |
+| Undo close | Reopens the most recently closed tab or workspace (`keys.undo_close`, `prefix+u`), keeping it as the space's home tab. |
 | Tab naming from the agent session | A single-agent tab takes the agent's published session title, and a later session name supersedes a rename that came from tooling. Rides upstream's OSC-title tracker. |
 | Agent parent/child links | `PaneState.parent`, persisted in the session snapshot and exposed as `parent` on the pane and agent JSON API. |
 | `herdr agent set-parent <target> <parent>` | Reparents a running agent; rejects self-parenting and cycles. |
 | `herdr agent children [target] [--recursive] [--json]` | Lists direct children or the whole descendant subtree in preorder. Target defaults to `$HERDR_PANE_ID`. |
-| Session navigator opens in search mode | Typing filters immediately; Escape steps back to the browse view. |
-| Workspace home tab | `Workspace::home_tab` records deliberate tab selections (tab bar click, keyboard tab switch, new tab, navigator, undo-close) while `active_tab` follows every focus change. Switching to a space restores the home tab instead of a transient agent-panel jump. Persisted in the session snapshot. |
+| Session navigator opens in search mode | Typing filters immediately. Escape returns to browse and keeps the query, which is upstream's tested behaviour. |
+| Workspace home tab | `Workspace::home_tab` is the tab a space returns to, so restore and space switching do not land on whatever agent tab was focused last. |
+| Agents panel row model | `AgentPanelRow` over upstream's entries, with one `compute_agent_panel_row_areas` consumed by both render and hit-testing. Upstream's token/height engine is unchanged underneath. |
+| Named line-splits | Divider rows a user can insert, rename, drag, and (in the panes band) collapse. Both bands share one renderer; the collapse indicator is optional. |
+| Manual agent order | A `Manual` sort alongside upstream's sort orders, with drag-to-reorder, persisted per space. |
+| Agent parent/child tree in the sidebar | Indented children, collapsed-subtree summaries, `collapsed_agent_keys`, tree-order cycling, and drag-to-reparent with a confirm modal. |
+| Double-click rename | Double-clicking an agent row renames its tab; a click on a collapse glyph does not open the modal. |
+| Sidebar panes band | A third band listing non-agent panes across spaces, with pane-and-tab naming, same-name collapsing within a tab, hide-non-agent-panes for tabs that already show agent rows, and `keys.previous_pane` / `keys.next_pane` cycling. |
+| Collapsible sidebar bands | Each band collapses to a header row; dividers stay draggable while a band is collapsed. |
+| Hide agent-only spaces | `experimental.hide_tabs_with_agents` hides agent-only spaces from the spaces list, the collapsed rail, and space navigation, and suppresses the space highlight while an agent tab is focused. Config-file only: upstream removed the Settings > Experiments section. |
 
-## Deferred: the sidebar port
+### Integration notes
 
-The fork's sidebar rework (19 commits) is **not** on the rebased line. It and upstream
-both rewrote the same files — the fork added +3631/-977 lines to `src/ui/sidebar.rs`
-where upstream added +1764/-376 — because each grew its own agents-panel model:
+Where the fork and upstream both grew a mechanism, upstream's is kept and the
+fork's difference re-landed on top. Two collisions between the fork's own
+sidebar bands needed a decision rather than a merge:
 
-- Upstream owns row **content**: `resolved_agent_rows()` produces config-driven,
-  possibly multi-line rows; `agent_entry_height_in_body()` / `agent_entry_gap()` derive
-  geometry from that config; `apply_token_style()` styles each token; the same engine
-  renders the spaces section (`src/ui/sidebar/tokens.rs`).
-- The fork owns row **structure**: `AgentPanelRow::{Agent, LineSplit}` makes the panel a
-  heterogeneous list rather than a pane list, and `compute_agent_panel_row_areas()`
-  precomputes rects so hit-testing is a rect scan instead of re-walking heights.
-
-Target shape: keep upstream's token/height engine, and re-introduce `AgentPanelRow` over
-upstream's `AgentPanelEntry` with one shared row-area computation used by both render and
-input.
-
-Waiting on that port: named line-splits, manual agent order with drag-and-drop, the
-agents-panel tree UI and its collapse state (`collapsed_agent_keys`), tree-order agent
-cycling, the sidebar panes section, hide-non-agent-panes, and collapsible sidebar bands.
+- Line-split identity. Each band hands out ids from its own counter, so
+  `LineSplitId` is paired with a `LineSplitSection` wherever a divider is
+  addressed: the rename target and the context menu carry the section, and one
+  set of modal helpers dispatches on it.
+- Line-split rename follows the pane rename convention. An existing name is
+  edited in place; only a nameless split is replaced on the first keystroke.
 
 ## Dropped
 
@@ -80,9 +85,22 @@ Kept only in `backup/fork-pre-upstream-rebase`:
 
 ### Tooling that depends on the dropped `agent start`
 
-Not yet migrated, and required before the rebased line becomes the daily build:
-`~/hq/bin/ag`, `~/hq/herdr-plugins/claude-resume/resume.sh`, the `task-herdr` skill, and
-the `herdr agent start` example in `CLAUDE.md`.
+`~/hq/scripts/ag/ag.sh`, `~/hq/herdr-plugins/claude-resume/resume.sh`,
+`~/hq/cron/lib/herdr-launch.sh`, and the `task-herdr` skill all launched agents
+through the fork's `agent start`. They are migrated on the
+`herdr-rebase-migration` branch of each repo and reverted on `main`, because the
+migrated form needs a binary from this line: upstream also renamed
+`herdr wait output` to `herdr pane wait-output`, which the installed 0.7.1 does
+not have. Land the migration when this line becomes the installed build.
+
+The migrated shape is `herdr tab create --cwd ...` followed by
+`herdr agent start <name> --kind claude --pane <root_pane>`, which replaces the
+old split-then-close-the-shell dance. A prompt is delivered with
+`herdr pane send-text` plus a separate Enter rather than as an argv element,
+because upstream's `agent start` types a shell command line into the pane.
+Each launcher first polls `herdr pane process-info` until the shell owns the
+foreground job; the CLI's own busy retry only covers an observation race, not a
+shell still running its rc files.
 
 ## Syncing with upstream
 

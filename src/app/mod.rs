@@ -47,6 +47,7 @@ const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 const SIDEBAR_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
+const AGENT_ROW_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_COPY_HIGHLIGHT_DURATION: Duration = Duration::from_millis(500);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
 
@@ -98,6 +99,20 @@ impl PaneClickState {
     }
 }
 
+/// TUI-only double-click tracking for agent rows in the sidebar/agent panel.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AgentRowClickState {
+    pane_id: crate::layout::PaneId,
+    at: Instant,
+}
+
+impl AgentRowClickState {
+    fn is_double_click_for(self, next: Self) -> bool {
+        self.pane_id == next.pane_id
+            && next.at.duration_since(self.at) <= AGENT_ROW_DOUBLE_CLICK_WINDOW
+    }
+}
+
 pub struct App {
     pub state: AppState,
     pub(crate) pane_graphics: pane_graphics::Runtime,
@@ -129,6 +144,7 @@ pub struct App {
     pub(crate) next_api_worktree_operation_id: u64,
     pub(crate) last_sidebar_divider_click: Option<Instant>,
     pub(crate) last_pane_click: Option<PaneClickState>,
+    pub(crate) last_agent_row_click: Option<AgentRowClickState>,
     pub(crate) pending_url_click_sources: HashSet<InputSourceId>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_auto_update_check: Option<Instant>,
@@ -832,6 +848,7 @@ impl App {
             next_api_worktree_operation_id: 1,
             last_sidebar_divider_click: None,
             last_pane_click: None,
+            last_agent_row_click: None,
             pending_url_click_sources: HashSet::new(),
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
             next_auto_update_check: version_check_enabled

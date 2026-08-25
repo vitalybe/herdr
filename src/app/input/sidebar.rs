@@ -2313,6 +2313,52 @@ mod tests {
     }
 
     #[test]
+    fn double_clicking_an_agent_row_opens_the_tab_rename() {
+        let mut app = app_with_two_manual_agents();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let target_pane = manual_panel_pane_ids(&app)[0];
+        let row = agent_row_for(&app, target_pane, false);
+        let col = app.state.view.sidebar_rect.x + 2;
+
+        // The first click focuses and only records the candidate.
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), col, row));
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert!(app.last_agent_row_click.is_some());
+
+        // The second quick click opens the tab rename for that agent's tab.
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+        assert_eq!(app.state.mode, Mode::RenameTab);
+        assert_eq!(app.state.rename_pane_target, None);
+        assert!(app.last_agent_row_click.is_none());
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn dragging_an_agent_row_never_opens_the_tab_rename() {
+        let mut app = app_with_two_manual_agents();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let order = manual_panel_pane_ids(&app);
+        let source_row = agent_row_for(&app, order[0], false);
+        let target_row = agent_row_for(&app, order[1], true) + 1;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            source_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            2,
+            target_row,
+        ));
+        // A drag invalidates the double-click candidate.
+        assert!(app.last_agent_row_click.is_none());
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
+        assert_ne!(app.state.mode, Mode::RenameTab);
+    }
+
+    #[test]
     fn clicking_agent_row_without_drag_focuses_pane() {
         let mut app = app_with_two_manual_agents();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));

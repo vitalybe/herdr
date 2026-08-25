@@ -4,7 +4,7 @@ use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use tracing::warn;
 
-use crate::app::PaneClickState;
+use crate::app::{AgentRowClickState, PaneClickState};
 use crate::input::TerminalKey;
 #[cfg(test)]
 use ratatui::layout::Direction;
@@ -383,6 +383,10 @@ impl App {
             }
         }
 
+        if self.handle_agent_row_double_click(mouse) {
+            return;
+        }
+
         if self.handle_modified_url_click(source_id, mouse) {
             return;
         }
@@ -627,6 +631,77 @@ impl App {
             }
         }
         true
+    }
+
+    /// Detects a double-click on an agent row in the expanded agent panel or the
+    /// collapsed sidebar detail strip and opens the tab rename modal for that
+    /// agent's tab, matching the behavior of double-clicking a tab. The first
+    /// click is recorded and left to normal single-click focus handling; only the
+    /// qualifying second click is consumed here.
+    fn handle_agent_row_double_click(&mut self, mouse: MouseEvent) -> bool {
+        // A left drag starts a drag-to-reorder gesture; invalidate any pending
+        // agent-row click so a drag (and the click that may follow it) is never
+        // mistaken for the first half of a double-click that would open rename.
+        if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) {
+            self.last_agent_row_click = None;
+            return false;
+        }
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+        if !mouse.modifiers.is_empty() {
+            self.last_agent_row_click = None;
+            return false;
+        }
+
+        let sidebar = self.state.view.sidebar_rect;
+        let in_sidebar = mouse.column >= sidebar.x
+            && mouse.column < sidebar.x + sidebar.width
+            && mouse.row >= sidebar.y
+            && mouse.row < sidebar.y + sidebar.height;
+        if !in_sidebar {
+            self.last_agent_row_click = None;
+            return false;
+        }
+
+        // The collapse/expand glyph owns its cell: toggling a subtree twice in
+        // quick succession must not be read as a rename gesture.
+        if self
+            .state
+            .agent_panel_collapse_toggle_at(mouse.column, mouse.row)
+            .is_some()
+        {
+            self.last_agent_row_click = None;
+            return false;
+        }
+
+        let Some((ws_idx, _tab_idx, pane_id)) = self
+            .state
+            .agent_detail_target_at(mouse.row)
+            .or_else(|| self.state.collapsed_agent_detail_target_at(mouse.row))
+        else {
+            self.last_agent_row_click = None;
+            return false;
+        };
+
+        let click = AgentRowClickState {
+            pane_id,
+            at: std::time::Instant::now(),
+        };
+        if self
+            .last_agent_row_click
+            .is_some_and(|last| last.is_double_click_for(click))
+        {
+            self.last_agent_row_click = None;
+            // Focusing the pane activates its workspace and tab, so the shared
+            // active-tab rename modal targets the agent's own tab.
+            self.focus_pane_internal_via_api(ws_idx, pane_id);
+            modal::open_rename_active_tab(&mut self.state, false);
+            return true;
+        }
+
+        self.last_agent_row_click = Some(click);
+        false
     }
 
     fn handle_pane_double_click(&mut self, mouse: MouseEvent) -> bool {

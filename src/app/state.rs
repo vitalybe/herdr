@@ -1227,6 +1227,12 @@ pub(crate) enum WorkspaceDropTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LineSplitId(pub(crate) u64);
 
+/// Collapse-state key for a line-split in the sidebar Panes section. Namespaced
+/// by section so ids from other sections cannot collide.
+pub(crate) fn pane_line_split_collapse_key(id: LineSplitId) -> String {
+    format!("panes:{}", id.0)
+}
+
 /// Stable reference to a single pane, independent of its position. Panes are
 /// addressed by their owning workspace id plus their stable public pane number
 /// (which survives reorders and the `PaneId` remap on restore), so a

@@ -2338,6 +2338,36 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_line_split_row_toggles_its_collapse() {
+        let mut app = app_with_pane_section();
+        let split = app
+            .state
+            .pane_section_order
+            .new_line_split("group".to_string(), 0);
+        let pane_area = app.state.pane_section_rect();
+        app.state.view.pane_section_row_areas =
+            crate::ui::compute_pane_section_row_areas(&app.state, pane_area);
+        let row = app.state.view.pane_section_row_areas[0];
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.rect.x + 2,
+            row.rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            row.rect.x + 2,
+            row.rect.y,
+        ));
+
+        let key = crate::app::state::pane_line_split_collapse_key(split);
+        assert!(app.state.collapsed_line_split_keys.contains(&key));
+        let snapshot = capture_snapshot(&app.state);
+        assert!(snapshot.collapsed_line_split_keys.contains(&key));
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
     fn dragging_panes_agents_divider_sets_the_pane_section_ratio() {
         let mut app = app_with_pane_section();
         let divider = crate::ui::sidebar_pane_section_divider_rect(

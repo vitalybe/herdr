@@ -1582,6 +1582,19 @@ impl AppState {
         }
     }
 
+    /// Flip the collapsed state of a Panes-section line-split divider, hiding or
+    /// revealing the pane rows down to the next divider. Client-only presentation
+    /// state, persisted with the session.
+    pub(crate) fn toggle_line_split_collapse(&mut self, id: crate::app::state::LineSplitId) {
+        let key = crate::app::state::pane_line_split_collapse_key(id);
+        if self.collapsed_line_split_keys.contains(&key) {
+            self.collapsed_line_split_keys.remove(&key);
+        } else {
+            self.collapsed_line_split_keys.insert(key);
+        }
+        self.mark_session_dirty();
+    }
+
     /// Move a Panes-section entry (non-agent pane or line-split) to a new position
     /// in the flat order. `insert_idx` is a slot in the current order (before
     /// removal), clamped to bounds. Cross-space moves are allowed. This is

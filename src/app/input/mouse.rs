@@ -1585,11 +1585,17 @@ impl AppState {
         if let Some(press) = pane_section_press {
             // A plain click on a Panes-section pane row focuses that pane in its
             // workspace (which may be a different space), switching workspace and
-            // tab as needed. Line-split rows are not focusable.
-            if let PaneManualEntryRef::Pane(pane_ref) = &press.entry {
-                if let Some((ws_idx, pane_id)) = self.resolve_pane_section_ref(pane_ref) {
-                    self.mode = Mode::Terminal;
-                    return Some(MouseAction::FocusPane { ws_idx, pane_id });
+            // tab as needed. Clicking a line-split row toggles its collapse.
+            match &press.entry {
+                PaneManualEntryRef::Pane(pane_ref) => {
+                    if let Some((ws_idx, pane_id)) = self.resolve_pane_section_ref(pane_ref) {
+                        self.mode = Mode::Terminal;
+                        return Some(MouseAction::FocusPane { ws_idx, pane_id });
+                    }
+                }
+                PaneManualEntryRef::LineSplit(id) => {
+                    self.toggle_line_split_collapse(*id);
+                    return None;
                 }
             }
         }

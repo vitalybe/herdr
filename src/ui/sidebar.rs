@@ -442,8 +442,14 @@ pub(crate) fn sidebar_pane_section_divider_rect(
 
 /// Whether the sidebar Panes section has any content to show. When false, the
 /// Panes band takes no height and the Agents band keeps the historical geometry.
+///
+/// Based on the rows *before* collapse filtering, so a line-split divider that
+/// currently hides every pane in its segment still keeps the Panes band (and the
+/// divider's clickable header) on screen. Otherwise collapsing a divider that
+/// covers all panes would drop the whole band and make the divider unreachable,
+/// stranding both the panes and the collapse state.
 pub(crate) fn sidebar_shows_pane_section(app: &AppState) -> bool {
-    !sidebar_pane_section_rows(app).is_empty()
+    !pane_section_rows_before_collapse(app).is_empty()
 }
 
 /// Body (scrolling content) region of the Panes band, below its header rows.
@@ -477,6 +483,12 @@ pub(crate) enum PaneSectionRow {
         order_idx: usize,
         id: LineSplitId,
         name: String,
+        /// Number of pane rows in this line-split's segment (down to the next
+        /// line-split or the end). Shown as `(N)` and equals the count hidden
+        /// when the line-split is collapsed.
+        count: usize,
+        /// True when the user has collapsed this line-split, hiding its segment.
+        collapsed: bool,
     },
 }
 
@@ -524,6 +536,71 @@ pub(crate) fn tabs_with_hidden_panes(app: &AppState) -> std::collections::HashSe
 /// order and interleaving panes and line-splits. Pane entries whose pane no
 /// longer resolves are skipped; line-splits are always kept.
 pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
+    apply_pane_line_split_collapse(app, pane_section_rows_before_collapse(app))
+}
+
+/// Annotate each Panes-section line-split with its segment pane count and
+/// collapsed flag, and drop the pane rows in a collapsed line-split's segment. A
+/// segment runs from a line-split down to the next line-split (or the end). Pure.
+fn apply_pane_line_split_collapse(
+    app: &AppState,
+    rows: Vec<PaneSectionRow>,
+) -> Vec<PaneSectionRow> {
+    let n = rows.len();
+    let mut meta: Vec<Option<(usize, bool)>> = vec![None; n];
+    let mut hide = vec![false; n];
+    let mut i = 0;
+    while i < n {
+        if let PaneSectionRow::LineSplit { id, .. } = &rows[i] {
+            let collapsed = app
+                .collapsed_line_split_keys
+                .contains(&crate::app::state::pane_line_split_collapse_key(*id));
+            let mut count = 0;
+            let mut j = i + 1;
+            while j < n && matches!(rows[j], PaneSectionRow::Pane(_)) {
+                count += 1;
+                if collapsed {
+                    hide[j] = true;
+                }
+                j += 1;
+            }
+            meta[i] = Some((count, collapsed));
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+
+    rows.into_iter()
+        .enumerate()
+        .filter(|(idx, _)| !hide[*idx])
+        .map(|(idx, row)| match row {
+            PaneSectionRow::LineSplit {
+                order_idx,
+                id,
+                name,
+                ..
+            } => {
+                let (count, collapsed) = meta[idx].unwrap_or((0, false));
+                PaneSectionRow::LineSplit {
+                    order_idx,
+                    id,
+                    name,
+                    count,
+                    collapsed,
+                }
+            }
+            other => other,
+        })
+        .collect()
+}
+
+/// Panes-section rows before collapse filtering: every resolvable non-agent pane
+/// (deduped by same-name-in-tab) and every line-split divider, in manual order.
+/// Serves both as the input to [`apply_pane_line_split_collapse`] and as the
+/// signal for [`sidebar_shows_pane_section`], so section visibility does not
+/// depend on which rows a collapsed divider currently hides.
+fn pane_section_rows_before_collapse(app: &AppState) -> Vec<PaneSectionRow> {
     let mut lookup: std::collections::HashMap<
         (&str, usize),
         (usize, usize, crate::layout::PaneId),
@@ -555,6 +632,8 @@ pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
                 order_idx,
                 id: *id,
                 name: name.clone(),
+                count: 0,
+                collapsed: false,
             }),
         })
         .collect();
@@ -1674,33 +1753,51 @@ fn pane_section_row_name(
     }
 }
 
-/// Render a named line-split divider row: `── name ─────`.
-fn render_line_split_row(frame: &mut Frame, body: Rect, y: u16, name: &str, p: &Palette) {
+/// Render a named line-split divider row: rule, collapse arrow, name, and the
+/// number of pane rows in its segment.
+fn render_line_split_row(
+    frame: &mut Frame,
+    body: Rect,
+    y: u16,
+    name: &str,
+    collapsed: bool,
+    count: usize,
+    p: &Palette,
+) {
     let width = body.width as usize;
     if width == 0 {
         return;
     }
     let dash_style = Style::default().fg(p.surface_dim);
     let name_style = Style::default().fg(p.overlay1);
+    let arrow_style = Style::default().fg(p.accent);
+    let count_style = Style::default().fg(p.overlay0);
     let trimmed = name.trim();
 
     let prefix = "── ";
+    let arrow = format!("{} ", section_toggle_glyph(collapsed));
     let name_text = if trimmed.is_empty() {
         String::new()
     } else {
         format!("{trimmed} ")
     };
-    let used = display_width(prefix) + display_width(&name_text);
+    let count_text = format!("({count}) ");
+    let used = display_width(prefix)
+        + display_width(&arrow)
+        + display_width(&name_text)
+        + display_width(&count_text);
 
     let line = if used >= width {
         Line::from(Span::styled(
-            truncate_end(&format!("{prefix}{name_text}"), width),
+            truncate_end(&format!("{prefix}{arrow}{name_text}{count_text}"), width),
             name_style,
         ))
     } else {
         Line::from(vec![
             Span::styled(prefix.to_string(), dash_style),
+            Span::styled(arrow, arrow_style),
             Span::styled(name_text, name_style),
+            Span::styled(count_text, count_style),
             Span::styled("─".repeat(width - used), dash_style),
         ])
     };
@@ -1762,17 +1859,22 @@ fn render_pane_section(
         _ => None,
     };
 
-    // Line-split labels live in the flat order; index them by order slot so the
-    // (name-less, Copy) row areas can render their rule.
-    let split_names: std::collections::HashMap<usize, String> = sidebar_pane_section_rows(app)
-        .into_iter()
-        .filter_map(|row| match row {
-            PaneSectionRow::LineSplit {
-                order_idx, name, ..
-            } => Some((order_idx, name)),
-            PaneSectionRow::Pane(_) => None,
-        })
-        .collect();
+    // Line-split labels and collapse state live in the flat order; index them by
+    // order slot so the (name-less, Copy) row areas can render their rule.
+    let split_meta: std::collections::HashMap<usize, (String, usize, bool)> =
+        sidebar_pane_section_rows(app)
+            .into_iter()
+            .filter_map(|row| match row {
+                PaneSectionRow::LineSplit {
+                    order_idx,
+                    name,
+                    count,
+                    collapsed,
+                    ..
+                } => Some((order_idx, (name, count, collapsed))),
+                PaneSectionRow::Pane(_) => None,
+            })
+            .collect();
 
     let areas = &app.view.pane_section_row_areas;
     let max_width = body.width as usize;
@@ -1841,11 +1943,11 @@ fn render_pane_section(
                         buf[(x, row.rect.y)].set_style(Style::default().bg(p.surface1));
                     }
                 }
-                let name = split_names
+                let (name, count, collapsed) = split_meta
                     .get(&row.order_idx)
-                    .map(String::as_str)
-                    .unwrap_or("");
-                render_line_split_row(frame, body, row.rect.y, name, p);
+                    .map(|(name, count, collapsed)| (name.as_str(), *count, *collapsed))
+                    .unwrap_or(("", 0, false));
+                render_line_split_row(frame, body, row.rect.y, name, collapsed, count, p);
             }
         }
     }
@@ -2757,6 +2859,62 @@ mod tests {
     }
 
     #[test]
+    fn collapsing_a_line_split_hides_its_segment_but_keeps_the_band() {
+        let mut app = app_with_two_shell_panes();
+        let split = app.pane_section_order.new_line_split("all".to_string(), 0);
+        let rows = sidebar_pane_section_rows(&app);
+        assert_eq!(rows.len(), 3);
+        // The divider counts the pane rows in its segment.
+        assert!(matches!(
+            &rows[0],
+            PaneSectionRow::LineSplit {
+                count: 2,
+                collapsed: false,
+                ..
+            }
+        ));
+
+        app.toggle_line_split_collapse(split);
+        let rows = sidebar_pane_section_rows(&app);
+        assert_eq!(rows.len(), 1, "the segment's pane rows are hidden");
+        assert!(matches!(
+            &rows[0],
+            PaneSectionRow::LineSplit {
+                count: 2,
+                collapsed: true,
+                ..
+            }
+        ));
+        // The band stays on screen so the divider is still clickable.
+        assert!(sidebar_shows_pane_section(&app));
+
+        app.toggle_line_split_collapse(split);
+        assert_eq!(sidebar_pane_section_rows(&app).len(), 3);
+    }
+
+    #[test]
+    fn collapsed_line_split_row_renders_its_arrow_and_count() {
+        let mut app = app_with_two_shell_panes();
+        let split = app
+            .pane_section_order
+            .new_line_split("later".to_string(), 0);
+        app.toggle_line_split_collapse(split);
+        let area = Rect::new(0, 0, 26, 40);
+        let pane_area = pane_section_rect(area, 0.5, 0.5, true, SidebarSectionCollapse::default());
+        app.view.pane_section_row_areas = compute_pane_section_row_areas(&app, pane_area);
+
+        let mut terminal = Terminal::new(TestBackend::new(26, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_pane_section(&app, &TerminalRuntimeRegistry::new(), frame, pane_area)
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row = app.view.pane_section_row_areas[0].rect.y;
+        assert!(row_text(&buffer, row, 26).starts_with("── ▸ later (2)"));
+    }
+
+    #[test]
     fn three_band_split_keeps_the_spaces_band_geometry() {
         let area = Rect::new(0, 0, 26, 30);
         let (ws_two_band, rest) = expanded_sidebar_sections(area, 0.5);
@@ -2872,7 +3030,7 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
 
         let split_row = areas[0].rect.y;
-        assert!(row_text(&buffer, split_row, 26).starts_with("── top"));
+        assert!(row_text(&buffer, split_row, 26).starts_with("── ▾ top (2)"));
         assert!(app.pane_section_row_at(split_row).is_none());
 
         for row in areas.iter().skip(1) {

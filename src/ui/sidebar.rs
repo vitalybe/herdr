@@ -432,6 +432,17 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
             }
         }
     }
+
+    // Under `hide_tabs_with_agents`, drop spaces whose tabs are all agent tabs
+    // so they never surface in the spaces list, navigation, or switcher.
+    if app.hide_tabs_with_agents {
+        entries.retain(|WorkspaceListEntry::Workspace { ws_idx, .. }| {
+            app.workspaces
+                .get(*ws_idx)
+                .is_none_or(|ws| !app.space_hidden_as_agent_only(ws))
+        });
+    }
+
     entries
 }
 
@@ -786,15 +797,23 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         return;
     }
 
+    let suppress_active = app.space_highlight_suppressed();
+    let mut rail_row: u16 = 0;
     for (visible_idx, ws) in app.workspaces.iter().enumerate() {
-        let y = ws_area.y + visible_idx as u16;
+        // Agent-only spaces drop out of the collapsed rail just like they do
+        // from the expanded spaces list.
+        if app.space_hidden_as_agent_only(ws) {
+            continue;
+        }
+        let y = ws_area.y + rail_row;
         if y >= ws_area.y + ws_area.height {
             break;
         }
+        rail_row = rail_row.saturating_add(1);
         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
         let (icon, icon_style) = state_icon(agg_state, agg_seen, app.status_indicators, p);
         let is_selected = visible_idx == app.selected && is_navigating;
-        let is_active = Some(visible_idx) == app.active;
+        let is_active = Some(visible_idx) == app.active && !suppress_active;
         let selection_bg = workspace_selection_background(p, is_active);
         let row_style = if is_selected {
             Style::default().bg(selection_bg)
@@ -1243,6 +1262,7 @@ fn render_workspace_list(
     let scrollbar_rect = workspace_list_scrollbar_rect(app, area);
     let cards = &app.view.workspace_card_areas;
     let entries = workspace_list_entries(app);
+    let suppress_active = app.space_highlight_suppressed();
 
     for card in cards {
         let i = card.ws_idx;
@@ -1250,7 +1270,7 @@ fn render_workspace_list(
         let row_y = card.rect.y;
         let row_height = card.rect.height;
         let selected = i == app.selected && is_navigating;
-        let is_active = Some(i) == app.active;
+        let is_active = Some(i) == app.active && !suppress_active;
         let is_dragged = dragged_ws_idx == Some(i);
         let highlighted = selected || is_active || is_dragged;
         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);

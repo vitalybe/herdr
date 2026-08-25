@@ -1025,6 +1025,12 @@ pub struct ExperimentalConfig {
     /// elsewhere and a best-effort no-op if the switch fails.
     /// Default: false.
     pub switch_ascii_input_source_in_prefix: bool,
+    /// Hide spaces whose tabs are all agent tabs from the spaces list, the
+    /// collapsed sidebar rail, and space navigation, and stop highlighting a
+    /// space while an agent tab is focused. A tab counts as an agent tab only
+    /// when every pane in it is an agent. Tabs are never removed from the top
+    /// tab bar. Default: false.
+    pub hide_tabs_with_agents: bool,
 }
 
 impl Default for KeysConfig {

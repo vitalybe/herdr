@@ -1606,6 +1606,11 @@ pub struct AppState {
     /// CJK IME is active. macOS only; a no-op elsewhere. See
     /// `[experimental] switch_ascii_input_source_in_prefix`.
     pub switch_ascii_input_source_in_prefix: bool,
+    /// Hide agent-only spaces (spaces whose every tab is an agent tab) from the
+    /// spaces list, the collapsed rail, and space navigation, and suppress the
+    /// space highlight while an agent tab is focused. See
+    /// `[experimental] hide_tabs_with_agents`.
+    pub hide_tabs_with_agents: bool,
     pub kitty_graphics_enabled: bool,
     pub default_shell: String,
     pub shell_mode: crate::config::ShellModeConfig,
@@ -1712,6 +1717,24 @@ impl AppState {
 
     pub fn agent_border_labels_enabled(&self) -> bool {
         self.show_agent_labels_on_pane_borders
+    }
+
+    /// True when `ws` should be hidden from the spaces list, the collapsed
+    /// rail, and space navigation because `hide_tabs_with_agents` is on and
+    /// every tab in it is an agent tab.
+    pub(crate) fn space_hidden_as_agent_only(&self, ws: &crate::workspace::Workspace) -> bool {
+        self.hide_tabs_with_agents && ws.is_agent_only(&self.terminals)
+    }
+
+    /// True when the space list highlight should be suppressed because the
+    /// focused tab is an agent tab under `hide_tabs_with_agents`.
+    pub(crate) fn space_highlight_suppressed(&self) -> bool {
+        self.hide_tabs_with_agents
+            && self
+                .active
+                .and_then(|idx| self.workspaces.get(idx))
+                .and_then(|ws| ws.tabs.get(ws.active_tab))
+                .is_some_and(|tab| tab.is_agent_tab(&self.terminals))
     }
 
     pub(crate) fn pane_exposes_host_cursor(
@@ -2022,6 +2045,7 @@ impl AppState {
             cjk_ime_agents: Vec::new(),
             cjk_ime_cursor_shape: 2, // steady_block
             switch_ascii_input_source_in_prefix: false,
+            hide_tabs_with_agents: false,
             kitty_graphics_enabled: false,
             default_shell: String::new(),
             shell_mode: crate::config::ShellModeConfig::Auto,
@@ -2780,5 +2804,56 @@ mod tests {
                 "Collapse"
             ]
         );
+    }
+
+    /// Mark tab `tab_idx` of workspace `ws_idx` as an agent tab by attaching an
+    /// agent to its root pane's terminal.
+    fn mark_tab_agent(state: &mut AppState, ws_idx: usize, tab_idx: usize) {
+        let pane = state.workspaces[ws_idx].tabs[tab_idx].root_pane;
+        let terminal_id = state.workspaces[ws_idx].tabs[tab_idx].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("terminal exists")
+            .detected_agent = Some(crate::detect::Agent::Pi);
+    }
+
+    #[test]
+    fn hide_tabs_with_agents_off_never_hides_or_suppresses() {
+        let mut state = AppState::test_new();
+        state.workspaces = vec![crate::workspace::Workspace::test_new("agents")];
+        state.active = Some(0);
+        state.ensure_test_terminals();
+        mark_tab_agent(&mut state, 0, 0);
+
+        // The space really is agent-only, but the flag is off.
+        assert!(state.workspaces[0].is_agent_only(&state.terminals));
+        assert!(!state.space_hidden_as_agent_only(&state.workspaces[0]));
+        assert!(!state.space_highlight_suppressed());
+    }
+
+    #[test]
+    fn hide_tabs_with_agents_hides_agent_only_spaces_and_suppresses_highlight() {
+        let mut state = AppState::test_new();
+        let mut mixed = crate::workspace::Workspace::test_new("mixed");
+        mixed.test_add_tab(Some("agent"));
+        state.workspaces = vec![mixed, crate::workspace::Workspace::test_new("agents")];
+        state.active = Some(0);
+        state.ensure_test_terminals();
+        mark_tab_agent(&mut state, 0, 1);
+        mark_tab_agent(&mut state, 1, 0);
+        state.hide_tabs_with_agents = true;
+
+        // Workspace 0 mixes a plain tab with an agent tab, so it stays visible.
+        assert!(!state.space_hidden_as_agent_only(&state.workspaces[0]));
+        // Workspace 1's only tab is an agent tab.
+        assert!(state.space_hidden_as_agent_only(&state.workspaces[1]));
+
+        state.workspaces[0].switch_tab(0);
+        assert!(!state.space_highlight_suppressed());
+        state.workspaces[0].switch_tab(1);
+        assert!(state.space_highlight_suppressed());
     }
 }

@@ -702,6 +702,7 @@ impl App {
             sidebar_section_split,
             agent_panel_sort,
             agent_manual_order,
+            pending_agent_reparent: None,
             status_indicators: config.ui.status_indicators,
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),
@@ -1998,6 +1999,9 @@ impl App {
             }
             Mode::ConfirmClose => {
                 self.handle_confirm_close_key_via_api(key_event);
+            }
+            Mode::ConfirmAgentReparent => {
+                self.handle_agent_reparent_key_via_api(key_event);
             }
             Mode::ContextMenu => {
                 self.handle_context_menu_key_via_api(key_event);

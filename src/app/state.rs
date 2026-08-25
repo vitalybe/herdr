@@ -902,6 +902,7 @@ pub enum Mode {
     ConfirmRemoveWorktree,
     Resize,
     ConfirmClose,
+    ConfirmAgentReparent,
     ContextMenu,
     Settings,
     GlobalMenu,
@@ -1099,6 +1100,36 @@ pub(crate) enum ManualEntry {
 pub(crate) enum ManualEntryRef {
     Pane(PaneId),
     LineSplit(LineSplitId),
+}
+
+/// What a pending drag-to-reparent operation will do once confirmed. Attach the
+/// dragged agent under a parent, or detach it back to the top level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AgentReparentAction {
+    SetParent {
+        parent_ws: usize,
+        parent_pane: PaneId,
+    },
+    ClearParent,
+}
+
+/// A drag-to-reparent operation awaiting confirmation in the
+/// [`Mode::ConfirmAgentReparent`] modal. Client-only presentation state; the
+/// resolved parent link it produces is the only runtime fact and is applied on
+/// confirm. Ephemeral, never persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingAgentReparent {
+    pub child_ws: usize,
+    pub child_pane: PaneId,
+    /// Display label of the dragged agent, for the modal prompt.
+    pub child_label: String,
+    /// Display label of the target parent (SetParent) or the current parent
+    /// being removed (ClearParent), for the modal prompt.
+    pub parent_label: String,
+    pub action: AgentReparentAction,
+    /// Mode to restore when the modal closes (a drag can start from Terminal or
+    /// Navigate).
+    pub return_mode: Mode,
 }
 
 /// Persistence-neutral projection of a manual-order entry. Panes are keyed by
@@ -1752,6 +1783,9 @@ pub struct AppState {
     pub agent_panel_sort: AgentPanelSort,
     /// Flat client-only manual ordering of agent panes (TUI presentation state).
     pub(crate) agent_manual_order: AgentManualOrder,
+    /// A drag-to-reparent operation awaiting confirmation. Set only while
+    /// `mode == Mode::ConfirmAgentReparent`.
+    pub(crate) pending_agent_reparent: Option<PendingAgentReparent>,
     pub status_indicators: crate::config::StatusIndicatorStyle,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
@@ -2184,6 +2218,7 @@ impl AppState {
             sidebar_section_split: 0.5,
             agent_panel_sort: AgentPanelSort::Spaces,
             agent_manual_order: AgentManualOrder::default(),
+            pending_agent_reparent: None,
             status_indicators: crate::config::StatusIndicatorStyle::Dots,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
@@ -2293,6 +2328,11 @@ impl AppState {
     }
 
     pub fn assert_invariants_for_test(&self) {
+        assert!(
+            self.pending_agent_reparent.is_none() || self.mode == Mode::ConfirmAgentReparent,
+            "pending agent reparent must only be set while the confirm modal is open"
+        );
+
         if self.workspaces.is_empty() {
             assert!(
                 self.active.is_none(),

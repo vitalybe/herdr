@@ -97,7 +97,7 @@ This is the main Herdr workflow: start several agents, let them work in parallel
 
 ## Agent tree
 
-Agents that record a parent nest under it in the sidebar's agents section. Set the link with `herdr agent set-parent <target> <parent>`, or in manual sort mode by dragging one agent onto another.
+Agents that record a parent nest under it in the sidebar's agents section. Set the link with `herdr agent set-parent <target> <parent>`, or in manual sort mode by dragging one agent into another's children and confirming the prompt. Dragging a child back to the top level detaches it. Drops that would create a cycle are rejected.
 
 A parent row gains a collapse arrow and a summary line counting its direct children by state, such as `Subagents - 2 idle 1 blocked`. Clicking the arrow hides or shows the subtree; the collapsed state persists across restarts. Agent navigation follows the visible tree order, so `next_agent` and `previous_agent` skip agents hidden inside a collapsed parent.
 

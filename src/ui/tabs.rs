@@ -392,18 +392,18 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
         let active = idx == ws.active_tab;
         let style = if active {
             let base = Style::default().fg(panel_contrast_fg(p)).bg(p.accent);
-            if tab.is_auto_named() {
+            if tab.is_numbered() {
                 base
             } else {
                 base.add_modifier(Modifier::BOLD)
             }
-        } else if tab.is_auto_named() {
+        } else if tab.is_numbered() {
             Style::default()
                 .fg(p.overlay0)
                 .bg(p.surface0)
                 .add_modifier(Modifier::DIM)
         } else {
-            Style::default().fg(p.overlay1).bg(p.surface0)
+            Style::default().fg(p.text).bg(p.surface0)
         };
         let width = rect.width as usize;
         let name = tab_chrome_label(ws, idx);
@@ -742,6 +742,34 @@ mod tests {
         assert_eq!(style.bg, Some(app.palette.accent));
         assert!(!style.add_modifier.contains(Modifier::DIM));
         assert!(!style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn agent_named_tab_is_not_dimmed_like_a_numbered_tab() {
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        // Tab 2 stays inactive, where the numbered-tab dim used to apply.
+        ws.test_add_tab(None);
+        ws.tabs[1].set_auto_name("review the sidebar port".into());
+        ws.active_tab = 0;
+
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.view.tab_bar_rect = Rect::new(0, 0, 60, 1);
+        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        app.view.tab_hit_areas = view.tab_hit_areas;
+
+        let backend = TestBackend::new(60, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_tab_bar(&app, frame, app.view.tab_bar_rect))
+            .unwrap();
+
+        let rect = app.view.tab_hit_areas[1];
+        let style = terminal.backend().buffer()[(rect.x + 1, rect.y)].style();
+
+        assert_eq!(style.fg, Some(app.palette.text));
+        assert!(!style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

@@ -1726,16 +1726,25 @@ impl AppState {
             }
         }
         if let Some(press) = agent_press {
-            // A plain click focuses an agent pane; a line-split row click is a
-            // no-op.
-            if let ManualEntryRef::Pane(pane_id) = press.entry {
-                if let Some(ws_idx) = self
-                    .workspaces
-                    .iter()
-                    .position(|ws| ws.pane_state(pane_id).is_some())
-                {
-                    self.mode = Mode::Terminal;
-                    return Some(MouseAction::FocusPane { ws_idx, pane_id });
+            // A plain click focuses an agent pane; clicking a line-split row
+            // toggles its collapse.
+            match press.entry {
+                ManualEntryRef::Pane(pane_id) => {
+                    if let Some(ws_idx) = self
+                        .workspaces
+                        .iter()
+                        .position(|ws| ws.pane_state(pane_id).is_some())
+                    {
+                        self.mode = Mode::Terminal;
+                        return Some(MouseAction::FocusPane { ws_idx, pane_id });
+                    }
+                }
+                ManualEntryRef::LineSplit(id) => {
+                    self.toggle_line_split_collapse(
+                        crate::app::state::LineSplitSection::Agents,
+                        id,
+                    );
+                    return None;
                 }
             }
         }
@@ -1751,7 +1760,10 @@ impl AppState {
                     }
                 }
                 PaneManualEntryRef::LineSplit(id) => {
-                    self.toggle_line_split_collapse(*id);
+                    self.toggle_line_split_collapse(
+                        crate::app::state::LineSplitSection::Panes,
+                        *id,
+                    );
                     return None;
                 }
             }

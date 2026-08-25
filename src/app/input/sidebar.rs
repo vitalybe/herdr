@@ -2563,7 +2563,10 @@ mod tests {
             row.rect.y,
         ));
 
-        let key = crate::app::state::pane_line_split_collapse_key(split);
+        let key = crate::app::state::line_split_collapse_key(
+            crate::app::state::LineSplitSection::Panes,
+            split,
+        );
         assert!(app.state.collapsed_line_split_keys.contains(&key));
         let snapshot = capture_snapshot(&app.state);
         assert!(snapshot.collapsed_line_split_keys.contains(&key));

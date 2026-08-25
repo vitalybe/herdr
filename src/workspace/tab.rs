@@ -205,6 +205,13 @@ impl Tab {
         self.custom_name.is_none()
     }
 
+    /// Whether the tab has no name of its own and shows its position instead.
+    /// A tab named by its agent or by tooling is auto-named but not numbered,
+    /// so it is styled as a named tab.
+    pub fn is_numbered(&self) -> bool {
+        self.custom_name.is_none() && self.auto_name.is_none()
+    }
+
     pub fn set_custom_name(&mut self, name: String) {
         self.custom_name = Some(name);
     }

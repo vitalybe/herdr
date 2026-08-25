@@ -1981,11 +1981,15 @@ impl AppState {
         }
     }
 
-    /// Flip the collapsed state of a Panes-section line-split divider, hiding or
-    /// revealing the pane rows down to the next divider. Client-only presentation
+    /// Flip the collapsed state of a line-split divider, hiding or revealing the
+    /// rows down to the next divider in its band. Client-only presentation
     /// state, persisted with the session.
-    pub(crate) fn toggle_line_split_collapse(&mut self, id: crate::app::state::LineSplitId) {
-        let key = crate::app::state::pane_line_split_collapse_key(id);
+    pub(crate) fn toggle_line_split_collapse(
+        &mut self,
+        section: crate::app::state::LineSplitSection,
+        id: crate::app::state::LineSplitId,
+    ) {
+        let key = crate::app::state::line_split_collapse_key(section, id);
         if self.collapsed_line_split_keys.contains(&key) {
             self.collapsed_line_split_keys.remove(&key);
         } else {
@@ -5540,7 +5544,7 @@ mod tests {
         assert!(matches!(rows[0], crate::ui::AgentPanelRow::Agent(_)));
         assert!(matches!(
             &rows[1],
-            crate::ui::AgentPanelRow::LineSplit { id, name }
+            crate::ui::AgentPanelRow::LineSplit { id, name, .. }
                 if *id == split && name == "scheduled"
         ));
 

@@ -685,7 +685,7 @@ fn render_mobile_switcher_content(
             let display_name = ws
                 .tab_display_name(idx)
                 .unwrap_or_else(|| (idx + 1).to_string());
-            let label = if tab.is_auto_named() {
+            let label = if tab.is_numbered() {
                 format!("tab {display_name}")
             } else {
                 format!("{} · {display_name}", idx + 1)

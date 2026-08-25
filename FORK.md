@@ -39,7 +39,7 @@ Landed on the upstream base:
 | Agent resume recovery | Recovers from stale persisted session refs, and skips resume when the pane's saved cwd is gone. |
 | Movable caret in rename dialogs | Caret moves by char/word, Home/End, insert and delete at the caret, CJK-safe. Merged with upstream's IME host-cursor anchoring: the frame carries the caret position only, so the host terminal's inverted cell *is* the caret. |
 | Undo close | Reopens the most recently closed tab or workspace (`keys.undo_close`, `prefix+u`), keeping it as the space's home tab. |
-| Tab naming from the agent session | A single-agent tab takes the agent's published session title, and a later session name supersedes a rename that came from tooling. Rides upstream's OSC-title tracker. |
+| Tab naming from the agent session | A single-agent tab takes the agent's published session title, and a later session name supersedes a rename that came from tooling. Rides upstream's OSC-title tracker. The tab bar styles a tab by whether it carries a name at all (`Tab::is_numbered`), not by whether the name was typed, so an agent-named tab is not dimmed like a numbered one; named tabs use `palette.text`. In the sidebar, a `tab` token takes the row's name style rather than upstream's muted secondary style, keeping the fork's role table where a tab names an agents row. |
 | Agent parent/child links | `PaneState.parent`, persisted in the session snapshot and exposed as `parent` on the pane and agent JSON API. |
 | `herdr agent set-parent <target> <parent>` | Reparents a running agent; rejects self-parenting and cycles. |
 | `herdr agent children [target] [--recursive] [--json]` | Lists direct children or the whole descendant subtree in preorder. Target defaults to `$HERDR_PANE_ID`. |

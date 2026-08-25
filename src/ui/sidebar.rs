@@ -72,7 +72,13 @@ pub(crate) const AGENT_TREE_INDENT: usize = 2;
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum AgentPanelRow {
     Agent(AgentPanelEntry),
-    LineSplit { id: LineSplitId, name: String },
+    LineSplit {
+        id: LineSplitId,
+        name: String,
+        /// Agent rows in this divider's segment, shown next to its name.
+        count: usize,
+        collapsed: bool,
+    },
 }
 
 impl AgentPanelRow {
@@ -602,7 +608,10 @@ fn apply_pane_line_split_collapse(
         if let PaneSectionRow::LineSplit { id, .. } = &rows[i] {
             let collapsed = app
                 .collapsed_line_split_keys
-                .contains(&crate::app::state::pane_line_split_collapse_key(*id));
+                .contains(&crate::app::state::line_split_collapse_key(
+                    crate::app::state::LineSplitSection::Panes,
+                    *id,
+                ));
             let mut count = 0;
             let mut j = i + 1;
             while j < n && matches!(rows[j], PaneSectionRow::Pane(_)) {
@@ -1396,7 +1405,56 @@ fn agent_panel_rows_with_runtimes(
     terminal_runtimes: Option<&TerminalRuntimeRegistry>,
 ) -> Vec<AgentPanelRow> {
     let base = base_agent_panel_rows(app, terminal_runtimes);
-    flatten_agent_tree(app, base)
+    let tree = flatten_agent_tree(app, base);
+    apply_agent_line_split_collapse(app, tree)
+}
+
+/// Annotate each line-split with its segment agent count and collapsed flag, and
+/// drop the agent rows a collapsed line-split hides. A segment runs from a
+/// line-split down to the next line-split or the end of the band. Pure.
+fn apply_agent_line_split_collapse(app: &AppState, rows: Vec<AgentPanelRow>) -> Vec<AgentPanelRow> {
+    let n = rows.len();
+    let mut meta: Vec<Option<(usize, bool)>> = vec![None; n];
+    let mut hide = vec![false; n];
+    let mut i = 0;
+    while i < n {
+        if let AgentPanelRow::LineSplit { id, .. } = &rows[i] {
+            let collapsed = app
+                .collapsed_line_split_keys
+                .contains(&crate::app::state::line_split_collapse_key(
+                    crate::app::state::LineSplitSection::Agents,
+                    *id,
+                ));
+            let mut count = 0;
+            let mut j = i + 1;
+            while j < n && matches!(rows[j], AgentPanelRow::Agent(_)) {
+                count += 1;
+                hide[j] = collapsed;
+                j += 1;
+            }
+            meta[i] = Some((count, collapsed));
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+
+    rows.into_iter()
+        .enumerate()
+        .filter(|(idx, _)| !hide[*idx])
+        .map(|(idx, row)| match row {
+            AgentPanelRow::LineSplit { id, name, .. } => {
+                let (count, collapsed) = meta[idx].unwrap_or((0, false));
+                AgentPanelRow::LineSplit {
+                    id,
+                    name,
+                    count,
+                    collapsed,
+                }
+            }
+            other => other,
+        })
+        .collect()
 }
 
 /// Ordered status keys for the parent "Subagents" summary line. Groups appear in
@@ -1640,6 +1698,8 @@ fn base_agent_panel_rows(
                 rows.push(AgentPanelRow::LineSplit {
                     id: *id,
                     name: name.clone(),
+                    count: 0,
+                    collapsed: false,
                 });
             }
         }
@@ -2418,7 +2478,7 @@ fn resolved_token_spans(
     resolved: &[ResolvedToken],
     state_icon: (&str, Style),
     state_text_style: Style,
-    workspace_style: Style,
+    name_style: Style,
     secondary_style: Style,
     custom_style: Style,
     p: &Palette,
@@ -2544,14 +2604,16 @@ fn resolved_token_spans(
                     apply_token_style(state_text_style, token.style),
                 ));
             }
-            ResolvedTokenKind::Workspace(text) => {
+            // A tab label names an agents row the way a space names a space
+            // row, so both take the name style. `Tab` never reaches the spaces
+            // band, which has no tab token.
+            ResolvedTokenKind::Workspace(text) | ResolvedTokenKind::Tab(text) => {
                 spans.push(Span::styled(
                     truncate_end(text, budgets[index]),
-                    apply_token_style(workspace_style, token.style),
+                    apply_token_style(name_style, token.style),
                 ));
             }
-            ResolvedTokenKind::Tab(text)
-            | ResolvedTokenKind::Pane(text)
+            ResolvedTokenKind::Pane(text)
             | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::Branch(text) => {
                 spans.push(Span::styled(
@@ -3054,8 +3116,20 @@ fn render_agent_detail(
             AgentPanelRow::Agent(detail) => {
                 render_agent_row(app, frame, area_row.rect, detail);
             }
-            AgentPanelRow::LineSplit { name, .. } => {
-                render_line_split_row(frame, area_row.rect, area_row.rect.y, name, None, p);
+            AgentPanelRow::LineSplit {
+                name,
+                count,
+                collapsed,
+                ..
+            } => {
+                render_line_split_row(
+                    frame,
+                    area_row.rect,
+                    area_row.rect.y,
+                    name,
+                    Some((*collapsed, *count)),
+                    p,
+                );
             }
         }
     }
@@ -3393,7 +3467,7 @@ mod tests {
             }
         ));
 
-        app.toggle_line_split_collapse(split);
+        app.toggle_line_split_collapse(crate::app::state::LineSplitSection::Panes, split);
         let rows = sidebar_pane_section_rows(&app);
         assert_eq!(rows.len(), 1, "the segment's pane rows are hidden");
         assert!(matches!(
@@ -3407,7 +3481,7 @@ mod tests {
         // The band stays on screen so the divider is still clickable.
         assert!(sidebar_shows_pane_section(&app));
 
-        app.toggle_line_split_collapse(split);
+        app.toggle_line_split_collapse(crate::app::state::LineSplitSection::Panes, split);
         assert_eq!(sidebar_pane_section_rows(&app).len(), 3);
     }
 
@@ -3417,7 +3491,7 @@ mod tests {
         let split = app
             .pane_section_order
             .new_line_split("later".to_string(), 0);
-        app.toggle_line_split_collapse(split);
+        app.toggle_line_split_collapse(crate::app::state::LineSplitSection::Panes, split);
         let area = Rect::new(0, 0, 26, 40);
         let pane_area = pane_section_rect(area, 0.5, 0.5, true, SidebarSectionCollapse::default());
         app.view.pane_section_row_areas = compute_pane_section_row_areas(&app, pane_area);
@@ -3897,6 +3971,34 @@ rows = [[{ token = "$hype", fg = "#abcdef", bold = true, dim = false }, "workspa
         assert!(separator.add_modifier.contains(Modifier::DIM));
         assert!(!separator.add_modifier.contains(Modifier::BOLD));
         assert_eq!(separator.bg, Some(app.palette.active_row_bg));
+    }
+
+    #[test]
+    fn agent_row_tab_token_takes_the_name_style() {
+        let name_style = Style::default()
+            .fg(ratatui::style::Color::Rgb(1, 2, 3))
+            .add_modifier(Modifier::BOLD);
+        let secondary_style = Style::default()
+            .fg(ratatui::style::Color::Rgb(4, 5, 6))
+            .add_modifier(Modifier::DIM);
+        let spans = resolved_token_spans(
+            &[ResolvedToken::unstyled(ResolvedTokenKind::Tab(
+                "herdr".into(),
+            ))],
+            ("", Style::default()),
+            Style::default(),
+            name_style,
+            secondary_style,
+            Style::default(),
+            &crate::app::state::AppState::test_new().palette,
+            20,
+        );
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "herdr");
+        assert_eq!(spans[0].style.fg, name_style.fg);
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert!(!spans[0].style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

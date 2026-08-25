@@ -1419,10 +1419,14 @@ pub(crate) enum LineSplitSection {
     Panes,
 }
 
-/// Collapse-state key for a line-split in the sidebar Panes section. Namespaced
-/// by section so ids from other sections cannot collide.
-pub(crate) fn pane_line_split_collapse_key(id: LineSplitId) -> String {
-    format!("panes:{}", id.0)
+/// Stable persistence key for a line-split's collapsed state. Each band hands
+/// out ids from its own counter, so the key is namespaced by section.
+pub(crate) fn line_split_collapse_key(section: LineSplitSection, id: LineSplitId) -> String {
+    let prefix = match section {
+        LineSplitSection::Agents => "agents",
+        LineSplitSection::Panes => "panes",
+    };
+    format!("{prefix}:{}", id.0)
 }
 
 /// Stable reference to a single pane, independent of its position. Panes are

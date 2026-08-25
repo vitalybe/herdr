@@ -236,7 +236,8 @@ pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
             lookup.insert((ws.id.as_str(), pane_number), (ws_idx, tab_idx, pane_id));
         }
     }
-    app.pane_section_order
+    let rows: Vec<PaneSectionRow> = app
+        .pane_section_order
         .order
         .iter()
         .enumerate()
@@ -256,6 +257,33 @@ pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
                 id: *id,
                 name: name.clone(),
             }),
+        })
+        .collect();
+    dedupe_same_name_tab_panes(app, rows)
+}
+
+/// Drop redundant Panes-section pane rows: when the same tab contributes several
+/// panes that share the same pane name, keep only the first in display order. A
+/// pane with no name of its own, or a name unique within its tab, is always kept,
+/// so panes stay visible whenever they can be told apart. Line-splits pass
+/// through. Pure, client-only presentation filtering.
+fn dedupe_same_name_tab_panes(app: &AppState, rows: Vec<PaneSectionRow>) -> Vec<PaneSectionRow> {
+    let mut seen: std::collections::HashSet<(usize, usize, String)> =
+        std::collections::HashSet::new();
+    rows.into_iter()
+        .filter(|row| match row {
+            PaneSectionRow::Pane(entry) => {
+                let Some(ws) = app.workspaces.get(entry.ws_idx) else {
+                    return true;
+                };
+                match pane_section_pane_own_name(app, ws, entry.pane_id) {
+                    // First pane with this (tab, name) is kept; later duplicates drop.
+                    Some(name) => seen.insert((entry.ws_idx, entry.tab_idx, name)),
+                    // Unnamed panes are never treated as duplicates.
+                    None => true,
+                }
+            }
+            PaneSectionRow::LineSplit { .. } => true,
         })
         .collect()
 }
@@ -2189,6 +2217,45 @@ mod tests {
         app.ensure_test_terminals();
         app.reconcile_pane_section_order();
         app
+    }
+
+    #[test]
+    fn same_name_panes_in_one_tab_collapse_to_a_single_row() {
+        let mut app = app_with_two_shell_panes();
+        let first = app.workspaces[0].tabs[0].root_pane;
+        let second = app.workspaces[0].test_split(Direction::Horizontal);
+        app.ensure_test_terminals();
+        app.reconcile_pane_section_order();
+        assert_eq!(sidebar_pane_section_rows(&app).len(), 3);
+
+        for pane_id in [first, second] {
+            let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.terminals
+                .get_mut(&terminal_id)
+                .expect("terminal")
+                .set_manual_label("shell".into());
+        }
+        // Both panes now look identical, so only the first keeps its row.
+        let rows = sidebar_pane_section_rows(&app);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row, PaneSectionRow::Pane(entry) if entry.ws_idx == 0))
+                .count(),
+            1
+        );
+
+        // A distinguishable name brings the row back.
+        let terminal_id = app.workspaces[0].tabs[0].panes[&second]
+            .attached_terminal_id
+            .clone();
+        app.terminals
+            .get_mut(&terminal_id)
+            .expect("terminal")
+            .set_manual_label("logs".into());
+        assert_eq!(sidebar_pane_section_rows(&app).len(), 3);
     }
 
     #[test]

@@ -823,25 +823,18 @@ impl App {
         forward: bool,
     ) -> Option<(usize, usize, crate::layout::PaneId)> {
         let entries = crate::ui::sidebar_pane_section_entries(&self.state);
-        if entries.is_empty() {
-            return None;
-        }
+        let ids: Vec<crate::layout::PaneId> = entries.iter().map(|entry| entry.pane_id).collect();
         let focused = self
             .state
             .active
             .and_then(|idx| self.state.workspaces.get(idx))
             .and_then(crate::workspace::Workspace::focused_pane_id);
-        let current_idx = entries
-            .iter()
-            .position(|entry| Some(entry.pane_id) == focused)
-            .unwrap_or(0);
-        let next_idx = if forward {
-            (current_idx + 1) % entries.len()
-        } else if current_idx == 0 {
-            entries.len() - 1
-        } else {
-            current_idx - 1
-        };
+        let next_idx = crate::app::actions::section_cycle_target_index(
+            &ids,
+            focused,
+            self.state.last_pane_section_focus,
+            forward,
+        )?;
         let target = entries.get(next_idx)?;
         Some((next_idx, target.ws_idx, target.pane_id))
     }

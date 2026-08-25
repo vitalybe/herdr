@@ -260,6 +260,43 @@ pub struct PaneStateUpdate {
 // Navigator operations
 // ---------------------------------------------------------------------------
 
+/// Resolve the index to focus when cycling a sidebar section.
+///
+/// `ids` is the section's entries in display order, `focused` the currently
+/// focused pane, `remembered` the last pane selected within this section, and
+/// `forward` the cycle direction. When the current focus is within the section,
+/// cycle normally from it. When focus is outside the section, jump to the
+/// remembered entry if it is still present; otherwise fall back to the direction
+/// default (first entry forward, last entry backward). Returns `None` only when
+/// the section is empty.
+pub(crate) fn section_cycle_target_index(
+    ids: &[PaneId],
+    focused: Option<PaneId>,
+    remembered: Option<PaneId>,
+    forward: bool,
+) -> Option<usize> {
+    if ids.is_empty() {
+        return None;
+    }
+    if let Some(current_idx) = focused.and_then(|pane_id| ids.iter().position(|id| *id == pane_id))
+    {
+        let target = if forward {
+            (current_idx + 1) % ids.len()
+        } else if current_idx == 0 {
+            ids.len() - 1
+        } else {
+            current_idx - 1
+        };
+        return Some(target);
+    }
+    if let Some(remembered) = remembered {
+        if let Some(idx) = ids.iter().position(|id| *id == remembered) {
+            return Some(idx);
+        }
+    }
+    Some(if forward { 0 } else { ids.len() - 1 })
+}
+
 impl AppState {
     pub(crate) fn current_pane_focus_target(&self) -> Option<PaneFocusTarget> {
         let ws_idx = self.active?;
@@ -343,11 +380,25 @@ impl AppState {
         {
             tab.layout.focus_pane(pane_id);
             self.previous_pane_focus = previous;
+            self.record_pane_section_focus(pane_id);
             self.mark_session_dirty();
             self.sync_copy_mode_with_focus();
             return true;
         }
         false
+    }
+
+    /// Remember the last pane focused within the sidebar Panes section so a
+    /// pane-nav key can jump back to it when focus is currently outside the
+    /// section. A pane that is not a section entry leaves the memory alone.
+    /// Client-only TUI presentation state.
+    pub(crate) fn record_pane_section_focus(&mut self, pane_id: PaneId) {
+        if crate::ui::sidebar_pane_section_entries(self)
+            .iter()
+            .any(|entry| entry.pane_id == pane_id)
+        {
+            self.last_pane_section_focus = Some(pane_id);
+        }
     }
 
     #[cfg(test)]
@@ -1657,22 +1708,15 @@ impl AppState {
     #[cfg(test)]
     fn cycle_pane_section_entry(&mut self, forward: bool) {
         let targets = self.pane_section_targets();
-        if targets.is_empty() {
-            return;
-        }
-
+        let ids: Vec<PaneId> = targets.iter().map(|(_, pane_id)| *pane_id).collect();
         let focused = self
             .active
             .and_then(|idx| self.workspaces.get(idx))
             .and_then(crate::workspace::Workspace::focused_pane_id);
-        let current_idx =
-            focused.and_then(|pane_id| targets.iter().position(|(_, target)| *target == pane_id));
-        let target_idx = match (current_idx, forward) {
-            (Some(idx), true) => (idx + 1) % targets.len(),
-            (Some(0), false) => targets.len() - 1,
-            (Some(idx), false) => idx - 1,
-            (None, true) => 0,
-            (None, false) => targets.len() - 1,
+        let Some(target_idx) =
+            section_cycle_target_index(&ids, focused, self.last_pane_section_focus, forward)
+        else {
+            return;
         };
 
         self.focus_pane_section_entry(target_idx);
@@ -3762,6 +3806,72 @@ mod tests {
                 crate::app::state::PaneManualEntry::LineSplit { .. } => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn pane_nav_returns_to_the_last_selected_pane_from_outside_the_section() {
+        // ws0 tab 0 holds an agent; the shell panes live in their own tab.
+        let mut ws = Workspace::test_new("one");
+        let agent_pane = ws.tabs[0].root_pane;
+        let shell_tab = ws.test_add_tab(Some("shell"));
+        let first_shell = ws.tabs[shell_tab].root_pane;
+        ws.active_tab = shell_tab;
+        let second_shell = ws.test_split(Direction::Horizontal);
+        ws.active_tab = 0;
+
+        let mut state = AppState::test_new();
+        state.workspaces = vec![ws];
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.selected = 0;
+        state.mode = Mode::Terminal;
+        mark_agent(&mut state, 0, 0, agent_pane);
+        state.reconcile_pane_section_order();
+
+        state.focus_pane_in_workspace(0, second_shell);
+        assert_eq!(state.last_pane_section_focus, Some(second_shell));
+
+        // Focus leaves the section; both directions return to the remembered pane.
+        state.focus_pane_in_workspace(0, agent_pane);
+        state.next_pane();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(second_shell));
+
+        state.focus_pane_in_workspace(0, agent_pane);
+        state.previous_pane();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(second_shell));
+        assert!(first_shell != second_shell);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn section_cycle_falls_back_to_the_direction_default_without_memory() {
+        use super::section_cycle_target_index;
+        let ids: Vec<crate::layout::PaneId> = vec![
+            PaneId::from_raw(1),
+            PaneId::from_raw(2),
+            PaneId::from_raw(3),
+        ];
+
+        // Focus inside the section cycles from it, wrapping in both directions.
+        assert_eq!(
+            section_cycle_target_index(&ids, Some(ids[2]), None, true),
+            Some(0)
+        );
+        assert_eq!(
+            section_cycle_target_index(&ids, Some(ids[0]), None, false),
+            Some(2)
+        );
+        // Focus outside the section: remembered entry wins, else first/last.
+        assert_eq!(
+            section_cycle_target_index(&ids, Some(PaneId::from_raw(9)), Some(ids[1]), true),
+            Some(1)
+        );
+        assert_eq!(
+            section_cycle_target_index(&ids, None, Some(PaneId::from_raw(9)), true),
+            Some(0)
+        );
+        assert_eq!(section_cycle_target_index(&ids, None, None, false), Some(2));
+        assert_eq!(section_cycle_target_index(&[], None, None, true), None);
     }
 
     #[test]

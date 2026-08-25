@@ -696,6 +696,7 @@ impl App {
             pane_section_press: None,
             collapsed_line_split_keys,
             rename_line_split_target: None,
+            last_pane_section_focus: None,
             agent_panel_sort,
             status_indicators: config.ui.status_indicators,
             agent_view_override: None,

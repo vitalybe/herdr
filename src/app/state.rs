@@ -1866,6 +1866,11 @@ pub struct AppState {
     /// Target line-split for the rename modal (client-only; mirrors
     /// `rename_pane_target`). Set only while `mode == Mode::RenameLineSplit`.
     pub(crate) rename_line_split_target: Option<LineSplitId>,
+    /// Last pane focused within the sidebar Panes section this session. Lets a
+    /// pane-nav key jump back to the last selected pane when focus is currently
+    /// outside the section. Client-only TUI presentation state; ephemeral, not
+    /// persisted and not part of the wire protocol.
+    pub(crate) last_pane_section_focus: Option<PaneId>,
 }
 
 impl AppState {
@@ -2283,6 +2288,7 @@ impl AppState {
             pane_section_press: None,
             collapsed_line_split_keys: std::collections::HashSet::new(),
             rename_line_split_target: None,
+            last_pane_section_focus: None,
         }
     }
 

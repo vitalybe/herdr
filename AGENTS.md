@@ -2,6 +2,13 @@
 
 Terminal based agent runtime for coding agents.
 
+## This is a fork
+
+`FORK.md` records what this fork adds on top of upstream, what was dropped because
+upstream shipped an equivalent, the backup branch holding the pre-rebase fork line, and
+how to sync with upstream. Read it before touching the sidebar, the agents panel, or the
+`agent` CLI, and update it whenever a fork feature lands or is dropped.
+
 ## Scope and Audience
 
 These instructions are layered.

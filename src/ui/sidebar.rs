@@ -961,7 +961,7 @@ fn collect_agent_panel_entries_with_runtimes(
                         || ws
                             .tabs
                             .get(detail.tab_idx)
-                            .is_some_and(|tab| !tab.is_auto_named());
+                            .is_some_and(|tab| !tab.is_numbered());
                     // Resolve the pane's stable parent link to a live pane id so
                     // the panel can group children under their parent.
                     let parent_pane = ws
@@ -4931,6 +4931,31 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let entries = agent_panel_entries(&app);
         assert_eq!(entries[0].primary_label, "bridge");
         assert_eq!(entries[0].agent_label.as_deref(), Some("planner"));
+    }
+
+    #[test]
+    fn lone_tab_shows_a_name_published_by_its_agent_but_not_its_number() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("bridge");
+        let pane = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Pi);
+        app.active = Some(0);
+        app.selected = 0;
+
+        // A numbered lone tab has no name worth repeating next to the space.
+        assert_eq!(agent_panel_entries(&app)[0].primary_tab_label, None);
+
+        // A name the agent published is a real name even though it was never typed.
+        app.workspaces[0].tabs[0].set_reported_name("review-format".into());
+        assert_eq!(
+            agent_panel_entries(&app)[0].primary_tab_label.as_deref(),
+            Some("review-format")
+        );
     }
 
     #[test]

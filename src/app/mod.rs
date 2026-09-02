@@ -767,6 +767,7 @@ impl App {
             pane_section_collapsed: sidebar_section_collapse.panes,
             agents_section_collapsed: sidebar_section_collapse.agents,
             last_pane_section_focus: None,
+            last_agent_focus: None,
             agent_panel_sort,
             agent_manual_order,
             pending_agent_reparent: None,

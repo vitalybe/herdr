@@ -2119,6 +2119,9 @@ pub struct AppState {
     /// outside the section. Client-only TUI presentation state; ephemeral, not
     /// persisted and not part of the wire protocol.
     pub(crate) last_pane_section_focus: Option<PaneId>,
+    /// Same memory for the sidebar Agents section, so an agent-nav key from a
+    /// non-agent pane returns to the last used agent instead of the first one.
+    pub(crate) last_agent_focus: Option<PaneId>,
 }
 
 impl AppState {
@@ -2573,6 +2576,7 @@ impl AppState {
             pane_section_collapsed: false,
             agents_section_collapsed: false,
             last_pane_section_focus: None,
+            last_agent_focus: None,
         }
     }
 

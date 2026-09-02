@@ -260,6 +260,7 @@ impl App {
                 }
             }
             NavigateAction::PreviousAgent => {
+                self.state.seed_section_focus_memory();
                 if let Some((_idx, ws_idx, pane_id)) = self.relative_agent_entry(false) {
                     self.focus_pane_internal_via_api(ws_idx, pane_id);
                     self.state.ensure_agent_panel_pane_visible(pane_id);
@@ -267,6 +268,7 @@ impl App {
                 }
             }
             NavigateAction::NextAgent => {
+                self.state.seed_section_focus_memory();
                 if let Some((_idx, ws_idx, pane_id)) = self.relative_agent_entry(true) {
                     self.focus_pane_internal_via_api(ws_idx, pane_id);
                     self.state.ensure_agent_panel_pane_visible(pane_id);
@@ -274,6 +276,7 @@ impl App {
                 }
             }
             NavigateAction::PreviousPane => {
+                self.state.seed_section_focus_memory();
                 if let Some((_idx, ws_idx, pane_id)) = self.relative_pane_section_entry(false) {
                     self.focus_pane_internal_via_api(ws_idx, pane_id);
                     self.state.ensure_pane_section_row_visible(pane_id);
@@ -281,6 +284,7 @@ impl App {
                 }
             }
             NavigateAction::NextPane => {
+                self.state.seed_section_focus_memory();
                 if let Some((_idx, ws_idx, pane_id)) = self.relative_pane_section_entry(true) {
                     self.focus_pane_internal_via_api(ws_idx, pane_id);
                     self.state.ensure_pane_section_row_visible(pane_id);
@@ -795,24 +799,18 @@ impl App {
         // Cycle the visible tree order (collapse-aware, agents only) so live
         // next/previous navigation follows the same order the sidebar shows.
         let targets = self.state.visible_agent_targets();
-        if targets.is_empty() {
-            return None;
-        }
+        let ids: Vec<crate::layout::PaneId> = targets.iter().map(|(_, pane_id)| *pane_id).collect();
         let focused = self
             .state
             .active
             .and_then(|idx| self.state.workspaces.get(idx))
             .and_then(crate::workspace::Workspace::focused_pane_id);
-        let current_idx = targets
-            .iter()
-            .position(|(_, pane_id)| Some(*pane_id) == focused);
-        let next_idx = match (current_idx, forward) {
-            (Some(idx), true) => (idx + 1) % targets.len(),
-            (Some(0), false) => targets.len() - 1,
-            (Some(idx), false) => idx - 1,
-            (None, true) => 0,
-            (None, false) => targets.len() - 1,
-        };
+        let next_idx = crate::app::actions::section_cycle_target_index(
+            &ids,
+            focused,
+            self.state.last_agent_focus,
+            forward,
+        )?;
         let (ws_idx, pane_id) = *targets.get(next_idx)?;
         Some((next_idx, ws_idx, pane_id))
     }

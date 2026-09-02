@@ -380,7 +380,7 @@ impl AppState {
         {
             tab.layout.focus_pane(pane_id);
             self.previous_pane_focus = previous;
-            self.record_pane_section_focus(pane_id);
+            self.record_section_focus_memory(pane_id);
             self.mark_session_dirty();
             self.sync_copy_mode_with_focus();
             return true;
@@ -388,17 +388,39 @@ impl AppState {
         false
     }
 
-    /// Remember the last pane focused within the sidebar Panes section so a
-    /// pane-nav key can jump back to it when focus is currently outside the
-    /// section. A pane that is not a section entry leaves the memory alone.
-    /// Client-only TUI presentation state.
-    pub(crate) fn record_pane_section_focus(&mut self, pane_id: PaneId) {
-        if crate::ui::sidebar_pane_section_entries(self)
+    /// Remember the last pane focused within each sidebar section so an
+    /// agent-nav or pane-nav key can jump back to it when focus is currently
+    /// outside that section. A pane in neither section list updates neither
+    /// field. Client-only TUI presentation state.
+    pub(crate) fn record_section_focus_memory(&mut self, pane_id: PaneId) {
+        if self
+            .visible_agent_targets()
+            .iter()
+            .any(|(_, id)| *id == pane_id)
+        {
+            self.last_agent_focus = Some(pane_id);
+        } else if crate::ui::sidebar_pane_section_entries(self)
             .iter()
             .any(|entry| entry.pane_id == pane_id)
         {
             self.last_pane_section_focus = Some(pane_id);
         }
+    }
+
+    /// Record the currently focused pane into its section memory before a
+    /// section-nav key moves focus away. Focus set outside
+    /// [`Self::focus_pane_in_workspace`] (session restore, a tab switch) is never
+    /// recorded on arrival, so without this seed the first jump out of a section
+    /// has no entry to come back to.
+    pub(crate) fn seed_section_focus_memory(&mut self) {
+        let Some(pane_id) = self
+            .active
+            .and_then(|idx| self.workspaces.get(idx))
+            .and_then(crate::workspace::Workspace::focused_pane_id)
+        else {
+            return;
+        };
+        self.record_section_focus_memory(pane_id);
     }
 
     #[cfg(test)]
@@ -2123,6 +2145,7 @@ impl AppState {
 
     #[cfg(test)]
     fn cycle_pane_section_entry(&mut self, forward: bool) {
+        self.seed_section_focus_memory();
         let targets = self.pane_section_targets();
         let ids: Vec<PaneId> = targets.iter().map(|(_, pane_id)| *pane_id).collect();
         let focused = self
@@ -2221,23 +2244,17 @@ impl AppState {
 
     #[cfg(test)]
     fn cycle_agent_entry(&mut self, forward: bool) {
+        self.seed_section_focus_memory();
         let targets = self.visible_agent_targets();
-        if targets.is_empty() {
-            return;
-        }
-
+        let ids: Vec<PaneId> = targets.iter().map(|(_, pane_id)| *pane_id).collect();
         let focused = self
             .active
             .and_then(|idx| self.workspaces.get(idx))
             .and_then(crate::workspace::Workspace::focused_pane_id);
-        let current_idx =
-            focused.and_then(|pane_id| targets.iter().position(|(_, target)| *target == pane_id));
-        let target_idx = match (current_idx, forward) {
-            (Some(idx), true) => (idx + 1) % targets.len(),
-            (Some(0), false) => targets.len() - 1,
-            (Some(idx), false) => idx - 1,
-            (None, true) => 0,
-            (None, false) => targets.len() - 1,
+        let Some(target_idx) =
+            section_cycle_target_index(&ids, focused, self.last_agent_focus, forward)
+        else {
+            return;
         };
 
         self.focus_agent_entry(target_idx);
@@ -4247,6 +4264,83 @@ mod tests {
                 crate::app::state::PaneManualEntry::LineSplit { .. } => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn section_nav_seeds_memory_from_focus_set_outside_the_focus_helper() {
+        // ws0 tab 0 holds an agent; a shell pane lives in its own tab.
+        let mut ws = Workspace::test_new("one");
+        let agent_pane = ws.tabs[0].root_pane;
+        let shell_tab = ws.test_add_tab(Some("shell"));
+        let shell = ws.tabs[shell_tab].root_pane;
+        ws.active_tab = shell_tab;
+
+        let mut state = AppState::test_new();
+        state.workspaces = vec![ws];
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.selected = 0;
+        state.mode = Mode::Terminal;
+        mark_agent(&mut state, 0, 0, agent_pane);
+        state.reconcile_pane_section_order();
+
+        // Focus was never set through `focus_pane_in_workspace`, so nothing is
+        // remembered yet - as after a session restore.
+        assert_eq!(state.last_pane_section_focus, None);
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(shell));
+
+        // Jumping to the agents section seeds the departing pane, so coming back
+        // lands on it rather than on the section's first entry.
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(agent_pane));
+        assert_eq!(state.last_pane_section_focus, Some(shell));
+
+        state.next_pane();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(shell));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn agent_nav_returns_to_the_last_selected_agent_from_outside_the_section() {
+        // ws0 tab 0 holds two agents; a shell pane lives in its own tab.
+        let mut ws = Workspace::test_new("one");
+        let first_agent = ws.tabs[0].root_pane;
+        let second_agent = ws.test_split(Direction::Horizontal);
+        let shell_tab = ws.test_add_tab(Some("shell"));
+        let shell = ws.tabs[shell_tab].root_pane;
+        ws.active_tab = 0;
+
+        let mut state = AppState::test_new();
+        state.workspaces = vec![ws];
+        state.ensure_test_terminals();
+        state.active = Some(0);
+        state.selected = 0;
+        state.mode = Mode::Terminal;
+        mark_agent(&mut state, 0, 0, first_agent);
+        mark_agent(&mut state, 0, 0, second_agent);
+        state.reconcile_pane_section_order();
+
+        // The split already focused the second agent, so move away first and
+        // come back to record it as the agents-section memory.
+        state.focus_pane_in_workspace(0, shell);
+        state.focus_pane_in_workspace(0, second_agent);
+        assert_eq!(state.last_agent_focus, Some(second_agent));
+
+        // Focus leaves the agents section; both directions return to the
+        // remembered agent instead of the first one.
+        state.focus_pane_in_workspace(0, shell);
+        state.next_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(second_agent));
+
+        state.focus_pane_in_workspace(0, shell);
+        state.previous_agent();
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(second_agent));
+
+        // The reverse direction keeps its own memory: focusing an agent must not
+        // overwrite the remembered non-agent pane.
+        assert_eq!(state.last_pane_section_focus, Some(shell));
+        assert_ne!(first_agent, second_agent);
+        state.assert_invariants_for_test();
     }
 
     #[test]

@@ -1004,9 +1004,22 @@ impl App {
         if let Some(split) = snapshot.sidebar_section_split {
             app.state.sidebar_section_split = split;
         }
+        if let Some(split) = snapshot.sidebar_pane_section_split {
+            app.state.sidebar_pane_section_split = split;
+        }
         app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
         app.state.collapsed_agent_keys = snapshot.collapsed_agent_keys.clone();
+        app.state.collapsed_line_split_keys = snapshot.collapsed_line_split_keys.clone();
         app.state.agent_manual_order = restore_agent_manual_order(snapshot, &app.state.workspaces);
+        app.state.pane_section_order = state::PaneSectionOrder::from_keys(
+            crate::persist::pane_section_order_keys(snapshot.pane_section_order.as_ref()),
+            &app.state.workspaces,
+        );
+        let section_collapse =
+            crate::persist::sidebar_section_collapse(&snapshot.sidebar_section_collapse);
+        app.state.spaces_section_collapsed = section_collapse.spaces;
+        app.state.pane_section_collapsed = section_collapse.panes;
+        app.state.agents_section_collapsed = section_collapse.agents;
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
         } else {
@@ -7048,5 +7061,64 @@ last_pane = "prefix+tab"
             "handoff-constructed app should load the on-disk plugin registry, got {:?}",
             app.state.installed_plugins.keys().collect::<Vec<_>>()
         );
+    }
+
+    // `herdr update` rebuilds the server through the handoff path, which
+    // hand-copies sidebar presentation state out of the snapshot instead of
+    // going through the normal restore. Regression for the bug where the
+    // Panes/Agents divider, the line-split dividers, their collapse state, and
+    // the band collapse state were all left at their defaults.
+    #[cfg(unix)]
+    #[test]
+    fn handoff_constructed_app_restores_sidebar_presentation_state() {
+        let snapshot = crate::persist::capture(
+            &[],
+            &std::collections::HashMap::new(),
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            None,
+            0,
+            26,
+            0.4,
+            0.25,
+            Default::default(),
+            Default::default(),
+            Vec::new(),
+            std::collections::HashSet::from(["panes:0".to_string()]),
+            vec![state::PaneManualEntryKey::LineSplit {
+                id: 0,
+                name: "special".to_string(),
+            }],
+            state::SidebarSectionCollapse {
+                spaces: true,
+                panes: false,
+                agents: true,
+            },
+        );
+
+        let mut imports = std::collections::HashMap::new();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = App::new_from_handoff(
+            &Config::default(),
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+            &snapshot,
+            &mut imports,
+        )
+        .expect("handoff app construction");
+
+        assert_eq!(app.state.sidebar_section_split, 0.4);
+        assert_eq!(app.state.sidebar_pane_section_split, 0.25);
+        assert!(app.state.collapsed_line_split_keys.contains("panes:0"));
+        assert_eq!(
+            app.state.pane_section_order.to_keys(),
+            vec![state::PaneManualEntryKey::LineSplit {
+                id: 0,
+                name: "special".to_string(),
+            }]
+        );
+        assert!(app.state.spaces_section_collapsed);
+        assert!(!app.state.pane_section_collapsed);
+        assert!(app.state.agents_section_collapsed);
     }
 }

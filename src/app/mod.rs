@@ -5398,6 +5398,35 @@ mod tests {
         assert!(app.session_save_deadline.is_none());
     }
 
+    // At OS shutdown the pane children are signalled first, so every pane, tab
+    // and workspace is already closed by the time the exit save runs. The exit
+    // save must leave the last good snapshot alone instead of clearing it.
+    #[test]
+    fn final_session_save_keeps_snapshot_when_workspaces_are_empty() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let config_home = unique_temp_path("final-session-save-empty");
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+
+        let mut app = test_app();
+        app.no_session = false;
+        app.state.workspaces = vec![Workspace::test_new("shutdown")];
+        app.state.ensure_test_terminals();
+        app.save_session_now();
+
+        let path = crate::session::data_dir().join("session.json");
+        assert!(path.exists(), "precondition: a snapshot was written");
+
+        // The panes died with the machine, taking their workspaces with them.
+        app.state.workspaces.clear();
+        app.save_session_now();
+
+        let kept = path.exists();
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(&config_home);
+        assert!(kept, "exit save must not clear the session snapshot");
+    }
+
     #[test]
     fn due_session_save_starts_background_writer() {
         let _guard = crate::config::test_config_env_lock().lock().unwrap();

@@ -113,6 +113,17 @@ impl App {
             return;
         }
 
+        // Never clear the snapshot from the exit path. At OS shutdown the pane
+        // children are signalled before herdr is, so their panes, and with them
+        // every tab and workspace, are already closed by the time the exit save
+        // runs. Capturing that state would delete session.json and start the next
+        // launch from scratch. Runtime saves still clear once the user has
+        // genuinely closed everything and kept working.
+        if self.state.workspaces.is_empty() {
+            self.session_save_deadline = None;
+            return;
+        }
+
         run_session_save_job(self.capture_session_save_job());
         self.session_save_deadline = None;
     }

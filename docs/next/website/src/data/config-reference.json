@@ -698,6 +698,18 @@
           "description": "Reopen the most recently closed tab or workspace."
         },
         {
+          "key": "keys.scratch_terminal",
+          "type": "keybinding",
+          "default": "\"ctrl+backtick\"",
+          "description": "Show or hide the scratch terminal modal."
+        },
+        {
+          "key": "keys.scratch_terminal_to_tab",
+          "type": "keybinding",
+          "default": "\"ctrl+shift+backtick\"",
+          "description": "Move the scratch terminal into a tab of its own."
+        },
+        {
           "key": "keys.rename_pane",
           "type": "keybinding",
           "default": "\"prefix+shift+p\"",

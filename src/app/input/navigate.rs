@@ -346,6 +346,14 @@ impl App {
                 self.state.request_undo_close = true;
                 leave_navigate_mode(&mut self.state);
             }
+            NavigateAction::ScratchTerminal => {
+                self.state.request_scratch_terminal = true;
+                leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::ScratchTerminalToTab => {
+                self.state.request_scratch_terminal_to_tab = true;
+                leave_navigate_mode(&mut self.state);
+            }
             NavigateAction::RenamePane => {
                 if let Some(pane_id) = self
                     .state
@@ -1470,6 +1478,8 @@ pub(crate) enum NavigateAction {
     MoveTabNext,
     CloseTab,
     UndoClose,
+    ScratchTerminal,
+    ScratchTerminalToTab,
     RenamePane,
     FocusPaneLeft,
     FocusPaneDown,
@@ -1620,6 +1630,11 @@ fn non_indexed_action_for_key(
         (&kb.move_tab_next, NavigateAction::MoveTabNext),
         (&kb.close_tab, NavigateAction::CloseTab),
         (&kb.undo_close, NavigateAction::UndoClose),
+        (&kb.scratch_terminal, NavigateAction::ScratchTerminal),
+        (
+            &kb.scratch_terminal_to_tab,
+            NavigateAction::ScratchTerminalToTab,
+        ),
         (&kb.rename_pane, NavigateAction::RenamePane),
         (&kb.edit_scrollback, NavigateAction::EditScrollback),
         (&kb.copy_mode, NavigateAction::CopyMode),
@@ -1843,6 +1858,14 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::UndoClose => {
             state.request_undo_close = true;
+            leave_navigate_mode(state);
+        }
+        NavigateAction::ScratchTerminal => {
+            state.request_scratch_terminal = true;
+            leave_navigate_mode(state);
+        }
+        NavigateAction::ScratchTerminalToTab => {
+            state.request_scratch_terminal_to_tab = true;
             leave_navigate_mode(state);
         }
         NavigateAction::RenamePane => {
@@ -3533,6 +3556,30 @@ navigate_pane_down = "ctrl+j"
         );
 
         assert!(state.sidebar_collapsed);
+    }
+
+    #[test]
+    fn default_scratch_terminal_chord_is_a_direct_binding() {
+        let mut state = crate::app::state::AppState::test_new();
+        state.keybinds = crate::config::Config::default().keybinds();
+
+        assert_eq!(
+            terminal_direct_non_indexed_navigation_action(
+                &state,
+                &TerminalKey::new(KeyCode::Char('`'), KeyModifiers::CONTROL)
+            ),
+            Some(NavigateAction::ScratchTerminal)
+        );
+        assert_eq!(
+            terminal_direct_non_indexed_navigation_action(
+                &state,
+                &TerminalKey::new(
+                    KeyCode::Char('`'),
+                    KeyModifiers::CONTROL | KeyModifiers::SHIFT
+                )
+            ),
+            Some(NavigateAction::ScratchTerminalToTab)
+        );
     }
 
     #[test]

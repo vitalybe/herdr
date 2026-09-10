@@ -23,6 +23,9 @@ pub(crate) struct PopupPaneState {
     pub terminal_id: crate::terminal::TerminalId,
     pub width: Option<crate::popup_size::PopupSize>,
     pub height: Option<crate::popup_size::PopupSize>,
+    /// True for the session scratch terminal, which is hidden instead of closed
+    /// and can be promoted into a tab.
+    pub scratch: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1880,6 +1883,10 @@ pub struct AppState {
     /// workspace. Drained by the outer App/event loop, which owns the runtime
     /// context needed to respawn shells.
     pub request_undo_close: bool,
+    /// Set when input requested showing or hiding the scratch terminal.
+    pub request_scratch_terminal: bool,
+    /// Set when input requested promoting the scratch terminal into a tab.
+    pub request_scratch_terminal_to_tab: bool,
     /// LIFO stack of recently closed tabs/workspaces available to reopen.
     /// Runtime convenience state; not persisted across sessions.
     pub(crate) closed_entries: Vec<ClosedEntry>,
@@ -2046,6 +2053,9 @@ pub struct AppState {
     pub(crate) plugin_panes: std::collections::HashMap<PaneId, PluginPaneRecord>,
     /// Session-modal terminal popup. This is intentionally outside workspace layouts.
     pub(crate) popup_pane: Option<PopupPaneState>,
+    /// Scratch terminal while hidden. Its terminal keeps running so reopening
+    /// restores the same history.
+    pub(crate) hidden_scratch_popup: Option<PopupPaneState>,
     /// Recent plugin action/event command executions.
     pub(crate) plugin_command_logs: Vec<crate::api::schema::PluginCommandLogInfo>,
     pub(crate) next_plugin_command_log_id: u64,
@@ -2351,6 +2361,8 @@ impl AppState {
             request_new_workspace: false,
             request_new_tab: false,
             request_undo_close: false,
+            request_scratch_terminal: false,
+            request_scratch_terminal_to_tab: false,
             closed_entries: Vec::new(),
             request_new_linked_worktree: None,
             request_open_existing_worktree: None,
@@ -2506,6 +2518,7 @@ impl AppState {
             installed_plugins: std::collections::HashMap::new(),
             plugin_panes: std::collections::HashMap::new(),
             popup_pane: None,
+            hidden_scratch_popup: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
             plugin_commands_in_flight: 0,

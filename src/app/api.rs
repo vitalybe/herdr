@@ -222,6 +222,9 @@ impl App {
                 self.close_popup_pane();
                 return Vec::new();
             }
+            if self.discard_hidden_scratch_popup(*pane_id) {
+                return Vec::new();
+            }
             let previous_toast = self.state.toast.clone();
             if let Some(update) = self.state.publish_pane_process_exit_if_agent(*pane_id) {
                 self.sync_full_lifecycle_authority_detection_pauses();

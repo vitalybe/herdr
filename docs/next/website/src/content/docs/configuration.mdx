@@ -243,6 +243,34 @@ Custom commands receive `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`, `HERDR_ACTIVE_WOR
 
 On Windows, custom command strings use `cmd.exe /d /c`, so environment variables use `%HERDR_BIN_PATH%` syntax. To run PowerShell syntax, invoke it explicitly, for example `powershell.exe -NoProfile -Command "..."`.
 
+## Scratch terminal
+
+`keys.scratch_terminal` (default `ctrl+backtick`) shows a session-modal shell
+that keeps running while hidden. It starts in the working directory of the pane
+it was opened from, and Escape or the same key hides it again and returns focus
+to that pane. Reopening restores the same shell with its history and working
+directory intact.
+
+`keys.scratch_terminal_to_tab` (default `ctrl+shift+backtick`) moves the scratch
+shell into a tab of its own, history included, whether the modal is showing or
+hidden. The next `keys.scratch_terminal` then starts a fresh scratch shell.
+Exiting the scratch shell also ends it, and the next toggle starts a new one.
+
+```toml
+[keys]
+scratch_terminal = "ctrl+backtick"
+scratch_terminal_to_tab = "ctrl+shift+backtick"
+```
+
+Both bindings need a direct chord your terminal can actually send; not every
+terminal distinguishes `ctrl+backtick`. Rebind them to any other chord your
+setup delivers. A `prefix+` binding also works, but only while the modal is
+hidden, because the scratch terminal receives every key until it is dismissed.
+
+The scratch terminal receives all terminal input except its own bindings, and
+Escape dismisses it rather than reaching the shell, so full-screen programs that
+rely on Escape belong in a pane or a popup command instead.
+
 ## Theme
 
 Choose a built-in theme:

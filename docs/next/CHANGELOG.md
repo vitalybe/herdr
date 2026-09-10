@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- A scratch terminal modal opens with `ctrl+backtick`, starts in the focused pane's working directory, hides with Escape without ending its shell, and can be moved into a tab of its own with `ctrl+shift+backtick`.
 - Custom themes can now define separate light and dark color overrides when automatic theme switching is enabled. (#837, thanks @aneym)
 
 ### Fixed

@@ -662,6 +662,8 @@ impl App {
             request_new_workspace: false,
             request_new_tab: false,
             request_undo_close: false,
+            request_scratch_terminal: false,
+            request_scratch_terminal_to_tab: false,
             closed_entries: Vec::new(),
             request_new_linked_worktree: None,
             request_open_existing_worktree: None,
@@ -824,6 +826,7 @@ impl App {
             installed_plugins: load_plugin_registry(no_session),
             plugin_panes: std::collections::HashMap::new(),
             popup_pane: None,
+            hidden_scratch_popup: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
             plugin_commands_in_flight: 0,
@@ -1154,6 +1157,19 @@ impl App {
             if self.state.request_undo_close {
                 self.state.request_undo_close = false;
                 if self.undo_last_close() {
+                    needs_render = true;
+                }
+            }
+
+            if self.state.request_scratch_terminal {
+                self.state.request_scratch_terminal = false;
+                self.toggle_scratch_popup();
+                needs_render = true;
+            }
+
+            if self.state.request_scratch_terminal_to_tab {
+                self.state.request_scratch_terminal_to_tab = false;
+                if self.scratch_popup_to_tab() {
                     needs_render = true;
                 }
             }
@@ -6486,6 +6502,7 @@ last_pane = "prefix+tab"
                 terminal_id: popup_terminal_id,
                 width: None,
                 height: None,
+                scratch: false,
             });
         };
         install_missing_popup(&mut app);

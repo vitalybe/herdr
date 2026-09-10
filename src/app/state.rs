@@ -716,7 +716,7 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
-/// What one visible row of the sidebar Panes section points at.
+/// What one visible row of the sidebar Tabs band points at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneSectionRowContent {
     Pane {
@@ -729,9 +729,9 @@ pub enum PaneSectionRowContent {
     },
 }
 
-/// Screen placement of one visible Panes-section row. `order_idx` is the flat
-/// index into [`PaneSectionOrder`]; `content` carries whether the row is a pane
-/// or a line-split divider. Client-only presentation state.
+/// Screen placement of one visible Tabs-band row. `order_idx` is the flat index
+/// into [`PaneSectionOrder`]; `content` carries whether the row is a tab or a
+/// line-split divider. Client-only presentation state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneSectionRowArea {
     pub order_idx: usize,
@@ -1398,38 +1398,38 @@ pub(crate) fn line_split_collapse_key(section: LineSplitSection, id: LineSplitId
     format!("{prefix}:{}", id.0)
 }
 
-/// Stable reference to a single pane, independent of its position. Panes are
-/// addressed by their owning workspace id plus their stable public pane number
-/// (which survives reorders and the `PaneId` remap on restore), so a
+/// Stable reference to a single tab, independent of its position. Tabs are
+/// addressed by their owning workspace id plus their stable public tab number
+/// (which survives reorders and the id remap on restore), so a
 /// `PaneSectionRef` can be persisted and rebuilt directly. Client-only
 /// presentation state; never enters the server/runtime protocol.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PaneSectionRef {
     pub(crate) workspace_id: String,
-    pub(crate) pane_number: usize,
+    pub(crate) tab_number: usize,
 }
 
-/// One slot in the flat Panes-section order: either a non-agent pane (keyed by
-/// its stable [`PaneSectionRef`]) or a user-created named line-split divider.
+/// One slot in the flat Tabs-band order: either a tab (keyed by its stable
+/// [`PaneSectionRef`]) or a user-created named line-split divider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PaneManualEntry {
     Pane(PaneSectionRef),
     LineSplit { id: LineSplitId, name: String },
 }
 
-/// A Panes-section order slot as picked up by a drag.
+/// A Tabs-band order slot as picked up by a drag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PaneManualEntryRef {
     Pane(PaneSectionRef),
     LineSplit(LineSplitId),
 }
 
-/// Persistable form of a Panes-section order slot.
+/// Persistable form of a Tabs-band order slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PaneManualEntryKey {
     Pane {
         workspace_id: String,
-        pane_number: usize,
+        tab_number: usize,
     },
     LineSplit {
         id: u64,
@@ -1437,12 +1437,12 @@ pub(crate) enum PaneManualEntryKey {
     },
 }
 
-/// Flat, client-only ordering of the sidebar Panes section.
+/// Flat, client-only ordering of the sidebar Tabs band.
 ///
 /// This is TUI presentation state: it never enters the server/runtime protocol
-/// and never changes the real pane order inside any tab. `order` drives the
-/// display order across all spaces, `known` tracks which panes have already been
-/// placed (so genuinely new panes get the placement rule), and `seeded` records
+/// and never changes the real tab order inside any space. `order` drives the
+/// display order across all spaces, `known` tracks which tabs have already been
+/// placed (so genuinely new tabs get the placement rule), and `seeded` records
 /// whether the natural order has been captured at least once.
 /// Which stacked sidebar bands the user has collapsed to a header row.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1473,10 +1473,10 @@ impl PaneSectionOrder {
         id
     }
 
-    /// Rebuild a Panes-section order from persisted keys, keeping only pane
-    /// entries whose workspace still exists. `seeded` is set because a snapshot
-    /// was present, so reconcile treats later arrivals as genuinely new panes
-    /// rather than reseeding from the natural order.
+    /// Rebuild a Tabs-band order from persisted keys, keeping only tab entries
+    /// whose workspace still exists. `seeded` is set because a snapshot was
+    /// present, so reconcile treats later arrivals as genuinely new tabs rather
+    /// than reseeding from the natural order.
     pub(crate) fn from_keys(
         keys: Vec<PaneManualEntryKey>,
         workspaces: &[crate::workspace::Workspace],
@@ -1490,17 +1490,17 @@ impl PaneSectionOrder {
             match key {
                 PaneManualEntryKey::Pane {
                     workspace_id,
-                    pane_number,
+                    tab_number,
                 } => {
                     if !live_ids.contains(workspace_id.as_str()) {
                         continue;
                     }
-                    let pane_ref = PaneSectionRef {
+                    let tab_ref = PaneSectionRef {
                         workspace_id,
-                        pane_number,
+                        tab_number,
                     };
-                    if known.insert(pane_ref.clone()) {
-                        order.push(PaneManualEntry::Pane(pane_ref));
+                    if known.insert(tab_ref.clone()) {
+                        order.push(PaneManualEntry::Pane(tab_ref));
                     }
                 }
                 PaneManualEntryKey::LineSplit { id, name } => {
@@ -1525,9 +1525,9 @@ impl PaneSectionOrder {
         self.order
             .iter()
             .map(|entry| match entry {
-                PaneManualEntry::Pane(pane_ref) => PaneManualEntryKey::Pane {
-                    workspace_id: pane_ref.workspace_id.clone(),
-                    pane_number: pane_ref.pane_number,
+                PaneManualEntry::Pane(tab_ref) => PaneManualEntryKey::Pane {
+                    workspace_id: tab_ref.workspace_id.clone(),
+                    tab_number: tab_ref.tab_number,
                 },
                 PaneManualEntry::LineSplit { id, name } => PaneManualEntryKey::LineSplit {
                     id: id.0,
@@ -1564,10 +1564,10 @@ pub(crate) enum DragTarget {
     AgentPanelScrollbar {
         grab_row_offset: u16,
     },
-    /// Reorder of a slot within the flat, client-only Panes-section ordering.
+    /// Reorder of a slot within the flat, client-only Tabs-band ordering.
     /// Cross-workspace moves are allowed; this only changes the sidebar's visual
-    /// order, never the real pane order inside any tab. `insert_idx` is a flat
-    /// index into the Panes-section order.
+    /// order, never the real tab order inside any space. `insert_idx` is a flat
+    /// index into the Tabs-band order.
     PaneSectionReorder {
         source: PaneManualEntryRef,
         insert_idx: Option<usize>,
@@ -1596,7 +1596,7 @@ pub(crate) enum DragTarget {
     },
     SidebarDivider,
     /// Drag of one of the sidebar section dividers. `index` selects which
-    /// divider: 0 = Spaces/Panes, 1 = Panes/Agents.
+    /// divider: 0 = Spaces/Tabs, 1 = Tabs/Agents.
     SidebarSectionDivider {
         index: usize,
     },
@@ -1626,8 +1626,8 @@ pub(crate) struct AgentPressState {
     pub start_row: u16,
 }
 
-/// Pending left-press on a sidebar Panes-section row. Promotes to a reorder drag
-/// once the pointer moves far enough; a release without a drag focuses the pane
+/// Pending left-press on a sidebar Tabs-band row. Promotes to a reorder drag
+/// once the pointer moves far enough; a release without a drag focuses the tab
 /// (or toggles a line-split).
 pub(crate) struct PaneSectionPressState {
     pub entry: PaneManualEntryRef,

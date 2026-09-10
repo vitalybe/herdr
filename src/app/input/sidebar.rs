@@ -47,13 +47,10 @@ impl AppState {
         )
     }
 
-    /// Resolve a sidebar row to the Panes-section pane row it hits, returning the
-    /// flat order index plus the `(ws_idx, pane_id)` it points at. Line-split rows
-    /// resolve to `None` (they are not focusable panes).
-    pub(crate) fn pane_section_row_at(
-        &self,
-        row: u16,
-    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+    /// Resolve a sidebar row to the Tabs-band tab row it hits, returning the flat
+    /// order index plus the `(ws_idx, tab_idx)` it points at. Line-split rows
+    /// resolve to `None` (they are not focusable tabs).
+    pub(crate) fn pane_section_row_at(&self, row: u16) -> Option<(usize, usize, usize)> {
         use crate::app::state::PaneSectionRowContent;
         self.view.pane_section_row_areas.iter().find_map(|area| {
             if row < area.rect.y || row >= area.rect.y + area.rect.height {
@@ -61,14 +58,14 @@ impl AppState {
             }
             match area.content {
                 PaneSectionRowContent::Pane {
-                    ws_idx, pane_id, ..
-                } => Some((area.order_idx, ws_idx, pane_id)),
+                    ws_idx, tab_idx, ..
+                } => Some((area.order_idx, ws_idx, tab_idx)),
                 PaneSectionRowContent::LineSplit { .. } => None,
             }
         })
     }
 
-    /// Manual-order entry (pane or line-split) under the given sidebar row, for
+    /// Manual-order entry (tab or line-split) under the given sidebar row, for
     /// drag pickup and click handling.
     pub(super) fn pane_section_entry_ref_at_row(
         &self,
@@ -81,14 +78,14 @@ impl AppState {
             }
             return match area.content {
                 PaneSectionRowContent::Pane {
-                    ws_idx, pane_id, ..
+                    ws_idx, tab_idx, ..
                 } => {
                     let ws = self.workspaces.get(ws_idx)?;
-                    let pane_number = ws.public_pane_number(pane_id)?;
+                    let tab_number = ws.tabs.get(tab_idx)?.number;
                     Some(PaneManualEntryRef::Pane(
                         crate::app::state::PaneSectionRef {
                             workspace_id: ws.id.clone(),
-                            pane_number,
+                            tab_number,
                         },
                     ))
                 }
@@ -98,8 +95,8 @@ impl AppState {
         None
     }
 
-    /// Line-split id under the given sidebar row in the Panes section, if any
-    /// (for the right-click context menu).
+    /// Line-split id under the given sidebar row in the Tabs band, if any (for
+    /// the right-click context menu).
     pub(super) fn pane_section_line_split_at_row(
         &self,
         row: u16,
@@ -117,7 +114,7 @@ impl AppState {
         None
     }
 
-    /// Whether the given cell hits the Panes-section "+ split" affordance.
+    /// Whether the given cell hits the Tabs-band "+ split" affordance.
     pub(super) fn on_pane_section_split_button(&self, col: u16, row: u16) -> bool {
         if self.sidebar_collapsed {
             return false;
@@ -132,23 +129,24 @@ impl AppState {
     }
 
     /// Resolve a stable [`crate::app::state::PaneSectionRef`] back to its live
-    /// `(ws_idx, pane_id)`, or `None` if the pane no longer exists.
+    /// `(ws_idx, pane_id)`, where `pane_id` is the pane focus lands on inside
+    /// that tab. `None` if the tab no longer exists.
     pub(super) fn resolve_pane_section_ref(
         &self,
-        pane_ref: &crate::app::state::PaneSectionRef,
+        tab_ref: &crate::app::state::PaneSectionRef,
     ) -> Option<(usize, crate::layout::PaneId)> {
         let ws_idx = self
             .workspaces
             .iter()
-            .position(|ws| ws.id == pane_ref.workspace_id)?;
-        let pane_id = self.workspaces[ws_idx]
-            .public_pane_numbers
+            .position(|ws| ws.id == tab_ref.workspace_id)?;
+        let tab = self.workspaces[ws_idx]
+            .tabs
             .iter()
-            .find_map(|(pane_id, number)| (*number == pane_ref.pane_number).then_some(*pane_id))?;
-        Some((ws_idx, pane_id))
+            .find(|tab| tab.number == tab_ref.tab_number)?;
+        Some((ws_idx, tab.layout.focused()))
     }
 
-    /// Flat drop index for a Panes-section reorder at sidebar `row` (upper half
+    /// Flat drop index for a Tabs-band reorder at sidebar `row` (upper half
     /// inserts before, lower half after; the gap and the area below the last row
     /// insert at the end).
     pub(super) fn pane_section_drop_index_at_row(&self, row: u16) -> Option<usize> {
@@ -163,13 +161,21 @@ impl AppState {
         if row < body.y || row >= body.y + body.height {
             return None;
         }
-        // Insert index is a slot in the flat order (panes + line-splits).
+        // Insert index is a slot in the flat order (tabs + line-splits).
         let num_entries = self.pane_section_order.order.len();
         let areas = &self.view.pane_section_row_areas;
         for area in areas {
             let slot_bottom = area.rect.y.saturating_add(area.rect.height);
             if row < slot_bottom {
-                let mid = area.rect.y.saturating_add(area.rect.height / 2);
+                // Upper half inserts before, lower half after. A one-row slot has
+                // no lower half, so the whole row inserts before it and the gap
+                // row below is what inserts after; splitting it instead would put
+                // the first slot out of reach.
+                let mid = if area.rect.height <= 1 {
+                    slot_bottom
+                } else {
+                    area.rect.y.saturating_add(area.rect.height / 2)
+                };
                 let idx = if row < mid {
                     area.order_idx
                 } else {
@@ -2686,6 +2692,9 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
         app.state.agent_panel_sort = AgentPanelSort::Manual;
+        // These tests exercise agent-row interaction; collapsing the Tabs band
+        // leaves the agents band room to show its rows at the fixture height.
+        app.state.pane_section_collapsed = true;
         for ws_idx in 0..2 {
             let pane = app.state.workspaces[ws_idx].tabs[0].root_pane;
             let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane]

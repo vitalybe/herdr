@@ -118,14 +118,14 @@ impl AgentRowClickState {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PaneSectionRowClickState {
     pub(crate) ws_idx: usize,
-    pub(crate) pane_id: crate::layout::PaneId,
+    pub(crate) tab_idx: usize,
     pub(crate) at: Instant,
 }
 
 impl PaneSectionRowClickState {
     pub(crate) fn is_double_click_for(self, next: Self) -> bool {
         self.ws_idx == next.ws_idx
-            && self.pane_id == next.pane_id
+            && self.tab_idx == next.tab_idx
             && next.at.duration_since(self.at) <= PANE_DOUBLE_CLICK_WINDOW
     }
 }

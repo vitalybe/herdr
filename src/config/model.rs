@@ -388,9 +388,9 @@ pub struct KeysConfig {
     pub previous_agent: BindingConfig,
     /// Focus the next agent shown in the agent panel. Unset by default.
     pub next_agent: BindingConfig,
-    /// Focus the previous pane shown in the sidebar panes section. Unset by default.
+    /// Focus the previous tab shown in the sidebar tabs band. Unset by default.
     pub previous_pane: BindingConfig,
-    /// Focus the next pane shown in the sidebar panes section. Unset by default.
+    /// Focus the next tab shown in the sidebar tabs band. Unset by default.
     pub next_pane: BindingConfig,
     /// Focus an agent by index 1-9. Unset by default.
     pub focus_agent: BindingConfig,

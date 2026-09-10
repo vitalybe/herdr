@@ -738,11 +738,12 @@ impl App {
         self.select_double_clicked_word(click)
     }
 
-    /// Detects a double-click on a Panes-section row and opens the pane rename
-    /// modal targeting that pane. The first click is recorded and left to normal
-    /// single-click activation; only the qualifying second click is consumed.
+    /// Detects a double-click on a Tabs-band row and opens the tab rename modal
+    /// for that tab, matching the behavior of double-clicking a tab in the tab
+    /// bar. The first click is recorded and left to normal single-click
+    /// activation; only the qualifying second click is consumed.
     fn handle_pane_section_row_double_click(&mut self, mouse: MouseEvent) -> bool {
-        // A left drag starts a reorder gesture; invalidate any pending pane-row
+        // A left drag starts a reorder gesture; invalidate any pending tab-row
         // click so a drag is never mistaken for the first half of a double-click.
         if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left)) {
             self.last_pane_section_row_click = None;
@@ -767,14 +768,14 @@ impl App {
             return false;
         }
 
-        let Some((_order_idx, ws_idx, pane_id)) = self.state.pane_section_row_at(mouse.row) else {
+        let Some((_order_idx, ws_idx, tab_idx)) = self.state.pane_section_row_at(mouse.row) else {
             self.last_pane_section_row_click = None;
             return false;
         };
 
         let click = PaneSectionRowClickState {
             ws_idx,
-            pane_id,
+            tab_idx,
             at: std::time::Instant::now(),
         };
         if self
@@ -782,8 +783,19 @@ impl App {
             .is_some_and(|last| last.is_double_click_for(click))
         {
             self.last_pane_section_row_click = None;
+            let Some(pane_id) = self
+                .state
+                .workspaces
+                .get(ws_idx)
+                .and_then(|ws| ws.tabs.get(tab_idx))
+                .map(|tab| tab.layout.focused())
+            else {
+                return false;
+            };
+            // Focusing a pane activates its workspace and tab, so the shared
+            // active-tab rename modal targets the row's own tab.
             self.focus_pane_internal_via_api(ws_idx, pane_id);
-            modal::open_rename_pane(&mut self.state, pane_id);
+            modal::open_rename_active_tab(&mut self.state, false);
             return true;
         }
 

@@ -1700,65 +1700,63 @@ impl AppState {
         true
     }
 
-    /// Reconcile the client-only Panes-section order with the live set of
-    /// non-agent panes across all workspaces. Called from the compute_view
-    /// mutation phase so render stays pure.
+    /// Reconcile the client-only Tabs-band order with the live set of tabs across
+    /// all workspaces. Called from the compute_view mutation phase so render stays
+    /// pure.
     ///
-    /// Drops references to panes that no longer exist or that became agent panes,
-    /// seeds the natural display order on first run, then places genuinely new
-    /// non-agent panes at the top of the list.
+    /// Drops references to tabs that no longer exist, seeds the natural display
+    /// order on first run, then places genuinely new tabs at the top of the list.
     pub(crate) fn reconcile_pane_section_order(&mut self) {
         use crate::app::state::{PaneManualEntry, PaneSectionRef};
-        // Flat set of live non-agent panes in natural display order
-        // (workspaces x tabs x panes).
+        // Flat set of live tabs in natural display order (workspaces x tabs).
         let mut flat: Vec<PaneSectionRef> = Vec::new();
         for ws in &self.workspaces {
-            for (_tab_idx, _pane_id, pane_number) in ws.non_agent_panes(&self.terminals) {
+            for tab in &ws.tabs {
                 flat.push(PaneSectionRef {
                     workspace_id: ws.id.clone(),
-                    pane_number,
+                    tab_number: tab.number,
                 });
             }
         }
         let current: std::collections::HashSet<PaneSectionRef> = flat.iter().cloned().collect();
 
-        // Drop stale pane references (closed panes or panes that became agent
-        // panes) and prune the known set to match. Line-splits are user data,
-        // never derived from panes, so they are always retained.
+        // Drop references to closed tabs and prune the known set to match.
+        // Line-splits are user data, never derived from tabs, so they are always
+        // retained.
         self.pane_section_order.order.retain(|entry| match entry {
-            PaneManualEntry::Pane(pane_ref) => current.contains(pane_ref),
+            PaneManualEntry::Pane(tab_ref) => current.contains(tab_ref),
             PaneManualEntry::LineSplit { .. } => true,
         });
         self.pane_section_order
             .known
-            .retain(|pane_ref| current.contains(pane_ref));
+            .retain(|tab_ref| current.contains(tab_ref));
 
         if !self.pane_section_order.seeded {
-            // First reconcile: establish the natural pane order. Append panes not
+            // First reconcile: establish the natural tab order. Append tabs not
             // yet present (line-splits, if any, keep their positions untouched).
-            for pane_ref in &flat {
-                if self.pane_section_order.known.insert(pane_ref.clone()) {
+            for tab_ref in &flat {
+                if self.pane_section_order.known.insert(tab_ref.clone()) {
                     self.pane_section_order
                         .order
-                        .push(PaneManualEntry::Pane(pane_ref.clone()));
+                        .push(PaneManualEntry::Pane(tab_ref.clone()));
                 }
             }
             self.pane_section_order.seeded = true;
             return;
         }
 
-        // Genuinely new non-agent panes go to the top of the list, keeping their
-        // natural relative order among themselves. Line-splits are left in place.
+        // Genuinely new tabs go to the top of the list, keeping their natural
+        // relative order among themselves. Line-splits are left in place.
         let mut insert_at = 0usize;
-        for pane_ref in &flat {
-            if self.pane_section_order.known.contains(pane_ref) {
+        for tab_ref in &flat {
+            if self.pane_section_order.known.contains(tab_ref) {
                 continue;
             }
             let at = insert_at.min(self.pane_section_order.order.len());
             self.pane_section_order
                 .order
-                .insert(at, PaneManualEntry::Pane(pane_ref.clone()));
-            self.pane_section_order.known.insert(pane_ref.clone());
+                .insert(at, PaneManualEntry::Pane(tab_ref.clone()));
+            self.pane_section_order.known.insert(tab_ref.clone());
             insert_at = at + 1;
         }
     }
@@ -1780,11 +1778,11 @@ impl AppState {
         self.mark_session_dirty();
     }
 
-    /// Move a Panes-section entry (non-agent pane or line-split) to a new position
-    /// in the flat order. `insert_idx` is a slot in the current order (before
-    /// removal), clamped to bounds. Cross-space moves are allowed. This is
-    /// client-only presentation state and never changes the real pane order inside
-    /// any workspace. Returns true when the order changed.
+    /// Move a Tabs-band entry (tab or line-split) to a new position in the flat
+    /// order. `insert_idx` is a slot in the current order (before removal),
+    /// clamped to bounds. Cross-space moves are allowed. This is client-only
+    /// presentation state and never changes the real tab order inside any
+    /// workspace. Returns true when the order changed.
     pub(crate) fn move_pane_section_entry(
         &mut self,
         source: crate::app::state::PaneManualEntryRef,
@@ -1796,8 +1794,8 @@ impl AppState {
                 .order
                 .iter()
                 .position(|entry| match (entry, &source) {
-                    (PaneManualEntry::Pane(pane_ref), PaneManualEntryRef::Pane(source_ref)) => {
-                        pane_ref == source_ref
+                    (PaneManualEntry::Pane(tab_ref), PaneManualEntryRef::Pane(source_ref)) => {
+                        tab_ref == source_ref
                     }
                     (
                         PaneManualEntry::LineSplit { id, .. },
@@ -1871,8 +1869,9 @@ impl AppState {
         self.cycle_pane_section_entry(false);
     }
 
-    /// Non-agent panes in Panes-section order (line-splits excluded), used for
-    /// keyboard cycling so navigation follows exactly what the section shows.
+    /// Tabs in Tabs-band order (line-splits excluded), each as the pane focus
+    /// lands on, used for keyboard cycling so navigation follows exactly what the
+    /// band shows.
     #[cfg(test)]
     fn pane_section_targets(&self) -> Vec<(usize, crate::layout::PaneId)> {
         crate::ui::sidebar_pane_section_entries(self)
@@ -1881,8 +1880,8 @@ impl AppState {
             .collect()
     }
 
-    /// Focus the Panes-section entry at `idx`, switching workspace and tab as a
-    /// click on that row would, and scroll it into view.
+    /// Focus the Tabs-band entry at `idx`, switching workspace and tab as a click
+    /// on that row would, and scroll it into view.
     #[cfg(test)]
     fn focus_pane_section_entry(&mut self, idx: usize) -> bool {
         let targets = self.pane_section_targets();
@@ -1921,8 +1920,8 @@ impl AppState {
         self.focus_pane_section_entry(target_idx);
     }
 
-    /// Scroll the Panes section so the row for `pane_id` is visible, mapping the
-    /// pane to its index in the full (panes + line-splits) row list.
+    /// Scroll the Tabs band so the row for `pane_id`'s tab is visible, mapping the
+    /// pane to its index in the full (tabs + line-splits) row list.
     pub(crate) fn ensure_pane_section_row_visible(&mut self, pane_id: PaneId) {
         if self.sidebar_collapsed {
             return;
@@ -4012,14 +4011,14 @@ mod tests {
         });
     }
 
-    fn pane_section_pane_numbers(state: &AppState) -> Vec<(String, usize)> {
+    fn pane_section_tab_numbers(state: &AppState) -> Vec<(String, usize)> {
         state
             .pane_section_order
             .order
             .iter()
             .filter_map(|entry| match entry {
-                crate::app::state::PaneManualEntry::Pane(pane_ref) => {
-                    Some((pane_ref.workspace_id.clone(), pane_ref.pane_number))
+                crate::app::state::PaneManualEntry::Pane(tab_ref) => {
+                    Some((tab_ref.workspace_id.clone(), tab_ref.tab_number))
                 }
                 crate::app::state::PaneManualEntry::LineSplit { .. } => None,
             })
@@ -4172,9 +4171,7 @@ mod tests {
     #[test]
     fn next_pane_cycles_pane_section_entries_with_wrap() {
         let mut first = Workspace::test_new("one");
-        let first_root = first.tabs[0].root_pane;
-        first.test_split(Direction::Horizontal);
-        first.tabs[0].layout.focus_pane(first_root);
+        first.test_add_tab(Some("second tab"));
         let second = Workspace::test_new("two");
 
         let mut state = AppState::test_new();
@@ -4185,13 +4182,13 @@ mod tests {
         state.mode = Mode::Terminal;
         state.reconcile_pane_section_order();
 
-        // Cycling follows whatever order the Panes section shows.
+        // Cycling follows whatever order the Tabs band shows.
         let order: Vec<(usize, crate::layout::PaneId)> =
             crate::ui::sidebar_pane_section_entries(&state)
                 .iter()
                 .map(|entry| (entry.ws_idx, entry.pane_id))
                 .collect();
-        assert_eq!(order.len(), 3, "two panes in ws0 plus one in ws1");
+        assert_eq!(order.len(), 3, "two tabs in ws0 plus one in ws1");
 
         state.focus_pane_in_workspace(order[0].0, order[0].1);
         for expected in [order[1], order[2], order[0]] {
@@ -4227,44 +4224,59 @@ mod tests {
         state.next_pane();
         assert_eq!(state.active, Some(entries[1].ws_idx));
 
-        // With every pane owned by an agent the section is empty and nav is inert.
+        // An agent tab is still a navigation target: the band lists every tab.
         for ws_idx in 0..state.workspaces.len() {
             let root = state.workspaces[ws_idx].tabs[0].root_pane;
             mark_agent(&mut state, ws_idx, 0, root);
         }
         state.reconcile_pane_section_order();
-        assert!(crate::ui::sidebar_pane_section_entries(&state).is_empty());
-        let before = state.active;
-        state.next_pane();
-        state.previous_pane();
-        assert_eq!(state.active, before);
+        assert_eq!(crate::ui::sidebar_pane_section_entries(&state).len(), 2);
+
         state.assert_invariants_for_test();
+
+        // With no spaces at all the band is empty and nav is inert.
+        let mut empty = AppState::test_new();
+        empty.workspaces.clear();
+        empty.active = None;
+        empty.reconcile_pane_section_order();
+        assert!(crate::ui::sidebar_pane_section_entries(&empty).is_empty());
+        empty.next_pane();
+        empty.previous_pane();
+        assert_eq!(empty.active, None);
+        empty.assert_invariants_for_test();
     }
 
     #[test]
-    fn pane_section_reconcile_seeds_natural_order_then_places_new_panes_on_top() {
+    fn pane_section_reconcile_seeds_natural_order_then_places_new_tabs_on_top() {
         let mut state = app_with_workspaces(&["one", "two"]);
         state.reconcile_pane_section_order();
-        let seeded = pane_section_pane_numbers(&state);
+        let seeded = pane_section_tab_numbers(&state);
         assert_eq!(seeded.len(), 2);
 
-        // A new pane is genuinely new, so it lands at the top of the order.
+        // Splitting a tab adds a pane, not a row: the band is keyed by tab.
         let new_pane = state.workspaces[0].test_split(Direction::Horizontal);
         state.ensure_test_terminals();
         state.reconcile_pane_section_order();
-        let new_number = state.workspaces[0]
-            .public_pane_number(new_pane)
-            .expect("public pane number");
-        assert_eq!(
-            pane_section_pane_numbers(&state)[0],
-            (state.workspaces[0].id.clone(), new_number)
-        );
-        assert_eq!(pane_section_pane_numbers(&state).len(), 3);
-
-        // An agent pane leaves the section; its slot is dropped.
+        assert_eq!(pane_section_tab_numbers(&state), seeded);
         claude_pane(&mut state, new_pane);
         state.reconcile_pane_section_order();
-        assert_eq!(pane_section_pane_numbers(&state), seeded);
+        assert_eq!(pane_section_tab_numbers(&state), seeded);
+
+        // A new tab is genuinely new, so it lands at the top of the order.
+        let new_tab = state.workspaces[0].test_add_tab(Some("later"));
+        state.ensure_test_terminals();
+        state.reconcile_pane_section_order();
+        let new_number = state.workspaces[0].tabs[new_tab].number;
+        assert_eq!(
+            pane_section_tab_numbers(&state)[0],
+            (state.workspaces[0].id.clone(), new_number)
+        );
+        assert_eq!(pane_section_tab_numbers(&state).len(), 3);
+
+        // Closing that tab drops its slot again.
+        assert!(state.workspaces[0].close_tab(new_tab));
+        state.reconcile_pane_section_order();
+        assert_eq!(pane_section_tab_numbers(&state), seeded);
         state.assert_invariants_for_test();
     }
 
@@ -4292,13 +4304,13 @@ mod tests {
         use crate::app::state::{PaneManualEntry, PaneManualEntryRef};
         let mut state = app_with_workspaces(&["one", "two"]);
         state.reconcile_pane_section_order();
-        let before = pane_section_pane_numbers(&state);
+        let before = pane_section_tab_numbers(&state);
 
         let PaneManualEntry::Pane(second) = state.pane_section_order.order[1].clone() else {
             panic!("expected a pane entry");
         };
         assert!(state.move_pane_section_entry(PaneManualEntryRef::Pane(second), 0));
-        let after = pane_section_pane_numbers(&state);
+        let after = pane_section_tab_numbers(&state);
         assert_eq!(after[0], before[1]);
         assert_eq!(after[1], before[0]);
 
@@ -5664,6 +5676,9 @@ mod tests {
             mark_agent(&mut state, 0, tab_idx, pane_id);
         }
         state.workspaces[0].tabs[0].layout.focus_pane(root);
+        // This is about the agents band scrolling; collapsing the Tabs band keeps
+        // the agents band tall enough to have a scrollable viewport here.
+        state.pane_section_collapsed = true;
         crate::ui::compute_view(&mut state, ratatui::layout::Rect::new(0, 0, 80, 14));
 
         state.previous_agent();

@@ -84,22 +84,25 @@ pub struct SidebarSectionCollapseSnapshot {
     pub agents: bool,
 }
 
-/// Persisted flat Panes-section ordering. Pane entries reference non-agent panes
-/// by stable keys (workspace id + public pane number) rather than a positional
-/// index; line-splits carry their id and name.
+/// Persisted flat Tabs-band ordering. Tab entries reference tabs by stable keys
+/// (workspace id + public tab number) rather than a positional index;
+/// line-splits carry their id and name.
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct PaneSectionOrderSnapshot {
     pub entries: Vec<PaneSectionEntrySnapshot>,
 }
 
-/// A single persisted Panes-section entry. Untagged so a bare pane object still
+/// A single persisted Tabs-band entry. Untagged so a bare tab object still
 /// parses as the `Pane` variant.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum PaneSectionEntrySnapshot {
     Pane {
         workspace_id: String,
-        pane_number: usize,
+        // Sessions written while the band was keyed by pane carry `pane_number`
+        // in this slot; the alias keeps those snapshots loadable.
+        #[serde(alias = "pane_number")]
+        tab_number: usize,
     },
     LineSplit {
         line_split_id: u64,
@@ -399,10 +402,10 @@ pub fn capture(
                 .map(|key| match key {
                     crate::app::state::PaneManualEntryKey::Pane {
                         workspace_id,
-                        pane_number,
+                        tab_number,
                     } => PaneSectionEntrySnapshot::Pane {
                         workspace_id,
-                        pane_number,
+                        tab_number,
                     },
                     crate::app::state::PaneManualEntryKey::LineSplit { id, name } => {
                         PaneSectionEntrySnapshot::LineSplit {
@@ -447,7 +450,7 @@ pub fn sidebar_section_collapse(
     }
 }
 
-/// The persisted Panes-section order as state-level keys, in order.
+/// The persisted Tabs-band order as state-level keys, in order.
 pub fn pane_section_order_keys(
     order: Option<&PaneSectionOrderSnapshot>,
 ) -> Vec<crate::app::state::PaneManualEntryKey> {
@@ -459,10 +462,10 @@ pub fn pane_section_order_keys(
                 .map(|entry| match entry {
                     PaneSectionEntrySnapshot::Pane {
                         workspace_id,
-                        pane_number,
+                        tab_number,
                     } => crate::app::state::PaneManualEntryKey::Pane {
                         workspace_id: workspace_id.clone(),
-                        pane_number: *pane_number,
+                        tab_number: *tab_number,
                     },
                     PaneSectionEntrySnapshot::LineSplit {
                         line_split_id,

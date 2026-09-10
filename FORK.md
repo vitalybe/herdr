@@ -46,7 +46,7 @@ Landed on the upstream base:
 | Named line-splits | Divider rows a user can insert, rename, drag, and collapse. A collapsed divider hides its segment down to the next divider and shows the hidden row count. Both bands share one renderer, and collapse state is keyed by `LineSplitSection` so ids from the two counters cannot collide. |
 | Manual agent order | A `Manual` sort alongside upstream's sort orders, with drag-to-reorder, persisted per space. |
 | Double-click rename | Double-clicking an agent row renames its tab. |
-| Sidebar panes band | A third band listing non-agent panes across spaces, with pane-and-tab naming, same-name collapsing within a tab, hide-non-agent-panes for tabs that already show agent rows, and `keys.previous_pane` / `keys.next_pane` cycling. |
+| Sidebar tabs band | A third band listing every tab across spaces, one row per tab. A tab holding at least one agent pane is an agent tab and renders exactly as the agents band renders that agent, showing the most urgent status when the tab holds several (blocked, then done, then working, then idle). Every other tab takes a fixed neon-green `❯` prompt icon and no status. Rows carry `keys.previous_pane` / `keys.next_pane` cycling, drag-to-reorder, and double-click tab rename. |
 | Collapsible sidebar bands | Each band collapses to a header row; dividers stay draggable while a band is collapsed. |
 | Hide agent-only spaces | `experimental.hide_tabs_with_agents` hides agent-only spaces from the spaces list, the collapsed rail, and space navigation, and suppresses the space highlight while an agent tab is focused. Config-file only: upstream removed the Settings > Experiments section. |
 

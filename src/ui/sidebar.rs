@@ -21,10 +21,14 @@ use crate::terminal::TerminalRuntimeRegistry;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
-/// Separator rule plus the "panes" title row above the Panes band body.
+/// Separator rule plus the "tabs" title row above the Tabs band body.
 const PANE_SECTION_HEADER_ROWS: u16 = 2;
-/// Content height of one Panes-section pane row (pane name over space name).
-const PANE_SECTION_ROW_HEIGHT: u16 = 2;
+/// Icon marking a Tabs-band row whose tab has no agent pane. Deliberately not
+/// one of the agent status glyphs: a plain terminal tab has no status.
+const PLAIN_TAB_ICON: &str = "\u{276f}";
+/// Phosphor-terminal green for [`PLAIN_TAB_ICON`]. Fixed rather than themed so
+/// the prompt glyph keeps reading as a shell against every palette.
+const PLAIN_TAB_ICON_COLOR: Color = Color::Rgb(57, 255, 20);
 /// Height of a band collapsed to its header row.
 const COLLAPSED_SECTION_ROWS: u16 = 1;
 
@@ -313,7 +317,7 @@ impl SidebarBand {
     fn title(self) -> &'static str {
         match self {
             SidebarBand::Spaces => "spaces",
-            SidebarBand::Panes => "panes",
+            SidebarBand::Panes => "tabs",
             SidebarBand::Agents => "agents",
         }
     }
@@ -490,7 +494,7 @@ pub(crate) fn sidebar_shows_pane_section(app: &AppState) -> bool {
     !pane_section_rows_before_collapse(app).is_empty()
 }
 
-/// Body (scrolling content) region of the Panes band, below its header rows.
+/// Body (scrolling content) region of the Tabs band, below its header rows.
 /// Reserves the rightmost column for the scrollbar when `has_scrollbar`.
 pub(crate) fn pane_section_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
     if area.width == 0 || area.height <= PANE_SECTION_HEADER_ROWS {
@@ -502,10 +506,9 @@ pub(crate) fn pane_section_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
     Rect::new(area.x, body_y, body_width, body_height)
 }
 
-/// A single non-agent pane surfaced in the Panes section, resolved from the
-/// client-only [`crate::app::state::PaneSectionOrder`]. `tab_idx` is the pane's
-/// containing tab (used for the display name) and `pane_id` addresses the pane
-/// itself for focus.
+/// A single tab surfaced in the Tabs band, resolved from the client-only
+/// [`crate::app::state::PaneSectionOrder`]. `pane_id` is the pane focus lands on
+/// inside that tab, so keyboard cycling and click focus address a real pane.
 pub(crate) struct PaneSectionEntry {
     pub order_idx: usize,
     pub ws_idx: usize,
@@ -513,15 +516,15 @@ pub(crate) struct PaneSectionEntry {
     pub pane_id: crate::layout::PaneId,
 }
 
-/// A single visible row in the Panes section: either a non-agent pane entry or a
-/// named line-split divider. Client-only presentation state.
+/// A single visible row in the Tabs band: either a tab entry or a named
+/// line-split divider. Client-only presentation state.
 pub(crate) enum PaneSectionRow {
     Pane(PaneSectionEntry),
     LineSplit {
         order_idx: usize,
         id: LineSplitId,
         name: String,
-        /// Number of pane rows in this line-split's segment (down to the next
+        /// Number of tab rows in this line-split's segment (down to the next
         /// line-split or the end). Shown as `(N)` and equals the count hidden
         /// when the line-split is collapsed.
         count: usize,
@@ -531,12 +534,17 @@ pub(crate) enum PaneSectionRow {
 }
 
 impl PaneSectionRow {
-    /// Content-row height of this row (excluding the trailing gap). Pane rows
-    /// render two lines; line-splits are a single rule.
-    fn content_height(&self) -> u16 {
+    /// Content-row height of this row (excluding the trailing gap). Tab rows
+    /// take the configured agent token row count, so a tab row is exactly as
+    /// tall as the agents band row for the same tab; line-splits are a single
+    /// rule.
+    fn height_in_body(&self, app: &AppState, tabs: &TabRowEntries, body_height: u16) -> u16 {
         match self {
-            PaneSectionRow::Pane(_) => PANE_SECTION_ROW_HEIGHT,
-            PaneSectionRow::LineSplit { .. } => 1,
+            PaneSectionRow::Pane(entry) => {
+                let lines = tab_row_token_rows(app, tabs, entry).len().max(1);
+                (lines.min(u16::MAX as usize) as u16).min(body_height)
+            }
+            PaneSectionRow::LineSplit { .. } => 1u16.min(body_height),
         }
     }
 
@@ -549,37 +557,16 @@ impl PaneSectionRow {
     }
 }
 
-/// Tabs (workspace index, tab index) whose non-agent panes are hidden from the
-/// Panes section because the tab already contributes an agent row to the Agents
-/// section, which would otherwise show the same tab twice. Pure, client-only
-/// presentation filtering.
-pub(crate) fn tabs_with_hidden_panes(app: &AppState) -> std::collections::HashSet<(usize, usize)> {
-    let agent_tabs: std::collections::HashSet<(usize, usize)> = agent_panel_entries(app)
-        .into_iter()
-        .map(|entry| (entry.ws_idx, entry.tab_idx))
-        .collect();
-    app.workspaces
-        .iter()
-        .enumerate()
-        .flat_map(|(ws_idx, ws)| {
-            ws.non_agent_panes(&app.terminals)
-                .into_iter()
-                .map(move |(tab_idx, _, _)| (ws_idx, tab_idx))
-        })
-        .filter(|key| agent_tabs.contains(key))
-        .collect()
-}
-
-/// Full ordered list of visible Panes-section rows, walking the client-only
-/// order and interleaving panes and line-splits. Pane entries whose pane no
-/// longer resolves are skipped; line-splits are always kept.
+/// Full ordered list of visible Tabs-band rows, walking the client-only order
+/// and interleaving tabs and line-splits. Tab entries whose tab no longer
+/// resolves are skipped; line-splits are always kept.
 pub(crate) fn sidebar_pane_section_rows(app: &AppState) -> Vec<PaneSectionRow> {
     apply_pane_line_split_collapse(app, pane_section_rows_before_collapse(app))
 }
 
-/// Annotate each Panes-section line-split with its segment pane count and
-/// collapsed flag, and drop the pane rows in a collapsed line-split's segment. A
-/// segment runs from a line-split down to the next line-split (or the end). Pure.
+/// Annotate each Tabs-band line-split with its segment tab count and collapsed
+/// flag, and drop the tab rows in a collapsed line-split's segment. A segment
+/// runs from a line-split down to the next line-split (or the end). Pure.
 fn apply_pane_line_split_collapse(
     app: &AppState,
     rows: Vec<PaneSectionRow>,
@@ -636,31 +623,31 @@ fn apply_pane_line_split_collapse(
         .collect()
 }
 
-/// Panes-section rows before collapse filtering: every resolvable non-agent pane
-/// (deduped by same-name-in-tab) and every line-split divider, in manual order.
-/// Serves both as the input to [`apply_pane_line_split_collapse`] and as the
-/// signal for [`sidebar_shows_pane_section`], so section visibility does not
-/// depend on which rows a collapsed divider currently hides.
+/// Tabs-band rows before collapse filtering: every resolvable tab and every
+/// line-split divider, in manual order. Serves both as the input to
+/// [`apply_pane_line_split_collapse`] and as the signal for
+/// [`sidebar_shows_pane_section`], so band visibility does not depend on which
+/// rows a collapsed divider currently hides.
 fn pane_section_rows_before_collapse(app: &AppState) -> Vec<PaneSectionRow> {
     let mut lookup: std::collections::HashMap<
         (&str, usize),
         (usize, usize, crate::layout::PaneId),
     > = std::collections::HashMap::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        for (tab_idx, pane_id, pane_number) in ws.non_agent_panes(&app.terminals) {
-            lookup.insert((ws.id.as_str(), pane_number), (ws_idx, tab_idx, pane_id));
+        for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+            lookup.insert(
+                (ws.id.as_str(), tab.number),
+                (ws_idx, tab_idx, tab.layout.focused()),
+            );
         }
     }
-    let hidden_tabs = tabs_with_hidden_panes(app);
-    let rows: Vec<PaneSectionRow> = app
-        .pane_section_order
+    app.pane_section_order
         .order
         .iter()
         .enumerate()
         .filter_map(|(order_idx, entry)| match entry {
-            PaneManualEntry::Pane(pane_ref) => lookup
-                .get(&(pane_ref.workspace_id.as_str(), pane_ref.pane_number))
-                .filter(|&&(ws_idx, tab_idx, _)| !hidden_tabs.contains(&(ws_idx, tab_idx)))
+            PaneManualEntry::Pane(tab_ref) => lookup
+                .get(&(tab_ref.workspace_id.as_str(), tab_ref.tab_number))
                 .map(|&(ws_idx, tab_idx, pane_id)| {
                     PaneSectionRow::Pane(PaneSectionEntry {
                         order_idx,
@@ -677,39 +664,12 @@ fn pane_section_rows_before_collapse(app: &AppState) -> Vec<PaneSectionRow> {
                 collapsed: false,
             }),
         })
-        .collect();
-    dedupe_same_name_tab_panes(app, rows)
-}
-
-/// Drop redundant Panes-section pane rows: when the same tab contributes several
-/// panes that share the same pane name, keep only the first in display order. A
-/// pane with no name of its own, or a name unique within its tab, is always kept,
-/// so panes stay visible whenever they can be told apart. Line-splits pass
-/// through. Pure, client-only presentation filtering.
-fn dedupe_same_name_tab_panes(app: &AppState, rows: Vec<PaneSectionRow>) -> Vec<PaneSectionRow> {
-    let mut seen: std::collections::HashSet<(usize, usize, String)> =
-        std::collections::HashSet::new();
-    rows.into_iter()
-        .filter(|row| match row {
-            PaneSectionRow::Pane(entry) => {
-                let Some(ws) = app.workspaces.get(entry.ws_idx) else {
-                    return true;
-                };
-                match pane_section_pane_own_name(app, ws, entry.pane_id) {
-                    // First pane with this (tab, name) is kept; later duplicates drop.
-                    Some(name) => seen.insert((entry.ws_idx, entry.tab_idx, name)),
-                    // Unnamed panes are never treated as duplicates.
-                    None => true,
-                }
-            }
-            PaneSectionRow::LineSplit { .. } => true,
-        })
         .collect()
 }
 
-/// All non-agent panes across every workspace, ordered by the client-only Panes
-/// section ordering. Line-splits are excluded, so this is the pane-only view used
-/// for focus/enumeration (keyboard navigation and scroll targeting skip splits).
+/// All tabs across every workspace, ordered by the client-only Tabs-band
+/// ordering. Line-splits are excluded, so this is the tab-only view used for
+/// focus/enumeration (keyboard navigation and scroll targeting skip splits).
 pub(crate) fn sidebar_pane_section_entries(app: &AppState) -> Vec<PaneSectionEntry> {
     sidebar_pane_section_rows(app)
         .into_iter()
@@ -720,21 +680,26 @@ pub(crate) fn sidebar_pane_section_entries(app: &AppState) -> Vec<PaneSectionEnt
         .collect()
 }
 
-/// Row index (in the full [`sidebar_pane_section_rows`] list) of the pane row for
-/// `pane_id`, if present.
+/// Row index (in the full [`sidebar_pane_section_rows`] list) of the tab row
+/// holding `pane_id`, if present. Any pane of a tab resolves to that tab's row,
+/// so a focus change inside a tab still scrolls the right row into view.
 pub(crate) fn pane_section_row_index_of_pane(
     app: &AppState,
     pane_id: crate::layout::PaneId,
 ) -> Option<usize> {
-    sidebar_pane_section_rows(app)
-        .iter()
-        .position(|row| matches!(row, PaneSectionRow::Pane(entry) if entry.pane_id == pane_id))
+    sidebar_pane_section_rows(app).iter().position(|row| {
+        matches!(row, PaneSectionRow::Pane(entry) if app
+            .workspaces
+            .get(entry.ws_idx)
+            .and_then(|ws| ws.tabs.get(entry.tab_idx))
+            .is_some_and(|tab| tab.panes.contains_key(&pane_id)))
+    })
 }
 
-/// Visible-row layout for the Panes section, walking rows from `scroll` and
-/// laying out variable-height rows (with a one-row gap) inside `body`. The single
-/// source of Panes-section row geometry: both the renderer and mouse hit-testing
-/// consume its output.
+/// Visible-row layout for the Tabs band, walking rows from `scroll` and laying
+/// out variable-height rows (with a one-row gap) inside `body`. The single source
+/// of Tabs-band row geometry: both the renderer and mouse hit-testing consume its
+/// output.
 fn pane_section_row_areas_in(
     app: &AppState,
     body: Rect,
@@ -745,10 +710,14 @@ fn pane_section_row_areas_in(
     if body.width == 0 || body.height == 0 {
         return areas;
     }
+    let tabs = tab_row_entries(app, None);
     let body_bottom = body.y + body.height;
     let mut row_y = body.y;
     for row in sidebar_pane_section_rows(app).into_iter().skip(scroll) {
-        let height = row.content_height();
+        let height = row.height_in_body(app, &tabs, body.height);
+        if height == 0 {
+            continue;
+        }
         if row_y.saturating_add(height) > body_bottom {
             break;
         }
@@ -1927,38 +1896,108 @@ pub(crate) fn workspace_drop_indicator_row(
 
 /// The pane's own effective name (manual label / terminal title), independent of
 /// its containing tab. `None` when the pane has no name of its own.
-fn pane_section_pane_own_name(
+/// Tabs-band row content for every live tab, keyed by `(ws_idx, tab_idx)`: the
+/// agent-style entry the row renders from, plus whether the tab holds any agent
+/// pane.
+type TabRowEntries = std::collections::HashMap<(usize, usize), (AgentPanelEntry, bool)>;
+
+/// Build the Tabs-band entry for every tab. A tab holding at least one agent
+/// pane is an agent tab even when it also holds plain panes, and takes the
+/// agents-band entry for its most urgent agent pane (blocked first), so a
+/// multi-agent tab shows the status that needs attention and renders exactly as
+/// that agent does in the agents band. Every other tab gets an entry with no
+/// agent identity, which elides the agent token rows.
+fn tab_row_entries(
     app: &AppState,
-    ws: &crate::workspace::Workspace,
-    pane_id: crate::layout::PaneId,
-) -> Option<String> {
-    ws.pane_state(pane_id)
-        .and_then(|pane| {
-            app.terminals
-                .get(&pane.attached_terminal_id)
-                .and_then(|terminal| terminal.border_label(false))
-        })
-        .filter(|label| !label.trim().is_empty())
+    terminal_runtimes: Option<&TerminalRuntimeRegistry>,
+) -> TabRowEntries {
+    let empty_runtimes;
+    let runtimes = match terminal_runtimes {
+        Some(runtimes) => runtimes,
+        None => {
+            empty_runtimes = TerminalRuntimeRegistry::new();
+            &empty_runtimes
+        }
+    };
+
+    let mut entries: TabRowEntries = std::collections::HashMap::new();
+    for (ws_idx, ws) in app.workspaces.iter().enumerate() {
+        let multi_tab = ws.tabs.len() > 1;
+        let workspace_label = ws.display_name_from(&app.terminals, runtimes);
+        for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+            let show_tab = multi_tab || !tab.is_numbered();
+            entries.insert(
+                (ws_idx, tab_idx),
+                (
+                    AgentPanelEntry {
+                        ws_idx,
+                        tab_idx,
+                        pane_id: tab.layout.focused(),
+                        primary_label: workspace_label.clone(),
+                        primary_tab_label: show_tab.then(|| {
+                            ws.tab_display_name(tab_idx)
+                                .unwrap_or_else(|| (tab_idx + 1).to_string())
+                        }),
+                        pane_label: None,
+                        terminal_title: None,
+                        terminal_title_stripped: None,
+                        agent_label: None,
+                        agent_kind_label: None,
+                        agent: None,
+                        state: AgentState::Unknown,
+                        seen: true,
+                        last_agent_state_change_seq: None,
+                        state_labels: std::collections::HashMap::new(),
+                        tokens: std::collections::HashMap::new(),
+                    },
+                    false,
+                ),
+            );
+        }
+    }
+
+    // The agents-band view filter is deliberately bypassed: the Tabs band lists
+    // every tab, so a filtered-out agent must not turn its tab into a plain one.
+    for entry in collect_agent_panel_entries_with_runtimes(app, terminal_runtimes) {
+        let key = (entry.ws_idx, entry.tab_idx);
+        let wins = match entries.get(&key) {
+            Some((current, true)) => {
+                workspace_attention_priority(entry.state, entry.seen)
+                    > workspace_attention_priority(current.state, current.seen)
+            }
+            _ => true,
+        };
+        if wins {
+            entries.insert(key, (entry, true));
+        }
+    }
+    entries
 }
 
-/// The display name shown for a Panes-section row: `"<pane> • <tab>"` when the
-/// pane has a name of its own (manual label / terminal title), otherwise just the
-/// containing tab's name, otherwise a positional fallback.
-fn pane_section_row_name(
+/// Token rows for one Tabs-band row. An agent tab renders the configured agent
+/// rows unchanged. A plain terminal tab drops the status-text token and any row
+/// it leaves empty, so the row carries the tab icon and the tab's name with no
+/// status.
+fn tab_row_token_rows(
     app: &AppState,
-    ws: &crate::workspace::Workspace,
-    row_pane_id: crate::layout::PaneId,
-    tab_idx: usize,
-) -> String {
-    let tab_name = ws
-        .tab_display_name(tab_idx)
-        .unwrap_or_else(|| (tab_idx + 1).to_string());
-    // When the pane has its own name, show both so a pane can still be placed in
-    // its tab; otherwise the tab name stands alone.
-    match pane_section_pane_own_name(app, ws, row_pane_id) {
-        Some(pane_name) => format!("{pane_name} • {tab_name}"),
-        None => tab_name,
+    tabs: &TabRowEntries,
+    entry: &PaneSectionEntry,
+) -> Vec<Vec<ResolvedToken>> {
+    let Some((row_entry, is_agent)) = tabs.get(&(entry.ws_idx, entry.tab_idx)) else {
+        return Vec::new();
+    };
+    let rows = resolved_agent_rows(app, row_entry);
+    if *is_agent {
+        return rows;
     }
+    rows.into_iter()
+        .map(|row| {
+            row.into_iter()
+                .filter(|token| !matches!(token.kind, ResolvedTokenKind::StateText(_)))
+                .collect::<Vec<_>>()
+        })
+        .filter(|row: &Vec<ResolvedToken>| !row.is_empty())
+        .collect()
 }
 
 /// Render a named line-split divider row: rule, collapse arrow, name, and the
@@ -2019,10 +2058,11 @@ fn render_line_split_row(
     frame.render_widget(Paragraph::new(line), Rect::new(body.x, y, body.width, 1));
 }
 
-/// Render the Panes section: every non-agent pane across all spaces as a
-/// two-line row (pane name over its space name) interleaved with named
-/// line-split dividers, ordered by the client-only Panes-section order, with a
-/// drop indicator during a reorder drag.
+/// Render the Tabs band: every tab across all spaces, agent tabs rendered as the
+/// agents band renders their most urgent agent and plain terminal tabs rendered
+/// with the tab icon and no status, interleaved with named line-split dividers,
+/// ordered by the client-only Tabs-band order, with a drop indicator during a
+/// reorder drag.
 fn render_pane_section(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -2042,7 +2082,7 @@ fn render_pane_section(
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            format!("{} panes", section_toggle_glyph(false)),
+            format!("{} tabs", section_toggle_glyph(false)),
             Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
         )])),
         Rect::new(area.x, area.y + 1, area.width, 1),
@@ -2074,6 +2114,7 @@ fn render_pane_section(
         _ => None,
     };
 
+    let tabs = tab_row_entries(app, Some(terminal_runtimes));
     // Line-split labels and collapse state live in the flat order; index them by
     // order slot so the (name-less, Copy) row areas can render their rule.
     let split_meta: std::collections::HashMap<usize, (String, usize, bool)> =
@@ -2092,7 +2133,6 @@ fn render_pane_section(
             .collect();
 
     let areas = &app.view.pane_section_row_areas;
-    let max_width = body.width as usize;
     for row in areas {
         match row.content {
             PaneSectionRowContent::Pane {
@@ -2103,51 +2143,51 @@ fn render_pane_section(
                 let Some(ws) = app.workspaces.get(ws_idx) else {
                     continue;
                 };
+                let Some((entry, is_agent)) = tabs.get(&(ws_idx, tab_idx)) else {
+                    continue;
+                };
                 let is_active = app.is_active_pane(ws_idx, tab_idx, pane_id);
                 let is_dragged = matches!(
                     &dragged,
                     Some(PaneManualEntryRef::Pane(source))
                         if source.workspace_id == ws.id
-                            && ws.public_pane_number(pane_id) == Some(source.pane_number)
+                            && ws.tabs.get(tab_idx).map(|tab| tab.number)
+                                == Some(source.tab_number)
                 );
-
-                if is_active || is_dragged {
-                    let bg = if is_dragged {
-                        p.surface1
-                    } else {
-                        p.surface_dim
-                    };
-                    let buf = frame.buffer_mut();
-                    for y in row.rect.y..row.rect.y + row.rect.height {
-                        for x in row.rect.x..row.rect.x + row.rect.width {
-                            buf[(x, y)].set_style(Style::default().bg(bg));
-                        }
-                    }
-                }
-
-                let name_style = if is_active || is_dragged {
-                    Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+                let row_bg = if is_dragged {
+                    Some(p.surface1)
                 } else {
-                    Style::default().fg(p.text)
+                    is_active.then_some(p.active_row_bg)
                 };
-                let pane_name = pane_section_row_name(app, ws, pane_id, tab_idx);
-                let space_name = ws.display_name_from(&app.terminals, terminal_runtimes);
-                frame.render_widget(
-                    Paragraph::new(Line::from(vec![Span::styled(
-                        format!(" {}", truncate_end(&pane_name, max_width.saturating_sub(1))),
-                        name_style,
-                    )])),
-                    Rect::new(body.x, row.rect.y, body.width, 1),
-                );
-                frame.render_widget(
-                    Paragraph::new(Line::from(vec![Span::styled(
-                        format!(
-                            " {}",
-                            truncate_end(&space_name, max_width.saturating_sub(1))
-                        ),
-                        Style::default().fg(p.overlay0),
-                    )])),
-                    Rect::new(body.x, row.rect.y + 1, body.width, 1),
+                let (state_icon, label_color) = if *is_agent {
+                    (
+                        state_icon(entry.state, entry.seen, app.status_indicators, p),
+                        state_label_color(entry.state, entry.seen, p),
+                    )
+                } else {
+                    (
+                        (PLAIN_TAB_ICON, Style::default().fg(PLAIN_TAB_ICON_COLOR)),
+                        p.overlay0,
+                    )
+                };
+                render_token_rows(
+                    app,
+                    frame,
+                    Rect::new(body.x, row.rect.y, body.width, row.rect.height),
+                    &tab_row_token_rows(
+                        app,
+                        &tabs,
+                        &PaneSectionEntry {
+                            order_idx: row.order_idx,
+                            ws_idx,
+                            tab_idx,
+                            pane_id,
+                        },
+                    ),
+                    row_bg,
+                    is_active,
+                    state_icon,
+                    label_color,
                 );
             }
             PaneSectionRowContent::LineSplit { id } => {
@@ -2721,14 +2761,39 @@ pub(crate) fn agent_panel_split_button_rect(area: Rect, sort: AgentPanelSort) ->
 /// Draw one agent row's configured token lines inside `rect`.
 fn render_agent_row(app: &AppState, frame: &mut Frame, rect: Rect, detail: &AgentPanelEntry) {
     let p = &app.palette;
-    let label_color = state_label_color(detail.state, detail.seen, p);
-    let rows = resolved_agent_rows(app, detail);
-
     let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
-    let row_style = if is_active {
-        Style::default().bg(p.active_row_bg)
-    } else {
-        Style::default()
+    render_token_rows(
+        app,
+        frame,
+        rect,
+        &resolved_agent_rows(app, detail),
+        is_active.then_some(p.active_row_bg),
+        is_active,
+        state_icon(detail.state, detail.seen, app.status_indicators, p),
+        state_label_color(detail.state, detail.seen, p),
+    );
+}
+
+/// Draw one sidebar row's resolved token lines inside `rect`. Shared by the
+/// agents band and the Tabs band so a tab's row is laid out and styled exactly
+/// like the agents-band row for the same agent. `row_bg` paints the whole row
+/// (active or picked up by a drag); `is_active` drives the emphasis of the name
+/// and status text.
+#[allow(clippy::too_many_arguments)]
+fn render_token_rows(
+    app: &AppState,
+    frame: &mut Frame,
+    rect: Rect,
+    rows: &[Vec<ResolvedToken>],
+    row_bg: Option<Color>,
+    is_active: bool,
+    state_icon: (&str, Style),
+    label_color: Color,
+) {
+    let p = &app.palette;
+    let row_style = match row_bg {
+        Some(bg) => Style::default().bg(bg),
+        None => Style::default(),
     };
     let name_style = if is_active {
         Style::default().fg(p.text).add_modifier(Modifier::BOLD)
@@ -2741,7 +2806,6 @@ fn render_agent_row(app: &AppState, frame: &mut Frame, rect: Rect, detail: &Agen
         Style::default().fg(label_color).add_modifier(Modifier::DIM)
     };
     let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
-    let state_icon = state_icon(detail.state, detail.seen, app.status_indicators, p);
 
     let content_rows = rows.len().min(rect.height as usize);
     for (row_index, resolved) in rows.iter().take(content_rows).enumerate() {
@@ -2955,8 +3019,8 @@ mod tests {
             })
     }
 
-    /// App state with two spaces, each holding one plain shell pane, and the
-    /// Panes-section order seeded from them.
+    /// App state with two spaces, each holding one plain shell tab, and the
+    /// Tabs-band order seeded from them.
     fn app_with_two_shell_panes() -> crate::app::state::AppState {
         let mut app = crate::app::state::AppState::test_new();
         app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
@@ -2968,101 +3032,132 @@ mod tests {
         app
     }
 
-    #[test]
-    fn panes_sharing_a_tab_with_an_agent_are_hidden_from_the_panes_section() {
-        let mut app = app_with_two_shell_panes();
-        let agent_pane = app.workspaces[0].tabs[0].root_pane;
-        let sibling = app.workspaces[0].test_split(Direction::Horizontal);
-        let other_tab = app.workspaces[0].test_add_tab(Some("shell"));
-        let other_tab_pane = app.workspaces[0].tabs[other_tab].root_pane;
-        app.ensure_test_terminals();
-        app.reconcile_pane_section_order();
-        assert!(sidebar_pane_section_rows(&app)
-            .iter()
-            .any(|row| matches!(row, PaneSectionRow::Pane(entry) if entry.pane_id == sibling)));
-
-        let terminal_id = app.workspaces[0].tabs[0].panes[&agent_pane]
+    /// Turn one pane into an agent pane in `state`, so its tab reads as an agent
+    /// tab in the Tabs band.
+    fn set_agent_pane(
+        app: &mut crate::app::state::AppState,
+        ws_idx: usize,
+        tab_idx: usize,
+        pane_id: PaneId,
+        state: AgentState,
+    ) {
+        let terminal_id = app.workspaces[ws_idx].tabs[tab_idx].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        app.terminals
-            .get_mut(&terminal_id)
-            .expect("terminal")
-            .detected_agent = Some(Agent::Pi);
-        app.reconcile_pane_section_order();
+        let terminal = app.terminals.get_mut(&terminal_id).expect("terminal");
+        terminal.detected_agent = Some(Agent::Pi);
+        terminal.state = state;
+    }
 
-        assert_eq!(
-            tabs_with_hidden_panes(&app),
-            std::collections::HashSet::from([(0, 0)])
-        );
-        let pane_ids: Vec<PaneId> = sidebar_pane_section_rows(&app)
-            .iter()
-            .filter_map(|row| match row {
-                PaneSectionRow::Pane(entry) => Some(entry.pane_id),
-                PaneSectionRow::LineSplit { .. } => None,
-            })
-            .collect();
-        // The agent's tab is represented by its agent row, so its shell sibling
-        // drops out; panes in other tabs are untouched.
-        assert!(!pane_ids.contains(&sibling));
-        assert!(pane_ids.contains(&other_tab_pane));
+    fn tab_entry(ws_idx: usize, tab_idx: usize, pane_id: PaneId) -> PaneSectionEntry {
+        PaneSectionEntry {
+            order_idx: 0,
+            ws_idx,
+            tab_idx,
+            pane_id,
+        }
     }
 
     #[test]
-    fn same_name_panes_in_one_tab_collapse_to_a_single_row() {
+    fn a_tab_with_any_agent_pane_is_an_agent_tab() {
+        let mut app = app_with_two_shell_panes();
+        let sibling = app.workspaces[0].test_split(Direction::Horizontal);
+        app.ensure_test_terminals();
+        app.reconcile_pane_section_order();
+        assert!(!tab_row_entries(&app, None)[&(0, 0)].1);
+
+        // One agent pane beside a plain shell pane still makes it an agent tab.
+        set_agent_pane(&mut app, 0, 0, sibling, AgentState::Working);
+        let (entry, is_agent) = &tab_row_entries(&app, None)[&(0, 0)];
+        assert!(is_agent);
+        assert_eq!(entry.state, AgentState::Working);
+        assert_eq!(entry.pane_id, sibling);
+    }
+
+    #[test]
+    fn a_multi_agent_tab_shows_the_most_urgent_status() {
         let mut app = app_with_two_shell_panes();
         let first = app.workspaces[0].tabs[0].root_pane;
         let second = app.workspaces[0].test_split(Direction::Horizontal);
         app.ensure_test_terminals();
         app.reconcile_pane_section_order();
-        assert_eq!(sidebar_pane_section_rows(&app).len(), 3);
+        set_agent_pane(&mut app, 0, 0, first, AgentState::Working);
+        set_agent_pane(&mut app, 0, 0, second, AgentState::Blocked);
 
-        for pane_id in [first, second] {
-            let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
-                .attached_terminal_id
-                .clone();
-            app.terminals
-                .get_mut(&terminal_id)
-                .expect("terminal")
-                .set_manual_label("shell".into());
-        }
-        // Both panes now look identical, so only the first keeps its row.
-        let rows = sidebar_pane_section_rows(&app);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(
-            rows.iter()
-                .filter(|row| matches!(row, PaneSectionRow::Pane(entry) if entry.ws_idx == 0))
-                .count(),
-            1
-        );
+        let (entry, _) = &tab_row_entries(&app, None)[&(0, 0)];
+        assert_eq!(entry.state, AgentState::Blocked);
+        assert_eq!(entry.pane_id, second);
 
-        // A distinguishable name brings the row back.
-        let terminal_id = app.workspaces[0].tabs[0].panes[&second]
-            .attached_terminal_id
-            .clone();
-        app.terminals
-            .get_mut(&terminal_id)
-            .expect("terminal")
-            .set_manual_label("logs".into());
-        assert_eq!(sidebar_pane_section_rows(&app).len(), 3);
+        // Working outranks a seen idle agent, so the row follows the agent that
+        // still has work in flight.
+        set_agent_pane(&mut app, 0, 0, second, AgentState::Idle);
+        let (entry, _) = &tab_row_entries(&app, None)[&(0, 0)];
+        assert_eq!(entry.state, AgentState::Working);
+        assert_eq!(entry.pane_id, first);
     }
 
     #[test]
-    fn pane_section_row_shows_pane_and_tab_name_together() {
+    fn a_plain_tab_row_keeps_its_icon_and_drops_its_status() {
         let mut app = app_with_two_shell_panes();
-        app.workspaces[0].tabs[0].set_custom_name("build".into());
+        app.sidebar_agents.rows = vec![vec![
+            crate::config::AgentSidebarToken::StateIcon,
+            crate::config::AgentSidebarToken::StateText,
+            crate::config::AgentSidebarToken::Workspace,
+        ]];
         let pane_id = app.workspaces[0].tabs[0].root_pane;
-        let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
-            .attached_terminal_id
-            .clone();
-        let ws = &app.workspaces[0];
-        assert_eq!(pane_section_row_name(&app, ws, pane_id, 0), "build");
+        let entry = tab_entry(0, 0, pane_id);
 
-        app.terminals
-            .get_mut(&terminal_id)
-            .expect("terminal")
-            .set_manual_label("logs".into());
-        let ws = &app.workspaces[0];
-        assert_eq!(pane_section_row_name(&app, ws, pane_id, 0), "logs • build");
+        let tabs = tab_row_entries(&app, None);
+        let rows = tab_row_token_rows(&app, &tabs, &entry);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0]
+            .iter()
+            .any(|token| matches!(token.kind, ResolvedTokenKind::StateIcon)));
+        assert!(!rows[0]
+            .iter()
+            .any(|token| matches!(token.kind, ResolvedTokenKind::StateText(_))));
+
+        // The same configured row keeps its status once the tab holds an agent.
+        set_agent_pane(&mut app, 0, 0, pane_id, AgentState::Blocked);
+        let tabs = tab_row_entries(&app, None);
+        let rows = tab_row_token_rows(&app, &tabs, &entry);
+        assert!(rows[0]
+            .iter()
+            .any(|token| matches!(token.kind, ResolvedTokenKind::StateText(_))));
+    }
+
+    #[test]
+    fn agent_and_plain_tab_rows_render_their_own_icons() {
+        let mut app = app_with_two_shell_panes();
+        let agent_pane = app.workspaces[0].tabs[0].root_pane;
+        set_agent_pane(&mut app, 0, 0, agent_pane, AgentState::Blocked);
+        app.reconcile_pane_section_order();
+
+        let area = Rect::new(0, 0, 26, 40);
+        let pane_area = pane_section_rect(area, 0.5, 0.5, true, SidebarSectionCollapse::default());
+        app.view.pane_section_row_areas = compute_pane_section_row_areas(&app, pane_area);
+        let mut terminal = Terminal::new(TestBackend::new(26, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_pane_section(&app, &TerminalRuntimeRegistry::new(), frame, pane_area)
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let rows: Vec<String> = app
+            .view
+            .pane_section_row_areas
+            .iter()
+            .map(|row| row_text(&buffer, row.rect.y, 26))
+            .collect();
+        // The agent tab takes the blocked status glyph; the plain tab takes the
+        // prompt icon and no status of its own.
+        assert!(rows
+            .iter()
+            .any(|row| row.trim_start().starts_with('\u{25cf}')));
+        assert!(rows
+            .iter()
+            .any(|row| row.trim_start().starts_with(PLAIN_TAB_ICON)));
     }
 
     #[test]
@@ -3171,10 +3266,7 @@ mod tests {
         let (_, panes, _) = sidebar_bands(&app, area);
         assert_eq!(panes.height, COLLAPSED_SECTION_ROWS);
         let header = row_text(&buffer, panes.y, 26);
-        assert!(
-            header.starts_with("\u{25b8} panes"),
-            "header was {header:?}"
-        );
+        assert!(header.starts_with("\u{25b8} tabs"), "header was {header:?}");
         // No pane rows are published for a collapsed band.
         assert!(compute_pane_section_row_areas(&app, panes).is_empty());
     }
@@ -3388,7 +3480,7 @@ mod tests {
         let rows = sidebar_pane_section_rows(&app);
         assert!(matches!(&rows[1], PaneSectionRow::LineSplit { name, .. } if name == "later"));
 
-        // Agent panes are not Panes-section rows.
+        // An agent tab keeps its row: the band lists every tab.
         let terminal_id = app.workspaces[1].tabs[0].panes[&second]
             .attached_terminal_id
             .clone();
@@ -3397,9 +3489,20 @@ mod tests {
             .expect("terminal")
             .detected_agent = Some(Agent::Pi);
         app.reconcile_pane_section_order();
-        assert!(!sidebar_pane_section_rows(&app)
+        assert!(sidebar_pane_section_rows(&app)
             .iter()
             .any(|row| matches!(row, PaneSectionRow::Pane(entry) if entry.pane_id == second)));
+
+        // Closing a space drops its row.
+        app.workspaces.remove(1);
+        app.reconcile_pane_section_order();
+        assert_eq!(
+            sidebar_pane_section_rows(&app)
+                .iter()
+                .filter(|row| matches!(row, PaneSectionRow::Pane(_)))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -3432,21 +3535,21 @@ mod tests {
         assert!(app.pane_section_row_at(split_row).is_none());
 
         for row in areas.iter().skip(1) {
-            let (order_idx, ws_idx, pane_id) = app
+            let (order_idx, ws_idx, tab_idx) = app
                 .pane_section_row_at(row.rect.y)
-                .expect("pane row hit-tests to its own rect");
+                .expect("tab row hit-tests to its own rect");
             assert_eq!(order_idx, row.order_idx);
-            assert_eq!(
+            assert_eq!(tab_idx, 0);
+            assert!(matches!(
+                row.content,
                 crate::app::state::PaneSectionRowContent::Pane {
-                    ws_idx,
+                    ws_idx: content_ws_idx,
                     tab_idx: 0,
-                    pane_id
-                },
-                row.content
-            );
+                    ..
+                } if content_ws_idx == ws_idx
+            ));
             let name = app.workspaces[ws_idx]
-                .tab_display_name(0)
-                .unwrap_or_default();
+                .display_name_from(&app.terminals, &TerminalRuntimeRegistry::new());
             assert!(row_text(&buffer, row.rect.y, 26).contains(&name));
         }
     }

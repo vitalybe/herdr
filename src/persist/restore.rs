@@ -644,7 +644,6 @@ fn restore_tab(
         let saved_managed_agent = saved_pane
             .and_then(|pane| pane.managed_agent_kind.as_deref())
             .and_then(crate::detect::parse_canonical_agent_label);
-        let saved_parent = saved_pane.and_then(|p| p.parent.clone());
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
         let saved_history =
@@ -718,9 +717,7 @@ fn restore_tab(
                     std::time::Instant::now(),
                 );
             }
-            let mut pane_state = PaneState::new(terminal_id);
-            pane_state.parent = saved_parent.clone();
-            panes.insert(*id, pane_state);
+            panes.insert(*id, PaneState::new(terminal_id));
             terminals.push(terminal);
             continue;
         }
@@ -819,9 +816,7 @@ fn restore_tab(
                         std::time::Instant::now(),
                     );
                 }
-                let mut pane_state = PaneState::new(terminal_id.clone());
-                pane_state.parent = saved_parent.clone();
-                panes.insert(*id, pane_state);
+                panes.insert(*id, PaneState::new(terminal_id.clone()));
                 terminal_runtimes.insert(terminal_id, runtime);
                 terminals.push(terminal);
             }
@@ -1353,7 +1348,6 @@ mod tests {
                             cwd,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
-                            parent: None,
                             managed_agent_kind: Some("opencode".into()),
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                                 source: "herdr:opencode".into(),
@@ -1377,7 +1371,6 @@ mod tests {
             sidebar_section_split: None,
             sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
-            collapsed_agent_keys: Default::default(),
             agent_manual_order: None,
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
@@ -1449,7 +1442,6 @@ mod tests {
                                 label: None,
                                 agent_name: None,
                                 managed_agent_kind: None,
-                                parent: None,
                                 agent_session: None,
                                 launch_argv: None,
                             },
@@ -1461,7 +1453,6 @@ mod tests {
                                 label: None,
                                 agent_name: None,
                                 managed_agent_kind: None,
-                                parent: None,
                                 agent_session: None,
                                 launch_argv: None,
                             },
@@ -1480,7 +1471,6 @@ mod tests {
             sidebar_section_split: None,
             sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
-            collapsed_agent_keys: Default::default(),
             agent_manual_order: None,
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
@@ -1522,7 +1512,6 @@ mod tests {
                     label: None,
                     agent_name: None,
                     managed_agent_kind: None,
-                    parent: None,
                     agent_session: None,
                     launch_argv: None,
                 },
@@ -1533,7 +1522,6 @@ mod tests {
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
             managed_agent_kind: None,
-            parent: None,
             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                 source: "herdr:codex".into(),
                 agent: "codex".into(),
@@ -1600,7 +1588,6 @@ mod tests {
             sidebar_section_split: None,
             sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
-            collapsed_agent_keys: Default::default(),
             agent_manual_order: None,
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
@@ -1699,7 +1686,6 @@ mod tests {
                             label: None,
                             agent_name: None,
                             managed_agent_kind: None,
-                            parent: None,
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                                 source: "herdr:codex".into(),
                                 agent: "codex".into(),
@@ -1722,7 +1708,6 @@ mod tests {
             sidebar_section_split: None,
             sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
-            collapsed_agent_keys: Default::default(),
             agent_manual_order: None,
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
@@ -1822,7 +1807,6 @@ mod tests {
                             label: None,
                             agent_name: None,
                             managed_agent_kind: None,
-                            parent: None,
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                                 source: "herdr:claude".into(),
                                 agent: "claude".into(),
@@ -1845,7 +1829,6 @@ mod tests {
             sidebar_section_split: None,
             sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
-            collapsed_agent_keys: Default::default(),
             agent_manual_order: None,
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
@@ -1974,7 +1957,6 @@ mod tests {
                 label: None,
                 agent_name: None,
                 managed_agent_kind: None,
-                parent: None,
                 agent_session: None,
                 launch_argv: None,
             },
@@ -2026,7 +2008,6 @@ mod tests {
             sidebar_section_split: Some(0.5),
             sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
-            collapsed_agent_keys: Default::default(),
             agent_manual_order: None,
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
@@ -2055,7 +2036,6 @@ mod tests {
                         label: None,
                         agent_name: None,
                         managed_agent_kind: None,
-                        parent: None,
                         agent_session: None,
                         launch_argv: None,
                     },
@@ -2067,7 +2047,6 @@ mod tests {
                         label: None,
                         agent_name: None,
                         managed_agent_kind: None,
-                        parent: None,
                         agent_session: None,
                         launch_argv: None,
                     },
@@ -2127,7 +2106,6 @@ mod tests {
                         label: None,
                         agent_name: None,
                         managed_agent_kind: None,
-                        parent: None,
                         agent_session: None,
                         launch_argv: None,
                     },

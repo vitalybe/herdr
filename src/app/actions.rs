@@ -1745,19 +1745,28 @@ impl AppState {
             return;
         }
 
-        // Genuinely new tabs go to the top of the list, keeping their natural
-        // relative order among themselves. Line-splits are left in place.
-        let mut insert_at = 0usize;
-        for tab_ref in &flat {
+        // A genuinely new tab lands beside its natural neighbour: right after the
+        // nearest preceding tab already in the order, or at the top when it has
+        // none. That way the slot a tab is created into - `tab.create` with an
+        // `index`, or the tab bar's append - is the slot its row takes here.
+        // Line-splits are left in place.
+        for (flat_idx, tab_ref) in flat.iter().enumerate() {
             if self.pane_section_order.known.contains(tab_ref) {
                 continue;
             }
-            let at = insert_at.min(self.pane_section_order.order.len());
+            let at = flat[..flat_idx]
+                .iter()
+                .rev()
+                .find_map(|preceding| {
+                    self.pane_section_order.order.iter().position(|entry| {
+                        matches!(entry, PaneManualEntry::Pane(existing) if existing == preceding)
+                    })
+                })
+                .map_or(0, |pos| pos + 1);
             self.pane_section_order
                 .order
                 .insert(at, PaneManualEntry::Pane(tab_ref.clone()));
             self.pane_section_order.known.insert(tab_ref.clone());
-            insert_at = at + 1;
         }
     }
 
@@ -4247,7 +4256,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_section_reconcile_seeds_natural_order_then_places_new_tabs_on_top() {
+    fn pane_section_reconcile_seeds_natural_order_then_places_new_tabs_beside_their_neighbour() {
         let mut state = app_with_workspaces(&["one", "two"]);
         state.reconcile_pane_section_order();
         let seeded = pane_section_tab_numbers(&state);
@@ -4262,13 +4271,14 @@ mod tests {
         state.reconcile_pane_section_order();
         assert_eq!(pane_section_tab_numbers(&state), seeded);
 
-        // A new tab is genuinely new, so it lands at the top of the order.
+        // A new tab is genuinely new, so it takes the slot next to the tab it
+        // was created after - here appended, so after its space's first tab.
         let new_tab = state.workspaces[0].test_add_tab(Some("later"));
         state.ensure_test_terminals();
         state.reconcile_pane_section_order();
         let new_number = state.workspaces[0].tabs[new_tab].number;
         assert_eq!(
-            pane_section_tab_numbers(&state)[0],
+            pane_section_tab_numbers(&state)[1],
             (state.workspaces[0].id.clone(), new_number)
         );
         assert_eq!(pane_section_tab_numbers(&state).len(), 3);
@@ -4277,6 +4287,18 @@ mod tests {
         assert!(state.workspaces[0].close_tab(new_tab));
         state.reconcile_pane_section_order();
         assert_eq!(pane_section_tab_numbers(&state), seeded);
+
+        // A tab created at the front of its space leads the band, which is what
+        // `tab.create --index 0` produces.
+        let front_tab = state.workspaces[0].test_add_tab(Some("first"));
+        assert!(state.workspaces[0].move_tab(front_tab, 0));
+        state.ensure_test_terminals();
+        state.reconcile_pane_section_order();
+        let front_number = state.workspaces[0].tabs[0].number;
+        assert_eq!(
+            pane_section_tab_numbers(&state)[0],
+            (state.workspaces[0].id.clone(), front_number)
+        );
         state.assert_invariants_for_test();
     }
 

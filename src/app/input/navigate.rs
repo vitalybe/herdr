@@ -303,6 +303,7 @@ impl App {
                                 cwd: None,
                                 focus: true,
                                 label: None,
+                                index: None,
                                 env: Default::default(),
                             },
                         );

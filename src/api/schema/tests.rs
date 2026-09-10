@@ -723,6 +723,7 @@ fn worktree_request_and_response_round_trip() {
             tab: TabInfo {
                 tab_id: "w_1:1".into(),
                 workspace_id: "w_1".into(),
+                index: 0,
                 number: 1,
                 label: "herdr".into(),
                 focused: true,
@@ -1151,6 +1152,7 @@ fn create_response_round_trips_with_root_pane() {
             tab: TabInfo {
                 tab_id: "w_1:2".into(),
                 workspace_id: "w_1".into(),
+                index: 0,
                 number: 2,
                 label: "review".into(),
                 focused: false,

@@ -1037,6 +1037,12 @@
             "focused": {
               "type": "boolean"
             },
+            "index": {
+              "description": "Current position of the tab in its workspace. Changes when tabs are\ncreated, moved, or closed around it.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
             "label": {
               "type": "string"
             },
@@ -1060,6 +1066,7 @@
           "required": [
             "tab_id",
             "workspace_id",
+            "index",
             "number",
             "label",
             "focused",
@@ -4066,6 +4073,15 @@
             "focus": {
               "default": false,
               "type": "boolean"
+            },
+            "index": {
+              "description": "Position the new tab takes in the workspace. Defaults to the end.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "label": {
               "type": [
@@ -9896,6 +9912,12 @@
             "focused": {
               "type": "boolean"
             },
+            "index": {
+              "description": "Current position of the tab in its workspace. Changes when tabs are\ncreated, moved, or closed around it.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
             "label": {
               "type": "string"
             },
@@ -9919,6 +9941,7 @@
           "required": [
             "tab_id",
             "workspace_id",
+            "index",
             "number",
             "label",
             "focused",

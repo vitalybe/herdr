@@ -334,6 +334,7 @@ impl App {
         Some(crate::api::schema::TabInfo {
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             workspace_id: self.public_workspace_id(ws_idx),
+            index: tab_idx,
             number: tab.number,
             label: ws.tab_display_name(tab_idx)?,
             focused: self.state.active == Some(ws_idx) && ws.active_tab == tab_idx,

@@ -149,14 +149,14 @@ Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree cr
 
 ```bash
 herdr tab list [--workspace <workspace_id>]
-herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--index N] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
 herdr tab close <tab_id>
 ```
 
-A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action. If `confirm_close` is enabled and closing the tab would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
+A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. `--index N` places the new tab at position `N` in the workspace instead of at the end; `N` may be anything from `0` up to the current tab count, and anything larger is rejected. Every `tab` object carries the tab's current position as `.index`, so a pane can read its own tab's position with `herdr tab get $HERDR_TAB_ID`. That position moves as tabs around it are created, reordered, or closed, so read it when you need it rather than caching it. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action. If `confirm_close` is enabled and closing the tab would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
 
 Workspace and tab creation, and pane splitting, leave focus unchanged by default. `--focus` selects the new layout; `--no-focus` states the default explicitly. Without `--cwd`, new terminals follow the configured `terminal.new_cwd` policy, which follows the source pane or workspace by default. Each `--env KEY=VALUE` adds or replaces that variable in the new root shell.
 

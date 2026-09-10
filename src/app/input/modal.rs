@@ -1292,6 +1292,7 @@ impl App {
                         cwd: None,
                         focus: true,
                         label,
+                        index: None,
                         env: Default::default(),
                     },
                 );

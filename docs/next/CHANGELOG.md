@@ -3,9 +3,11 @@
 ## Unreleased
 
 ### Added
+- `tab create` now takes `--index N`, placing the new tab at that position in the workspace instead of at the end, and every tab object reports its current position as `index`, so a pane can read its own tab's position with `herdr tab get $HERDR_TAB_ID`.
 - Custom themes can now define separate light and dark color overrides when automatic theme switching is enabled. (#837, thanks @aneym)
 
 ### Fixed
+- New tabs now appear in the sidebar Tabs band beside the tab they were created next to instead of always at the top of the band.
 - Running named servers now activate remote agent-detection manifests downloaded by another server, preventing stale agent states and `agent explain` output until restart. (#2711)
 - New lifecycle event subscriptions now stream only events emitted after subscription begins instead of replaying retained history. (#1270)
 - Windows users whose endpoint security blocks the fileless PowerShell install command can now use a local `install.cmd` bootstrap; installer downloads use `curl.exe` while preserving package checksum verification. (#2751)

@@ -50,6 +50,7 @@ impl App {
             cwd,
             focus,
             label,
+            index: insert_index,
             env,
         } = params;
         let ws_idx = if let Some(workspace_id) = workspace_id {
@@ -62,6 +63,19 @@ impl App {
         } else {
             return encode_error(id, "workspace_not_found", "no active workspace");
         };
+        // Bounds are checked against the pre-create tab count, so `index` names a
+        // slot in the workspace as the caller sees it, and a bad index fails
+        // before a PTY is spawned.
+        if let Some(insert_index) = insert_index {
+            let tab_count = self.state.workspaces[ws_idx].tabs.len();
+            if insert_index > tab_count {
+                return encode_error(
+                    id,
+                    "tab_create_failed",
+                    format!("index {insert_index} is out of bounds"),
+                );
+            }
+        }
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
             self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
         });
@@ -95,6 +109,19 @@ impl App {
             Ok((tab_idx, terminal, runtime)) => {
                 self.terminal_runtimes.insert(terminal.id.clone(), runtime);
                 self.state.terminals.insert(terminal.id.clone(), terminal);
+                // The tab is always appended first; `index` then slots it into
+                // place through the same reorder the tab bar and drag use.
+                let tab_idx = match insert_index {
+                    Some(insert_index) => {
+                        self.state.workspaces[ws_idx].move_tab(tab_idx, insert_index);
+                        if self.state.active == Some(ws_idx) {
+                            self.state.tab_scroll_follow_active = true;
+                            self.state.refresh_tab_bar_view();
+                        }
+                        insert_index
+                    }
+                    None => tab_idx,
+                };
                 self.state.remove_alias_shadowed_by_new_pane(
                     self.state.workspaces[ws_idx].tabs[tab_idx].root_pane,
                 );
@@ -491,6 +518,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tab_create_index_places_the_tab_and_rejects_an_out_of_range_slot() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(&Config::default(), true, None, api_rx, event_hub);
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        let mut workspace = Workspace::test_new("tabs");
+        workspace.test_add_tab(Some("two"));
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+
+        let response = app.handle_tab_create(
+            "req".into(),
+            TabCreateParams {
+                workspace_id: None,
+                cwd: None,
+                focus: false,
+                label: Some("wedged".into()),
+                index: Some(1),
+                env: Default::default(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabCreated { tab, .. } = success.result else {
+            panic!("expected a created tab");
+        };
+        // The label and the reported index follow the tab to its requested slot.
+        assert_eq!(tab.index, 1);
+        assert_eq!(tab.label, "wedged");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 3);
+        assert_eq!(app.tab_info(0, 1).unwrap().tab_id, tab.tab_id);
+
+        // Past the end of the workspace is an error, and creates nothing.
+        let response = app.handle_tab_create(
+            "req".into(),
+            TabCreateParams {
+                workspace_id: None,
+                cwd: None,
+                focus: false,
+                label: None,
+                index: Some(9),
+                env: Default::default(),
+            },
+        );
+        assert!(response.contains("tab_create_failed"), "{response}");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 3);
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
     async fn tab_create_follows_cached_focused_pane_cwd_without_runtime() {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -517,6 +597,7 @@ mod tests {
                 cwd: None,
                 focus: false,
                 label: None,
+                index: None,
                 env: Default::default(),
             },
         );

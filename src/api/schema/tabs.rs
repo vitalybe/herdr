@@ -14,6 +14,9 @@ pub struct TabCreateParams {
     pub focus: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Position the new tab takes in the workspace. Defaults to the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
 }
@@ -40,6 +43,9 @@ pub struct TabMoveParams {
 pub struct TabInfo {
     pub tab_id: String,
     pub workspace_id: String,
+    /// Current position of the tab in its workspace. Changes when tabs are
+    /// created, moved, or closed around it.
+    pub index: usize,
     pub number: usize,
     pub label: String,
     pub focused: bool,

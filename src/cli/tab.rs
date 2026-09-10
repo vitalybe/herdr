@@ -55,6 +55,7 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
     let mut cwd = None;
     let mut focus = false;
     let mut label = None;
+    let mut insert_index = None;
     let mut env = HashMap::new();
 
     let mut index = 0;
@@ -82,6 +83,18 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
                     return Ok(2);
                 };
                 label = Some(value.clone());
+                index += 2;
+            }
+            "--index" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --index");
+                    return Ok(2);
+                };
+                let Ok(value) = value.parse::<usize>() else {
+                    eprintln!("invalid value for --index: {value}");
+                    return Ok(2);
+                };
+                insert_index = Some(value);
                 index += 2;
             }
             "--focus" => {
@@ -119,6 +132,7 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
         cwd,
         focus,
         label,
+        index: insert_index,
         env,
     })
 }
@@ -178,7 +192,7 @@ fn print_tab_help() {
     eprintln!("herdr tab commands:");
     eprintln!("  herdr tab list [--workspace <workspace_id>]");
     eprintln!(
-        "  herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]"
+        "  herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--index N] [--env KEY=VALUE] [--focus] [--no-focus]"
     );
     eprintln!("  herdr tab get <tab_id>");
     eprintln!("  herdr tab focus <tab_id>");

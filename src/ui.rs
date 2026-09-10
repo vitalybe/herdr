@@ -23,9 +23,8 @@ mod text;
 mod widgets;
 
 use self::dialogs::{
-    render_confirm_agent_reparent_overlay, render_confirm_close_overlay,
-    render_new_linked_worktree_overlay, render_open_existing_worktree_overlay,
-    render_remove_worktree_overlay, render_rename_overlay,
+    render_confirm_close_overlay, render_new_linked_worktree_overlay,
+    render_open_existing_worktree_overlay, render_remove_worktree_overlay, render_rename_overlay,
 };
 use self::keybind_help::render_keybind_help_overlay;
 use self::menus::{
@@ -66,11 +65,11 @@ pub(crate) use self::tab_surface::{
 use self::tabs::render_tab_bar;
 pub(crate) use self::{
     dialogs::{
-        agent_reparent_button_rects, agent_reparent_popup_rect, confirm_close_button_rects,
-        confirm_close_popup_rect, new_linked_worktree_button_rects, new_linked_worktree_inner_rect,
-        open_existing_worktree_button_rects, open_existing_worktree_inner_rect,
-        open_existing_worktree_max_visible_rows, open_existing_worktree_visible_start,
-        remove_worktree_button_rects, remove_worktree_popup_rect, rename_button_rects,
+        confirm_close_button_rects, confirm_close_popup_rect, new_linked_worktree_button_rects,
+        new_linked_worktree_inner_rect, open_existing_worktree_button_rects,
+        open_existing_worktree_inner_rect, open_existing_worktree_max_visible_rows,
+        open_existing_worktree_visible_start, remove_worktree_button_rects,
+        remove_worktree_popup_rect, rename_button_rects,
     },
     settings::{
         settings_button_rects, settings_popup_height, settings_show_primary_action,
@@ -92,7 +91,6 @@ pub(crate) use self::{
         workspace_group_chevron_rect, workspace_list_entries, workspace_list_entries_expanded,
         workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
         AgentPanelEntry, AgentPanelRow, AgentPanelRowArea, SidebarBand, WorkspaceListEntry,
-        AGENT_TREE_INDENT,
     },
 };
 
@@ -475,9 +473,6 @@ pub fn render_with_runtime_registry(
         Mode::Resize => render_resize_overlay(app, frame, mode_bar_area),
         Mode::ConfirmClose => {
             render_confirm_close_overlay(app, terminal_runtimes, frame, terminal_area)
-        }
-        Mode::ConfirmAgentReparent => {
-            render_confirm_agent_reparent_overlay(app, frame, terminal_area)
         }
         Mode::ContextMenu => {
             render_context_menu(app, frame);

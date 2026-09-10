@@ -1619,6 +1619,27 @@ impl App {
                 ContextMenuKind::Pane {
                     ws_idx, pane_id, ..
                 },
+                Some("Convert to tab"),
+            ) => {
+                if let Some(pane_id) = self.public_pane_id(ws_idx, pane_id) {
+                    self.runtime_pane_move(
+                        "tui.pane.convert_to_tab",
+                        crate::api::schema::PaneMoveParams {
+                            pane_id,
+                            destination: crate::api::schema::PaneMoveDestination::NewTab {
+                                workspace_id: None,
+                                label: None,
+                            },
+                            focus: true,
+                        },
+                    );
+                }
+                self.state.mode = Mode::Terminal;
+            }
+            (
+                ContextMenuKind::Pane {
+                    ws_idx, pane_id, ..
+                },
                 Some("Close pane"),
             ) => {
                 self.focus_pane_internal_via_api(ws_idx, pane_id);
@@ -2480,6 +2501,67 @@ mod tests {
         assert_eq!(state.mode, Mode::Navigate);
     }
 
+    fn pane_menu(pane_id: crate::layout::PaneId, can_convert_to_tab: bool) -> ContextMenuState {
+        ContextMenuState {
+            kind: ContextMenuKind::Pane {
+                ws_idx: 0,
+                tab_idx: 0,
+                pane_id,
+                source_pane_id: None,
+                has_manual_label: false,
+                right_click_passthrough: false,
+                can_convert_to_tab,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        }
+    }
+
+    #[test]
+    fn convert_to_tab_is_offered_only_when_the_pane_shares_its_tab() {
+        let pane_id = crate::layout::PaneId::from_raw(1);
+        assert!(!pane_menu(pane_id, false)
+            .items()
+            .contains(&"Convert to tab"));
+        assert!(pane_menu(pane_id, true).items().contains(&"Convert to tab"));
+    }
+
+    #[tokio::test]
+    async fn convert_to_tab_moves_the_pane_into_a_tab_of_its_own() {
+        let mut app = app_with_test_workspaces(&["main"]);
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let moved = app.state.workspaces[0].test_split(Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+
+        let menu = pane_menu(moved, true);
+        let idx = menu
+            .items()
+            .iter()
+            .position(|item| *item == "Convert to tab")
+            .unwrap();
+        app.apply_context_menu_action_via_api(menu, idx);
+
+        // The pane leaves its split for a new tab in the same space, and focus
+        // follows it.
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.tabs.len(), 2);
+        assert_eq!(ws.tabs[0].layout.pane_count(), 1);
+        assert!(ws.tabs[0].panes.contains_key(&root));
+        let new_tab = ws
+            .tabs
+            .iter()
+            .position(|tab| tab.panes.contains_key(&moved))
+            .expect("moved pane has a tab");
+        assert_ne!(new_tab, 0);
+        assert_eq!(ws.tabs[new_tab].layout.pane_count(), 1);
+        assert_eq!(ws.active_tab_index(), new_tab);
+        assert_eq!(ws.focused_pane_id(), Some(moved));
+        assert_eq!(app.state.mode, Mode::Terminal);
+        app.state.assert_invariants_for_test();
+    }
+
     #[test]
     fn context_menu_toggles_pane_right_click_passthrough() {
         let mut app = app_with_test_workspaces(&["main"]);
@@ -2493,6 +2575,7 @@ mod tests {
                 source_pane_id: None,
                 has_manual_label: false,
                 right_click_passthrough: false,
+                can_convert_to_tab: false,
             },
             x: 0,
             y: 0,
@@ -2541,6 +2624,7 @@ mod tests {
                 source_pane_id: None,
                 has_manual_label: false,
                 right_click_passthrough: false,
+                can_convert_to_tab: false,
             },
             x: 0,
             y: 0,
@@ -2607,6 +2691,7 @@ mod tests {
                 source_pane_id: None,
                 has_manual_label: false,
                 right_click_passthrough: false,
+                can_convert_to_tab: false,
             },
             x: 0,
             y: 0,

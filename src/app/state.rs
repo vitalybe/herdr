@@ -1657,6 +1657,9 @@ pub enum ContextMenuKind {
         source_pane_id: Option<PaneId>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+        /// True when the pane shares its tab with other panes and the tab is not
+        /// zoomed, so moving it into a tab of its own is a real change.
+        can_convert_to_tab: bool,
     },
     /// Right-click menu for a named line-split divider row in either the agents
     /// band (manual mode only) or the panes band.
@@ -1705,6 +1708,7 @@ impl ContextMenuState {
                 source_pane_id,
                 has_manual_label,
                 right_click_passthrough,
+                can_convert_to_tab,
                 ..
             } => {
                 let mut items = vec!["Rename pane"];
@@ -1715,6 +1719,9 @@ impl ContextMenuState {
                     items.push("Swap with focused pane");
                 }
                 items.extend(["Split right", "Split down", "Zoom"]);
+                if can_convert_to_tab {
+                    items.push("Convert to tab");
+                }
                 items.push(if right_click_passthrough {
                     "Use Herdr right-click menu"
                 } else {

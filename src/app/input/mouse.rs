@@ -1303,6 +1303,13 @@ impl AppState {
                         .is_some();
                     let right_click_passthrough =
                         pane_state.is_some_and(|pane| pane.right_click_passthrough);
+                    // Breaking a pane out is only meaningful when the tab holds
+                    // more than one, and pane.move leaves a zoomed tab alone.
+                    let can_convert_to_tab = self
+                        .workspaces
+                        .get(ws_idx)
+                        .and_then(|ws| ws.tabs.get(tab_idx))
+                        .is_some_and(|tab| !tab.zoomed && tab.layout.pane_count() > 1);
                     self.context_menu = Some(ContextMenuState {
                         kind: ContextMenuKind::Pane {
                             ws_idx,
@@ -1311,6 +1318,7 @@ impl AppState {
                             source_pane_id,
                             has_manual_label,
                             right_click_passthrough,
+                            can_convert_to_tab,
                         },
                         x: mouse.column,
                         y: mouse.row,
@@ -3892,6 +3900,7 @@ mod tests {
                 source_pane_id: None,
                 has_manual_label: false,
                 right_click_passthrough: false,
+                can_convert_to_tab: false,
             },
             x: 2,
             y: 2,

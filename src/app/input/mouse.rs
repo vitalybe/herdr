@@ -18,9 +18,8 @@ use crate::{
 use super::WheelRouting;
 use super::{
     modal::{
-        agent_reparent_accept, agent_reparent_cancel, apply_global_menu_action,
-        confirm_close_cancel, global_menu_actions, leave_modal, modal_action_from_buttons,
-        open_agent_reparent_confirm, open_global_menu, open_new_tab_dialog, ModalAction,
+        apply_global_menu_action, confirm_close_cancel, global_menu_actions, leave_modal,
+        modal_action_from_buttons, open_global_menu, open_new_tab_dialog, ModalAction,
     },
     settings::SettingsAction,
     ScrollbarClickTarget, AGENT_DRAG_THRESHOLD, TAB_DRAG_THRESHOLD, WORKSPACE_DRAG_THRESHOLD,
@@ -257,31 +256,6 @@ impl AppState {
                             return Some(MouseAction::ConfirmCloseAccept);
                         }
                         Some(ModalAction::Cancel) | None => confirm_close_cancel(self),
-                        _ => {}
-                    }
-                    return None;
-                }
-
-                if self.mode == Mode::ConfirmAgentReparent {
-                    let popup = crate::ui::agent_reparent_popup_rect(self.view.terminal_area)
-                        .unwrap_or_default();
-                    let inner = Rect::new(
-                        popup.x + 1,
-                        popup.y + 1,
-                        popup.width.saturating_sub(2),
-                        popup.height.saturating_sub(2),
-                    );
-                    let (confirm, cancel) = crate::ui::agent_reparent_button_rects(inner);
-                    match modal_action_from_buttons(
-                        mouse.column,
-                        mouse.row,
-                        &[
-                            (confirm, ModalAction::Confirm),
-                            (cancel, ModalAction::Cancel),
-                        ],
-                    ) {
-                        Some(ModalAction::Confirm) => agent_reparent_accept(self),
-                        Some(ModalAction::Cancel) | None => agent_reparent_cancel(self),
                         _ => {}
                     }
                     return None;
@@ -732,18 +706,6 @@ impl AppState {
                         return None;
                     }
 
-                    // Collapse/expand glyph on a parent agent row toggles its
-                    // subtree. Applies in every sort mode and takes priority over
-                    // focus/drag on that cell.
-                    if let Some(key) = self.agent_panel_collapse_toggle_at(mouse.column, mouse.row)
-                    {
-                        if !self.collapsed_agent_keys.remove(&key) {
-                            self.collapsed_agent_keys.insert(key);
-                        }
-                        self.mark_session_dirty();
-                        return None;
-                    }
-
                     if matches!(self.agent_panel_sort, AgentPanelSort::Manual) {
                         if let Some(entry) = self.agent_panel_entry_ref_at_row(mouse.row) {
                             // Manual mode: record a press so a drag can promote to a
@@ -1126,16 +1088,6 @@ impl AppState {
                                 ..
                             },
                     }) => {
-                        // A drop that lands inside another parent's children band
-                        // (attach) or back at the top level (detach) changes the
-                        // agent's parent, which is confirmed via a modal. Anything
-                        // else is a plain reorder.
-                        if let Some(pending) =
-                            self.agent_reparent_intent_for_drop(source, insert_idx)
-                        {
-                            open_agent_reparent_confirm(self, pending);
-                            return None;
-                        }
                         return Some(MouseAction::MoveAgentEntry { source, insert_idx });
                     }
                     Some(DragState {

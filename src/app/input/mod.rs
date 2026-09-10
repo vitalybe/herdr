@@ -110,7 +110,6 @@ impl App {
                 Mode::ConfirmRemoveWorktree => self.handle_worktree_remove_key(key_event),
                 Mode::Resize => self.handle_resize_key_via_api(key),
                 Mode::ConfirmClose => self.handle_confirm_close_key_via_api(key_event),
-                Mode::ConfirmAgentReparent => self.handle_agent_reparent_key_via_api(key_event),
                 Mode::ContextMenu => {
                     self.handle_context_menu_key_via_api(key_event);
                 }
@@ -674,17 +673,6 @@ impl App {
             return false;
         }
 
-        // The collapse/expand glyph owns its cell: toggling a subtree twice in
-        // quick succession must not be read as a rename gesture.
-        if self
-            .state
-            .agent_panel_collapse_toggle_at(mouse.column, mouse.row)
-            .is_some()
-        {
-            self.last_agent_row_click = None;
-            return false;
-        }
-
         let Some((ws_idx, _tab_idx, pane_id)) = self
             .state
             .agent_detail_target_at(mouse.row)
@@ -1031,7 +1019,6 @@ fn capture_snapshot(state: &AppState) -> crate::persist::SessionSnapshot {
         state.sidebar_section_split,
         state.sidebar_pane_section_split,
         state.collapsed_space_keys.clone(),
-        state.collapsed_agent_keys.clone(),
         state.agent_manual_order.to_public_keys(&state.workspaces),
         state.collapsed_line_split_keys.clone(),
         state.pane_section_order.to_keys(),

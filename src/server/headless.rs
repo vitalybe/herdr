@@ -962,6 +962,21 @@ impl HeadlessServer {
             crate::render_prof::event("full_render_cause.deferred_new_tab");
         }
 
+        if self.app.state.request_scratch_terminal {
+            self.app.state.request_scratch_terminal = false;
+            self.app.toggle_scratch_popup();
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_scratch_terminal");
+        }
+
+        if self.app.state.request_scratch_terminal_to_tab {
+            self.app.state.request_scratch_terminal_to_tab = false;
+            if self.app.scratch_popup_to_tab() {
+                needs_render = true;
+                crate::render_prof::event("full_render_cause.deferred_scratch_terminal");
+            }
+        }
+
         if let Some(ws_idx) = self.app.state.request_new_linked_worktree.take() {
             self.app.open_new_linked_worktree_dialog(ws_idx);
             needs_render = true;
@@ -5653,6 +5668,32 @@ mod tests {
                 api::schema::EventKind::LayoutUpdated,
             ]
         );
+        shutdown_test_runtimes(&mut server);
+    }
+
+    #[tokio::test]
+    async fn headless_deferred_scratch_terminal_request_opens_popup() {
+        let mut server = test_headless_server();
+        server
+            .app
+            .create_workspace_with_options(std::env::temp_dir(), true)
+            .unwrap();
+
+        server.app.state.request_scratch_terminal = true;
+        assert!(server.handle_deferred_requests_headless());
+        assert!(!server.app.state.request_scratch_terminal);
+        assert!(server
+            .app
+            .state
+            .popup_pane
+            .as_ref()
+            .is_some_and(|popup| popup.scratch));
+
+        server.app.state.request_scratch_terminal = true;
+        assert!(server.handle_deferred_requests_headless());
+        assert!(server.app.state.popup_pane.is_none());
+        assert!(server.app.state.hidden_scratch_popup.is_some());
+
         shutdown_test_runtimes(&mut server);
     }
 

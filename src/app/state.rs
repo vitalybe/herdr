@@ -928,7 +928,6 @@ pub enum Mode {
     ConfirmRemoveWorktree,
     Resize,
     ConfirmClose,
-    ConfirmAgentReparent,
     ContextMenu,
     Settings,
     GlobalMenu,
@@ -1119,36 +1118,6 @@ pub(crate) enum ManualEntry {
 pub(crate) enum ManualEntryRef {
     Pane(PaneId),
     LineSplit(LineSplitId),
-}
-
-/// What a pending drag-to-reparent operation will do once confirmed. Attach the
-/// dragged agent under a parent, or detach it back to the top level.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentReparentAction {
-    SetParent {
-        parent_ws: usize,
-        parent_pane: PaneId,
-    },
-    ClearParent,
-}
-
-/// A drag-to-reparent operation awaiting confirmation in the
-/// [`Mode::ConfirmAgentReparent`] modal. Client-only presentation state; the
-/// resolved parent link it produces is the only runtime fact and is applied on
-/// confirm. Ephemeral, never persisted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PendingAgentReparent {
-    pub child_ws: usize,
-    pub child_pane: PaneId,
-    /// Display label of the dragged agent, for the modal prompt.
-    pub child_label: String,
-    /// Display label of the target parent (SetParent) or the current parent
-    /// being removed (ClearParent), for the modal prompt.
-    pub parent_label: String,
-    pub action: AgentReparentAction,
-    /// Mode to restore when the modal closes (a drag can start from Terminal or
-    /// Navigate).
-    pub return_mode: Mode,
 }
 
 /// Persistence-neutral projection of a manual-order entry. Panes are keyed by
@@ -1930,10 +1899,6 @@ pub struct AppState {
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
     pub collapsed_space_keys: std::collections::HashSet<String>,
-    /// Public pane ids (e.g. `"w1:p2"`) of agent-tree parents the user has
-    /// collapsed in the agents panel. Client-only TUI presentation state,
-    /// persisted like [`AppState::collapsed_space_keys`].
-    pub collapsed_agent_keys: std::collections::HashSet<String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1991,9 +1956,6 @@ pub struct AppState {
     pub agent_panel_sort: AgentPanelSort,
     /// Flat client-only manual ordering of agent panes (TUI presentation state).
     pub(crate) agent_manual_order: AgentManualOrder,
-    /// A drag-to-reparent operation awaiting confirmation. Set only while
-    /// `mode == Mode::ConfirmAgentReparent`.
-    pub(crate) pending_agent_reparent: Option<PendingAgentReparent>,
     pub status_indicators: crate::config::StatusIndicatorStyle,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
@@ -2127,25 +2089,6 @@ pub struct AppState {
 impl AppState {
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
-    }
-
-    /// Resolve a stable [`crate::pane::PaneParentRef`] to the live
-    /// `(ws_idx, PaneId)` of the parent pane, if it still exists. Returns `None`
-    /// when the referenced workspace or pane number is gone (e.g. the parent was
-    /// closed), which is how a child becomes a root in the agents-panel tree.
-    pub(crate) fn resolve_pane_parent(
-        &self,
-        parent: &crate::pane::PaneParentRef,
-    ) -> Option<(usize, PaneId)> {
-        let ws_idx = self
-            .workspaces
-            .iter()
-            .position(|ws| ws.id == parent.workspace_id)?;
-        let pane_id = self.workspaces[ws_idx]
-            .public_pane_numbers
-            .iter()
-            .find_map(|(pane_id, number)| (*number == parent.pane_number).then_some(*pane_id))?;
-        Some((ws_idx, pane_id))
     }
 
     /// Set the rename/name input text and place the caret at the end. Keeps
@@ -2422,7 +2365,6 @@ impl AppState {
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             collapsed_space_keys: std::collections::HashSet::new(),
-            collapsed_agent_keys: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -2488,7 +2430,6 @@ impl AppState {
             sidebar_section_split: 0.5,
             agent_panel_sort: AgentPanelSort::Spaces,
             agent_manual_order: AgentManualOrder::default(),
-            pending_agent_reparent: None,
             status_indicators: crate::config::StatusIndicatorStyle::Dots,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
@@ -2609,11 +2550,6 @@ impl AppState {
     }
 
     pub fn assert_invariants_for_test(&self) {
-        assert!(
-            self.pending_agent_reparent.is_none() || self.mode == Mode::ConfirmAgentReparent,
-            "pending agent reparent must only be set while the confirm modal is open"
-        );
-
         if self.workspaces.is_empty() {
             assert!(
                 self.active.is_none(),
@@ -3172,32 +3108,6 @@ mod tests {
             (a.max(b), a.min(b))
         };
         (lighter + 0.05) / (darker + 0.05)
-    }
-
-    #[test]
-    fn parent_link_on_adversarial_state_preserves_identity_invariants() {
-        let mut state = AppState::test_with_adversarial_identity_state();
-        // Link the newly split pane to the tab's root by stable public number,
-        // as `agent start --parent` does, against identity-scrambled state.
-        let ws = &mut state.workspaces[0];
-        let root = ws.tabs[ws.active_tab].root_pane;
-        let child = ws.test_split(ratatui::layout::Direction::Horizontal);
-        let parent_number = ws.public_pane_number(root).expect("root has number");
-        let workspace_id = ws.id.clone();
-        ws.pane_state_mut(child).expect("child pane").parent = Some(crate::pane::PaneParentRef {
-            workspace_id: workspace_id.clone(),
-            pane_number: parent_number,
-        });
-        state.ensure_test_terminals();
-
-        state.assert_invariants_for_test();
-
-        // The stable parent link resolves back to the root pane.
-        let parent_ref = crate::pane::PaneParentRef {
-            workspace_id,
-            pane_number: parent_number,
-        };
-        assert_eq!(state.resolve_pane_parent(&parent_ref), Some((0, root)));
     }
 
     #[test]

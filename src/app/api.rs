@@ -1065,17 +1065,11 @@ impl App {
             Method::TabClose(target) => return self.handle_tab_close(request.id, target),
             Method::AgentList(_) => return self.handle_agent_list(request.id),
             Method::AgentGet(target) => return self.handle_agent_get(request.id, target),
-            Method::AgentChildren(params) => {
-                return self.handle_agent_children(request.id, params);
-            }
             Method::AgentFocus(target) => return self.handle_agent_focus(request.id, target),
             Method::AgentRename(params) => return self.handle_agent_rename(request.id, params),
             Method::AgentViewSet(params) => return self.handle_agent_view_set(request.id, params),
             Method::AgentViewClear(params) => {
                 return self.handle_agent_view_clear(request.id, params)
-            }
-            Method::AgentSetParent(params) => {
-                return self.handle_agent_set_parent(request.id, params);
             }
             Method::AgentStart(params) => return self.handle_agent_start(request.id, params),
             Method::AgentPrompt(params) => return self.handle_agent_prompt(request.id, params),

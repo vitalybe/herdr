@@ -40,16 +40,12 @@ Landed on the upstream base:
 | Movable caret in rename dialogs | Caret moves by char/word, Home/End, insert and delete at the caret, CJK-safe. Merged with upstream's IME host-cursor anchoring: the frame carries the caret position only, so the host terminal's inverted cell *is* the caret. |
 | Undo close | Reopens the most recently closed tab or workspace (`keys.undo_close`, `prefix+u`), keeping it as the space's home tab. |
 | Tab naming from the agent session | A single-agent tab takes the agent's published session title, and a later session name supersedes a rename that came from tooling. Rides upstream's OSC-title tracker. The tab bar styles a tab by whether it carries a name at all (`Tab::is_numbered`), not by whether the name was typed, so an agent-named tab is not dimmed like a numbered one; named tabs use `palette.text`. In the sidebar, a `tab` token takes the row's name style rather than upstream's muted secondary style, keeping the fork's role table where a tab names an agents row. |
-| Agent parent/child links | `PaneState.parent`, persisted in the session snapshot and exposed as `parent` on the pane and agent JSON API. |
-| `herdr agent set-parent <target> <parent>` | Reparents a running agent; rejects self-parenting and cycles. |
-| `herdr agent children [target] [--recursive] [--json]` | Lists direct children or the whole descendant subtree in preorder. Target defaults to `$HERDR_PANE_ID`. |
 | Session navigator opens in search mode | Typing filters immediately. Escape returns to browse and keeps the query, which is upstream's tested behaviour. |
 | Workspace home tab | `Workspace::home_tab` is the tab a space returns to, so restore and space switching do not land on whatever agent tab was focused last. |
 | Agents panel row model | `AgentPanelRow` over upstream's entries, with one `compute_agent_panel_row_areas` consumed by both render and hit-testing. Upstream's token/height engine is unchanged underneath. |
 | Named line-splits | Divider rows a user can insert, rename, drag, and collapse. A collapsed divider hides its segment down to the next divider and shows the hidden row count. Both bands share one renderer, and collapse state is keyed by `LineSplitSection` so ids from the two counters cannot collide. |
 | Manual agent order | A `Manual` sort alongside upstream's sort orders, with drag-to-reorder, persisted per space. |
-| Agent parent/child tree in the sidebar | Indented children, collapsed-subtree summaries, `collapsed_agent_keys`, tree-order cycling, and drag-to-reparent with a confirm modal. |
-| Double-click rename | Double-clicking an agent row renames its tab; a click on a collapse glyph does not open the modal. |
+| Double-click rename | Double-clicking an agent row renames its tab. |
 | Sidebar panes band | A third band listing non-agent panes across spaces, with pane-and-tab naming, same-name collapsing within a tab, hide-non-agent-panes for tabs that already show agent rows, and `keys.previous_pane` / `keys.next_pane` cycling. |
 | Collapsible sidebar bands | Each band collapses to a header row; dividers stay draggable while a band is collapsed. |
 | Hide agent-only spaces | `experimental.hide_tabs_with_agents` hides agent-only spaces from the spaces list, the collapsed rail, and space navigation, and suppresses the space highlight while an agent tab is focused. Config-file only: upstream removed the Settings > Experiments section. |
@@ -82,6 +78,10 @@ Kept only in `backup/fork-pre-upstream-rebase`:
 - **Agent-panel row template language** — the fork itself reverted it (`c9f1727b`), and
   upstream's configurable sidebar tokens cover the same ground.
 - **Fork changelog entries** — `docs/next/CHANGELOG.md` follows upstream's releases.
+- **Agent parent/child links** - the `PaneState.parent` stable reference, its snapshot and
+  JSON API fields, `herdr agent set-parent`, `herdr agent children`, and the sidebar tree
+  (indentation, collapse glyph, subagent summary line, `collapsed_agent_keys`, and
+  drag-to-reparent with its confirm modal). Agent cycling and the manual order are flat.
 
 ### Tooling that depends on the dropped `agent start`
 

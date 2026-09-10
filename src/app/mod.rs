@@ -486,7 +486,6 @@ impl App {
             sidebar_width_source,
             sidebar_section_split,
             collapsed_space_keys,
-            collapsed_agent_keys,
             agent_manual_order,
             sidebar_pane_section_split,
             pane_section_order_keys,
@@ -500,7 +499,6 @@ impl App {
                 config.ui.sidebar_width,
                 state::SidebarWidthSource::ConfigDefault,
                 0.5_f32,
-                std::collections::HashSet::new(),
                 std::collections::HashSet::new(),
                 state::AgentManualOrder::default(),
                 0.5_f32,
@@ -543,7 +541,6 @@ impl App {
                     },
                     snap.sidebar_section_split.unwrap_or(0.5),
                     snap.collapsed_space_keys,
-                    snap.collapsed_agent_keys,
                     state::AgentManualOrder::default(),
                     snap.sidebar_pane_section_split.unwrap_or(0.5),
                     crate::persist::pane_section_order_keys(snap.pane_section_order.as_ref()),
@@ -567,7 +564,6 @@ impl App {
                     },
                     snap.sidebar_section_split.unwrap_or(0.5),
                     snap.collapsed_space_keys,
-                    snap.collapsed_agent_keys,
                     agent_manual_order,
                     snap.sidebar_pane_section_split.unwrap_or(0.5),
                     crate::persist::pane_section_order_keys(snap.pane_section_order.as_ref()),
@@ -583,7 +579,6 @@ impl App {
                 config.ui.sidebar_width,
                 state::SidebarWidthSource::ConfigDefault,
                 0.5_f32,
-                std::collections::HashSet::new(),
                 std::collections::HashSet::new(),
                 state::AgentManualOrder::default(),
                 0.5_f32,
@@ -688,7 +683,6 @@ impl App {
             worktree_remove: None,
             worktree_directory,
             collapsed_space_keys,
-            collapsed_agent_keys,
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -770,7 +764,6 @@ impl App {
             last_agent_focus: None,
             agent_panel_sort,
             agent_manual_order,
-            pending_agent_reparent: None,
             status_indicators: config.ui.status_indicators,
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),
@@ -1008,7 +1001,6 @@ impl App {
             app.state.sidebar_pane_section_split = split;
         }
         app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
-        app.state.collapsed_agent_keys = snapshot.collapsed_agent_keys.clone();
         app.state.collapsed_line_split_keys = snapshot.collapsed_line_split_keys.clone();
         app.state.agent_manual_order = restore_agent_manual_order(snapshot, &app.state.workspaces);
         app.state.pane_section_order = state::PaneSectionOrder::from_keys(
@@ -2084,9 +2076,6 @@ impl App {
             }
             Mode::ConfirmClose => {
                 self.handle_confirm_close_key_via_api(key_event);
-            }
-            Mode::ConfirmAgentReparent => {
-                self.handle_agent_reparent_key_via_api(key_event);
             }
             Mode::ContextMenu => {
                 self.handle_context_menu_key_via_api(key_event);
@@ -5039,257 +5028,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn agent_set_parent_assigns_changes_and_persists() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("agent-set-parent");
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
-
-        // An agent pane without spawning a process: a fresh tab whose terminal
-        // carries an agent name, which is what makes it an agent terminal.
-        let start = |app: &mut crate::app::App, name: &str| -> String {
-            let tab_idx = app.state.workspaces[0].test_add_tab(Some(name));
-            app.state.ensure_test_terminals();
-            let pane_id = app.state.workspaces[0].tabs[tab_idx].root_pane;
-            let terminal_id = app.state.workspaces[0].tabs[tab_idx].panes[&pane_id]
-                .attached_terminal_id
-                .clone();
-            app.state
-                .terminals
-                .get_mut(&terminal_id)
-                .expect("test terminal should exist")
-                .set_agent_name(name.into());
-            app.pane_info(0, pane_id).unwrap().pane_id
-        };
-
-        let set_parent =
-            |app: &mut crate::app::App, target: &str, parent: &str| -> serde_json::Value {
-                let response = app.handle_api_request(crate::api::schema::Request {
-                    id: "req_set_parent".into(),
-                    method: crate::api::schema::Method::AgentSetParent(
-                        crate::api::schema::AgentSetParentParams {
-                            target: target.into(),
-                            parent: parent.into(),
-                        },
-                    ),
-                });
-                serde_json::from_str(&response).unwrap()
-            };
-
-        let root = start(&mut app, "root");
-        let child = start(&mut app, "child");
-        let other = start(&mut app, "other");
-
-        // Successful reparent records the child's parent as root.
-        let resp = set_parent(&mut app, &child, &root);
-        assert_eq!(resp["result"]["type"], "agent_info");
-        assert_eq!(resp["result"]["agent"]["parent"], root);
-
-        // The child's PaneState now stores a parent link.
-        let has_parent_link = app.state.workspaces[0]
-            .tabs
-            .iter()
-            .flat_map(|tab| tab.panes.values())
-            .filter(|pane| pane.parent.is_some())
-            .count();
-        assert_eq!(has_parent_link, 1, "exactly one child stores a parent link");
-
-        // Reparenting an agent that already had a parent changes it.
-        let resp = set_parent(&mut app, &child, &other);
-        assert_eq!(resp["result"]["agent"]["parent"], other);
-
-        // Capture the raw child pane id and its expected parent ref for the
-        // snapshot roundtrip below.
-        let (child_raw, expected_ref) = app.state.workspaces[0]
-            .tabs
-            .iter()
-            .flat_map(|tab| tab.panes.iter())
-            .find_map(|(id, pane)| pane.parent.clone().map(|parent| (id.raw(), parent)))
-            .expect("child has a parent link");
-
-        // The reparent persists across a snapshot roundtrip.
-        let snap = crate::persist::capture(
-            &app.state.workspaces,
-            &app.state.terminals,
-            &app.terminal_runtimes,
-            app.state.active,
-            app.state.selected,
-            app.state.sidebar_width,
-            app.state.sidebar_section_split,
-            app.state.sidebar_pane_section_split,
-            app.state.collapsed_space_keys.clone(),
-            app.state.collapsed_agent_keys.clone(),
-            app.state
-                .agent_manual_order
-                .to_public_keys(&app.state.workspaces),
-            app.state.collapsed_line_split_keys.clone(),
-            app.state.pane_section_order.to_keys(),
-            app.state.sidebar_section_collapse(),
-        );
-        let json = serde_json::to_string(&snap).unwrap();
-        let parsed: crate::persist::SessionSnapshot = serde_json::from_str(&json).unwrap();
-        let restored = parsed.workspaces[0]
-            .tabs
-            .iter()
-            .find_map(|tab| tab.panes.get(&child_raw))
-            .expect("child pane persisted");
-        let restored_ref = restored.parent.as_ref().expect("parent link persisted");
-        assert_eq!(restored_ref.workspace_id, expected_ref.workspace_id);
-        assert_eq!(restored_ref.pane_number, expected_ref.pane_number);
-
-        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
-        for (_terminal_id, runtime) in runtimes {
-            runtime.shutdown();
-        }
-    }
-
-    #[tokio::test]
-    async fn agent_set_parent_rejects_bad_targets_self_and_cycle() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("agent-set-parent-errors");
-        let plain_root = workspace.tabs[0].root_pane;
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
-
-        // The original workspace pane is a plain (non-agent) terminal.
-        let plain_pane = app.pane_info(0, plain_root).unwrap().pane_id;
-
-        // An agent pane without spawning a process: a fresh tab whose terminal
-        // carries an agent name, which is what makes it an agent terminal.
-        let start = |app: &mut crate::app::App, name: &str| -> String {
-            let tab_idx = app.state.workspaces[0].test_add_tab(Some(name));
-            app.state.ensure_test_terminals();
-            let pane_id = app.state.workspaces[0].tabs[tab_idx].root_pane;
-            let terminal_id = app.state.workspaces[0].tabs[tab_idx].panes[&pane_id]
-                .attached_terminal_id
-                .clone();
-            app.state
-                .terminals
-                .get_mut(&terminal_id)
-                .expect("test terminal should exist")
-                .set_agent_name(name.into());
-            app.pane_info(0, pane_id).unwrap().pane_id
-        };
-
-        let set_parent =
-            |app: &mut crate::app::App, target: &str, parent: &str| -> serde_json::Value {
-                let response = app.handle_api_request(crate::api::schema::Request {
-                    id: "req_set_parent".into(),
-                    method: crate::api::schema::Method::AgentSetParent(
-                        crate::api::schema::AgentSetParentParams {
-                            target: target.into(),
-                            parent: parent.into(),
-                        },
-                    ),
-                });
-                serde_json::from_str(&response).unwrap()
-            };
-
-        let root = start(&mut app, "root");
-        let child = start(&mut app, "child");
-        let grandchild = start(&mut app, "grandchild");
-
-        // Build a chain root -> child -> grandchild.
-        assert_eq!(
-            set_parent(&mut app, &child, &root)["result"]["type"],
-            "agent_info"
-        );
-        assert_eq!(
-            set_parent(&mut app, &grandchild, &child)["result"]["type"],
-            "agent_info"
-        );
-
-        // Child target does not resolve.
-        let missing_child = set_parent(&mut app, "w9:pZ", &root);
-        assert_eq!(missing_child["error"]["code"], "agent_not_found");
-
-        // Parent target does not resolve.
-        let missing_parent = set_parent(&mut app, &child, "w9:pZ");
-        assert_eq!(missing_parent["error"]["code"], "agent_parent_not_found");
-
-        // An agent cannot be its own parent.
-        let self_parent = set_parent(&mut app, &root, &root);
-        assert_eq!(self_parent["error"]["code"], "agent_set_parent_self");
-
-        // Assigning a descendant as parent would create a cycle.
-        let cycle = set_parent(&mut app, &root, &grandchild);
-        assert_eq!(cycle["error"]["code"], "agent_set_parent_cycle");
-
-        // A non-agent pane cannot be a parent, nor can a non-agent be a child.
-        let parent_not_agent = set_parent(&mut app, &child, &plain_pane);
-        assert_eq!(
-            parent_not_agent["error"]["code"],
-            "agent_set_parent_parent_not_agent"
-        );
-        let child_not_agent = set_parent(&mut app, &plain_pane, &root);
-        assert_eq!(
-            child_not_agent["error"]["code"],
-            "agent_set_parent_target_not_agent"
-        );
-
-        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
-        for (_terminal_id, runtime) in runtimes {
-            runtime.shutdown();
-        }
-    }
-
-    #[test]
-    fn pane_close_request_closes_only_the_target_tab_when_other_tabs_exist() {
-        let mut app = test_app();
-        let mut workspace = Workspace::test_new("api-pane-close");
-        let second_tab = workspace.test_add_tab(Some("logs"));
-        workspace.switch_tab(second_tab);
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
-
-        let target_pane = app.state.workspaces[0].tabs[second_tab].root_pane;
-        let target_pane_id = app.pane_info(0, target_pane).unwrap().pane_id;
-
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req_pane_close".into(),
-            method: crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
-                pane_id: target_pane_id,
-            }),
-        });
-        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
-
-        assert_eq!(response["result"]["type"], "ok");
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
-        assert_eq!(app.state.workspaces[0].display_name(), "api-pane-close");
-    }
-
-    #[test]
-    fn pane_close_request_closes_workspace_when_it_removes_the_last_pane() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("api-pane-close-last");
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
-
-        let target_pane = app.state.workspaces[0].tabs[0].root_pane;
-        let target_pane_id = app.pane_info(0, target_pane).unwrap().pane_id;
-
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req_pane_close_last".into(),
-            method: crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
-                pane_id: target_pane_id,
-            }),
-        });
-        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
-
-        assert_eq!(response["result"]["type"], "ok");
-        assert!(app.state.workspaces.is_empty());
-    }
-
     #[test]
     fn pane_close_request_requires_confirmation_before_closing_parent_worktree_group() {
         let mut app = test_app();
@@ -7048,7 +6786,6 @@ last_pane = "prefix+tab"
             sidebar_section_split: None,
             sidebar_pane_section_split: None,
             collapsed_space_keys: Default::default(),
-            collapsed_agent_keys: Default::default(),
             agent_manual_order: None,
             collapsed_line_split_keys: Default::default(),
             pane_section_order: None,
@@ -7109,7 +6846,6 @@ last_pane = "prefix+tab"
             26,
             0.4,
             0.25,
-            Default::default(),
             Default::default(),
             Vec::new(),
             std::collections::HashSet::from(["panes:0".to_string()]),

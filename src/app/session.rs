@@ -61,7 +61,6 @@ impl App {
                 self.state.sidebar_section_split,
                 self.state.sidebar_pane_section_split,
                 self.state.collapsed_space_keys.clone(),
-                self.state.collapsed_agent_keys.clone(),
                 agent_manual_order_keys,
                 self.state.collapsed_line_split_keys.clone(),
                 self.state.pane_section_order.to_keys(),

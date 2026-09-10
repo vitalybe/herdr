@@ -107,8 +107,6 @@ pub enum Method {
     AgentList(EmptyParams),
     #[serde(rename = "agent.get")]
     AgentGet(AgentTarget),
-    #[serde(rename = "agent.children")]
-    AgentChildren(AgentChildrenParams),
     #[serde(rename = "agent.read")]
     AgentRead(AgentReadParams),
     #[serde(rename = "agent.explain")]
@@ -121,8 +119,6 @@ pub enum Method {
     AgentViewSet(AgentViewSetParams),
     #[serde(rename = "agent.view.clear")]
     AgentViewClear(AgentViewClearParams),
-    #[serde(rename = "agent.set_parent")]
-    AgentSetParent(AgentSetParentParams),
     #[serde(rename = "agent.focus")]
     AgentFocus(AgentTarget),
     #[serde(rename = "agent.start")]

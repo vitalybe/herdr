@@ -476,10 +476,6 @@ pub struct PaneInfo {
     pub agent_session: Option<AgentSessionInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<PaneScrollInfo>,
-    /// Public pane id (e.g. `"w1:p2"`) of this pane's parent agent, when it was
-    /// recorded as a child with `agent set-parent`. Absent for root agents.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<String>,
     pub revision: u64,
 }
 

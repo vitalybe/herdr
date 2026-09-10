@@ -161,27 +161,6 @@ pub enum AgentViewSortOrder {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentSetParentParams {
-    /// Target of the agent whose parent is being set (terminal id, public pane
-    /// id like `"w1:p2"`, or agent name).
-    pub target: String,
-    /// Target of the agent to record as `target`'s parent, resolved with the
-    /// same rules. Assigns or changes the parent link; it never clears it.
-    pub parent: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentChildrenParams {
-    /// Target of the agent whose children to list (terminal id, public pane id
-    /// like `"w1:p2"`, or agent name).
-    pub target: String,
-    /// When true, return the whole descendant subtree in preorder (children,
-    /// their children, and so on); otherwise return only the direct children.
-    #[serde(default)]
-    pub recursive: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentStartParams {
     pub name: String,
     pub kind: String,
@@ -240,10 +219,6 @@ pub struct AgentInfo {
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
-    /// Public pane id (e.g. `"w1:p2"`) of this agent's parent, when it was
-    /// recorded as a child with `agent set-parent`. Absent for root agents.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<String>,
     pub revision: u64,
 }
 

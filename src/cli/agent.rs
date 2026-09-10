@@ -1,10 +1,9 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    AgentChildrenParams, AgentPromptParams, AgentPromptWaitOptions, AgentReadParams,
-    AgentRenameParams, AgentSendKeysParams, AgentSetParentParams, AgentStartParams, AgentTarget,
-    AgentWaitParams, EmptyParams, Method, PaneProcessInfoParams, PaneTarget, ReadFormat,
-    ReadSource, Request,
+    AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
+    AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitParams, EmptyParams, Method,
+    PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -19,12 +18,10 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
     match subcommand {
         "list" => agent_list(&args[1..]),
         "get" => agent_get(&args[1..]),
-        "children" => agent_children(&args[1..]),
         "read" => agent_read(&args[1..]),
         "send-keys" => agent_send_keys(&args[1..]),
         "prompt" => agent_prompt(&args[1..]),
         "rename" => agent_rename(&args[1..]),
-        "set-parent" => agent_set_parent(&args[1..]),
         "focus" => agent_focus(&args[1..]),
         "wait" => agent_wait(&args[1..]),
         "attach" => agent_attach(&args[1..]),
@@ -454,111 +451,6 @@ fn agent_get(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
-const AGENT_CHILDREN_USAGE: &str =
-    "usage: herdr agent children [target] [--recursive] [--json]  (target defaults to $HERDR_PANE_ID)";
-
-enum AgentChildrenOutcome {
-    Run {
-        target: String,
-        recursive: bool,
-        json: bool,
-    },
-    Help,
-    Usage,
-}
-
-/// Parse `agent children` args, defaulting the target to the caller's pane
-/// (`env_pane_id`, from `$HERDR_PANE_ID`) when no target is given so the command
-/// can be run from inside a pane without repeating its id.
-fn resolve_agent_children(args: &[String], env_pane_id: Option<&str>) -> AgentChildrenOutcome {
-    let mut target = None;
-    let mut recursive = false;
-    let mut json = false;
-
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--recursive" => {
-                recursive = true;
-                index += 1;
-            }
-            "--json" => {
-                json = true;
-                index += 1;
-            }
-            "help" | "--help" | "-h" => {
-                eprintln!("{AGENT_CHILDREN_USAGE}");
-                return AgentChildrenOutcome::Help;
-            }
-            other if other.starts_with('-') => {
-                eprintln!("unknown option: {other}");
-                return AgentChildrenOutcome::Usage;
-            }
-            other => {
-                if target.is_some() {
-                    eprintln!("{AGENT_CHILDREN_USAGE}");
-                    return AgentChildrenOutcome::Usage;
-                }
-                target = Some(other.to_owned());
-                index += 1;
-            }
-        }
-    }
-
-    let target = target
-        .or_else(|| env_pane_id.map(str::to_owned))
-        .filter(|value| !value.trim().is_empty());
-    let Some(target) = target else {
-        eprintln!("{AGENT_CHILDREN_USAGE}");
-        return AgentChildrenOutcome::Usage;
-    };
-
-    AgentChildrenOutcome::Run {
-        target,
-        recursive,
-        json,
-    }
-}
-
-fn agent_children(args: &[String]) -> std::io::Result<i32> {
-    let env_pane_id = std::env::var("HERDR_PANE_ID")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let (target, recursive, json) = match resolve_agent_children(args, env_pane_id.as_deref()) {
-        AgentChildrenOutcome::Run {
-            target,
-            recursive,
-            json,
-        } => (target, recursive, json),
-        AgentChildrenOutcome::Help => return Ok(0),
-        AgentChildrenOutcome::Usage => return Ok(2),
-    };
-
-    let response = super::send_request(&Request {
-        id: "cli:agent:children".into(),
-        method: Method::AgentChildren(AgentChildrenParams { target, recursive }),
-    })?;
-
-    if json {
-        return super::print_response(&response);
-    }
-
-    if response.get("error").is_some() {
-        eprintln!("{}", serde_json::to_string(&response).unwrap());
-        return Ok(1);
-    }
-
-    // Default output: one public pane id per child, ready for shell loops.
-    if let Some(agents) = response["result"]["agents"].as_array() {
-        for agent in agents {
-            if let Some(pane_id) = agent["pane_id"].as_str() {
-                println!("{pane_id}");
-            }
-        }
-    }
-    Ok(0)
-}
-
 fn agent_focus(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!("usage: herdr agent focus <target>");
@@ -934,21 +826,6 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
     super::print_response(&response)
 }
 
-fn agent_set_parent(args: &[String]) -> std::io::Result<i32> {
-    if args.len() != 2 {
-        eprintln!("usage: herdr agent set-parent <target> <parent>");
-        return Ok(2);
-    }
-
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:set-parent".into(),
-        method: Method::AgentSetParent(AgentSetParentParams {
-            target: args[0].clone(),
-            parent: args[1].clone(),
-        }),
-    })?)
-}
-
 fn agent_send_keys(args: &[String]) -> std::io::Result<i32> {
     if args.len() < 2 {
         eprintln!("usage: herdr agent send-keys <target> <key> [key ...]");
@@ -1032,12 +909,10 @@ fn print_agent_help() {
     eprintln!("herdr agent commands:");
     eprintln!("  herdr agent list");
     eprintln!("  herdr agent get <target>");
-    eprintln!("  herdr agent children [target] [--recursive] [--json]");
     eprintln!("  herdr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]");
     eprintln!("  herdr agent send-keys <target> <key> [key ...]");
     eprintln!("  herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent rename <target> <name>|--clear");
-    eprintln!("  herdr agent set-parent <target> <parent>");
     eprintln!("  herdr agent focus <target>");
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
@@ -1057,78 +932,4 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
         eprintln!("{err}");
         2
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{agent_set_parent, resolve_agent_children, AgentChildrenOutcome};
-
-    #[test]
-    fn set_parent_requires_two_positional_args() {
-        // No args, a single arg, and too many args all fail usage before any
-        // request is sent, returning the usage exit code.
-        assert_eq!(agent_set_parent(&[]).unwrap(), 2);
-        assert_eq!(agent_set_parent(&["w1:p1".into()]).unwrap(), 2);
-        assert_eq!(
-            agent_set_parent(&["w1:p1".into(), "w1:p2".into(), "extra".into()]).unwrap(),
-            2
-        );
-    }
-
-    #[test]
-    fn children_rejects_unknown_flag_and_extra_positional() {
-        // Unknown flag and a second positional both fail usage.
-        assert!(matches!(
-            resolve_agent_children(&["w1:p1".into(), "--nope".into()], None),
-            AgentChildrenOutcome::Usage
-        ));
-        assert!(matches!(
-            resolve_agent_children(&["w1:p1".into(), "w1:p2".into()], None),
-            AgentChildrenOutcome::Usage
-        ));
-    }
-
-    #[test]
-    fn children_requires_target_when_no_env_pane() {
-        // With no target and no $HERDR_PANE_ID, usage fails.
-        assert!(matches!(
-            resolve_agent_children(&[], None),
-            AgentChildrenOutcome::Usage
-        ));
-    }
-
-    #[test]
-    fn children_defaults_target_to_env_pane() {
-        // No positional target falls back to the caller's pane; flags still parse.
-        let outcome = resolve_agent_children(&["--recursive".into()], Some("w14:pC"));
-        match outcome {
-            AgentChildrenOutcome::Run {
-                target,
-                recursive,
-                json,
-            } => {
-                assert_eq!(target, "w14:pC");
-                assert!(recursive);
-                assert!(!json);
-            }
-            _ => panic!("expected Run"),
-        }
-    }
-
-    #[test]
-    fn children_explicit_target_overrides_env_pane() {
-        let outcome = resolve_agent_children(&["w1:p1".into(), "--json".into()], Some("w14:pC"));
-        match outcome {
-            AgentChildrenOutcome::Run {
-                target,
-                recursive,
-                json,
-            } => {
-                assert_eq!(target, "w1:p1");
-                assert!(!recursive);
-                assert!(json);
-            }
-            _ => panic!("expected Run"),
-        }
-    }
 }

@@ -60,6 +60,7 @@ impl App {
             cwd,
             extra_env,
             geometry,
+            false,
             |pane_id, rows, cols, cwd, launch_env, app| {
                 TerminalRuntime::spawn_shell_command(
                     pane_id,
@@ -92,6 +93,7 @@ impl App {
             cwd,
             extra_env,
             geometry,
+            false,
             |pane_id, rows, cols, cwd, launch_env, app| {
                 TerminalRuntime::spawn_argv_command(
                     pane_id,
@@ -118,6 +120,7 @@ impl App {
         cwd: Option<PathBuf>,
         extra_env: Vec<(String, String)>,
         geometry: PopupGeometry,
+        scratch: bool,
         spawn: F,
     ) -> std::io::Result<()>
     where
@@ -153,7 +156,14 @@ impl App {
         let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let pane_id = PaneId::alloc();
         let terminal_id = TerminalId::alloc();
-        let launch_env = PaneLaunchEnv::from_extra(extra_env).without_pane_identity();
+        // The scratch terminal can be promoted into a real pane, so it keeps its
+        // pane identity; command popups stay anonymous.
+        let launch_env = PaneLaunchEnv::from_extra(extra_env);
+        let launch_env = if scratch {
+            launch_env
+        } else {
+            launch_env.without_pane_identity()
+        };
         let terminal_area = if self.state.view.terminal_area.width >= 4
             && self.state.view.terminal_area.height >= 4
         {
@@ -181,9 +191,153 @@ impl App {
             terminal_id,
             width: geometry.width,
             height: geometry.height,
+            scratch,
         });
         self.state.mode = Mode::Terminal;
         Ok(())
+    }
+
+    /// Show the session scratch terminal, or hide it when it is already up.
+    /// The terminal keeps running while hidden, so reopening keeps its history.
+    pub(crate) fn toggle_scratch_popup(&mut self) {
+        if self.hide_scratch_popup() {
+            return;
+        }
+        if self.state.popup_pane.is_some() {
+            return;
+        }
+        if let Some(popup) = self.state.hidden_scratch_popup.take() {
+            if self.terminal_runtimes.get(&popup.terminal_id).is_some() {
+                self.state.popup_pane = Some(popup);
+                self.state.mode = Mode::Terminal;
+                self.render_dirty.request_generic();
+                self.render_notify.notify_one();
+                return;
+            }
+            self.state.terminals.remove(&popup.terminal_id);
+        }
+        if let Err(err) = self.spawn_scratch_popup() {
+            tracing::warn!(err = %err, "failed to open scratch terminal");
+        }
+    }
+
+    /// Hide a visible scratch terminal without ending its process.
+    pub(crate) fn hide_scratch_popup(&mut self) -> bool {
+        if !self
+            .state
+            .popup_pane
+            .as_ref()
+            .is_some_and(|popup| popup.scratch)
+        {
+            return false;
+        }
+        let Some(popup) = self.state.popup_pane.take() else {
+            return false;
+        };
+        self.state
+            .direct_attach_resize_locks
+            .remove(&popup.terminal_id);
+        self.state.hidden_scratch_popup = Some(popup);
+        self.state.mode = if self.state.active.is_some() {
+            Mode::Terminal
+        } else {
+            Mode::Navigate
+        };
+        self.render_dirty.request_generic();
+        self.render_notify.notify_one();
+        true
+    }
+
+    /// Move the scratch terminal into a tab of its own, keeping its history.
+    /// The next toggle then starts a fresh scratch terminal.
+    pub(crate) fn scratch_popup_to_tab(&mut self) -> bool {
+        let Some(ws_idx) = self.state.active else {
+            return false;
+        };
+        let popup = if self
+            .state
+            .popup_pane
+            .as_ref()
+            .is_some_and(|popup| popup.scratch)
+        {
+            self.state.popup_pane.take()
+        } else {
+            self.state.hidden_scratch_popup.take()
+        };
+        let Some(popup) = popup else {
+            return false;
+        };
+        self.state
+            .direct_attach_resize_locks
+            .remove(&popup.terminal_id);
+        if self.terminal_runtimes.get(&popup.terminal_id).is_none() {
+            self.state.terminals.remove(&popup.terminal_id);
+            return false;
+        }
+        let moved = crate::workspace::MovedPane {
+            pane_id: popup.pane_id,
+            pane_state: crate::pane::PaneState::new(popup.terminal_id),
+        };
+        let tab_idx = self.state.workspaces[ws_idx].create_tab_from_existing_pane(
+            moved,
+            None,
+            self.event_tx.clone(),
+            self.render_notify.clone(),
+            self.render_dirty.clone(),
+        );
+        self.state.workspaces[ws_idx].active_tab = tab_idx;
+        self.state.mode = Mode::Terminal;
+        self.state.mark_session_dirty();
+        self.schedule_session_save();
+        self.render_dirty.request_generic();
+        self.render_notify.notify_one();
+        true
+    }
+
+    /// Drop the hidden scratch terminal once its process is gone.
+    pub(crate) fn discard_hidden_scratch_popup(&mut self, pane_id: PaneId) -> bool {
+        let Some(popup) = self
+            .state
+            .hidden_scratch_popup
+            .take_if(|popup| popup.pane_id == pane_id)
+        else {
+            return false;
+        };
+        self.state
+            .direct_attach_resize_locks
+            .remove(&popup.terminal_id);
+        self.state.terminals.remove(&popup.terminal_id);
+        self.shutdown_terminal_runtime(popup.terminal_id);
+        true
+    }
+
+    fn spawn_scratch_popup(&mut self) -> std::io::Result<()> {
+        self.spawn_popup_command(
+            None,
+            Vec::new(),
+            PopupGeometry::default(),
+            true,
+            |pane_id, rows, cols, cwd, launch_env, app| {
+                TerminalRuntime::spawn(
+                    pane_id,
+                    rows,
+                    cols,
+                    cwd,
+                    app.state.pane_scrollback_limit_bytes,
+                    app.state.host_terminal_theme,
+                    app.state.host_terminal_appearance,
+                    crate::pane::PaneShellConfig::new(
+                        &app.state.default_shell,
+                        app.state.shell_mode,
+                    ),
+                    launch_env,
+                    app.event_tx.clone(),
+                    app.render_notify.clone(),
+                    app.render_dirty.clone(),
+                )
+                .map(|runtime| (runtime, None))
+            },
+        )
     }
 }
 
@@ -205,6 +359,7 @@ impl App {
             terminal_id: terminal_id.clone(),
             width: None,
             height: None,
+            scratch: false,
         });
         (pane_id, terminal_id)
     }
@@ -236,8 +391,89 @@ mod tests {
             terminal_id,
             width: None,
             height: None,
+            scratch: false,
         });
         app
+    }
+
+    fn app_with_scratch_popup() -> (App, PaneId, TerminalId) {
+        let mut app = app_with_popup();
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(40, 12);
+        let (pane_id, terminal_id) = app.install_test_popup_runtime(runtime);
+        if let Some(popup) = app.state.popup_pane.as_mut() {
+            popup.scratch = true;
+        }
+        (app, pane_id, terminal_id)
+    }
+
+    #[tokio::test]
+    async fn scratch_popup_hides_and_reopens_with_the_same_terminal() {
+        let (mut app, _pane_id, terminal_id) = app_with_scratch_popup();
+
+        assert!(app.hide_scratch_popup());
+        assert!(app.state.popup_pane.is_none());
+        assert_eq!(
+            app.state
+                .hidden_scratch_popup
+                .as_ref()
+                .map(|popup| popup.terminal_id.clone()),
+            Some(terminal_id.clone())
+        );
+        assert!(app.state.terminals.contains_key(&terminal_id));
+
+        app.toggle_scratch_popup();
+
+        assert_eq!(
+            app.state
+                .popup_pane
+                .as_ref()
+                .map(|popup| popup.terminal_id.clone()),
+            Some(terminal_id)
+        );
+        assert!(app.state.hidden_scratch_popup.is_none());
+    }
+
+    #[tokio::test]
+    async fn scratch_popup_to_tab_keeps_the_running_terminal() {
+        let (mut app, pane_id, terminal_id) = app_with_scratch_popup();
+        let tabs_before = app.state.workspaces[0].tabs.len();
+
+        assert!(app.scratch_popup_to_tab());
+
+        assert!(app.state.popup_pane.is_none());
+        assert!(app.state.hidden_scratch_popup.is_none());
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.tabs.len(), tabs_before + 1);
+        assert_eq!(ws.active_tab, ws.tabs.len() - 1);
+        assert_eq!(
+            ws.tabs[ws.active_tab].panes[&pane_id].attached_terminal_id,
+            terminal_id
+        );
+        assert!(app.terminal_runtimes.get(&terminal_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn scratch_popup_to_tab_leaves_the_next_toggle_a_fresh_terminal() {
+        let (mut app, _pane_id, terminal_id) = app_with_scratch_popup();
+        assert!(app.hide_scratch_popup());
+
+        assert!(app.scratch_popup_to_tab());
+
+        assert!(app.state.hidden_scratch_popup.is_none());
+        assert_ne!(
+            app.state.workspaces[0].tabs.len(),
+            0,
+            "converted tab should exist"
+        );
+        assert!(app
+            .state
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.tabs.iter())
+            .any(|tab| tab
+                .panes
+                .values()
+                .any(|pane| pane.attached_terminal_id == terminal_id)));
     }
 
     #[test]

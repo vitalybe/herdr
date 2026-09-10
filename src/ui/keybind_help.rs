@@ -139,6 +139,11 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
             keybind_label(&kb.undo_close),
             "reopen closed tab / workspace",
         ),
+        help_entry(keybind_label(&kb.scratch_terminal), "scratch terminal"),
+        help_entry(
+            keybind_label(&kb.scratch_terminal_to_tab),
+            "scratch terminal to tab",
+        ),
     ];
     groups.push(("workspaces / tabs", workspace_tab));
 

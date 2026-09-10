@@ -4,6 +4,7 @@
 
 ### Added
 - `tab create` now takes `--index N`, placing the new tab at that position in the workspace instead of at the end, and every tab object reports its current position as `index`, so a pane can read its own tab's position with `herdr tab get $HERDR_TAB_ID`.
+- A scratch terminal modal opens with `ctrl+backtick`, starts in the focused pane's working directory, hides with Escape without ending its shell, and can be moved into a tab of its own with `ctrl+shift+backtick`.
 - Custom themes can now define separate light and dark color overrides when automatic theme switching is enabled. (#837, thanks @aneym)
 
 ### Fixed

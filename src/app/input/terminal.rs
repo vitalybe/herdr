@@ -27,6 +27,11 @@ fn is_modifier_only_key(code: &KeyCode) -> bool {
     matches!(code, KeyCode::Modifier(_))
 }
 
+fn is_escape(key: &TerminalKey) -> bool {
+    let key = key.as_key_event();
+    key.code == KeyCode::Esc && key.modifiers.is_empty()
+}
+
 impl App {
     #[cfg(test)]
     pub(crate) fn handle_terminal_key_headless(
@@ -238,6 +243,34 @@ impl App {
     fn prepare_popup_key_forward(&mut self, key: TerminalKey) -> PreparedPopupInput {
         if self.state.popup_pane.is_none() {
             return PreparedPopupInput::NotOpen;
+        }
+        // The scratch terminal is the one popup the user drives by hand: it
+        // swallows every other key, so its own bindings are matched here.
+        if self
+            .state
+            .popup_pane
+            .as_ref()
+            .is_some_and(|popup| popup.scratch)
+        {
+            if is_escape(&key)
+                || self
+                    .state
+                    .keybinds
+                    .scratch_terminal
+                    .matches_direct_key(&key)
+            {
+                self.hide_scratch_popup();
+                return PreparedPopupInput::Consumed;
+            }
+            if self
+                .state
+                .keybinds
+                .scratch_terminal_to_tab
+                .matches_direct_key(&key)
+            {
+                self.scratch_popup_to_tab();
+                return PreparedPopupInput::Consumed;
+            }
         }
         let Some(terminal_id) = self
             .state
@@ -1650,6 +1683,55 @@ mod tests {
                 .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
                 .map(|metrics| metrics.offset_from_bottom),
             Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn scratch_popup_hides_on_escape_instead_of_forwarding_it() {
+        let mut app = app_for_mouse_test();
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(40, 12);
+        let (_pane_id, terminal_id) = app.install_test_popup_runtime(runtime);
+        if let Some(popup) = app.state.popup_pane.as_mut() {
+            popup.scratch = true;
+        }
+
+        app.handle_terminal_key_headless(TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()));
+
+        assert!(rx.try_recv().is_err());
+        assert!(app.state.popup_pane.is_none());
+        assert_eq!(
+            app.state
+                .hidden_scratch_popup
+                .as_ref()
+                .map(|popup| popup.terminal_id.clone()),
+            Some(terminal_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn scratch_popup_to_tab_chord_works_while_the_modal_is_open() {
+        let mut app = app_for_mouse_test();
+        app.state.keybinds = crate::config::Config::default().keybinds();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("scratch")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(40, 12);
+        let (pane_id, terminal_id) = app.install_test_popup_runtime(runtime);
+        if let Some(popup) = app.state.popup_pane.as_mut() {
+            popup.scratch = true;
+        }
+
+        app.handle_terminal_key_headless(TerminalKey::new(
+            KeyCode::Char('`'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+
+        assert!(app.state.popup_pane.is_none());
+        assert!(app.state.hidden_scratch_popup.is_none());
+        let ws = &app.state.workspaces[0];
+        assert_eq!(
+            ws.tabs[ws.active_tab].panes[&pane_id].attached_terminal_id,
+            terminal_id
         );
     }
 

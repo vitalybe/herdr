@@ -1007,6 +1007,18 @@
           "description": "Show agent labels in split pane borders when no manual pane label is set."
         },
         {
+          "key": "ui.scratch_terminal_width",
+          "type": "cells or percent string",
+          "default": "50%",
+          "description": "Scratch terminal width, as a number of columns or a percentage string like \"80%\"."
+        },
+        {
+          "key": "ui.scratch_terminal_height",
+          "type": "cells or percent string",
+          "default": "50%",
+          "description": "Scratch terminal height, as a number of rows or a percentage string like \"80%\"."
+        },
+        {
           "key": "ui.hide_tab_bar_when_single_tab",
           "type": "boolean",
           "default": "false",

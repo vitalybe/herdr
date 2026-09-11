@@ -271,6 +271,16 @@ The scratch terminal receives all terminal input except its own bindings, and
 Escape dismisses it rather than reaching the shell, so full-screen programs that
 rely on Escape belong in a pane or a popup command instead.
 
+The modal is centred and takes half the terminal in each direction. Size it with
+`ui.scratch_terminal_width` and `ui.scratch_terminal_height`, as a number of
+cells or a percentage string:
+
+```toml
+[ui]
+scratch_terminal_width = "80%"
+scratch_terminal_height = "80%"
+```
+
 ## Theme
 
 Choose a built-in theme:

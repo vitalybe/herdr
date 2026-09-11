@@ -1,6 +1,8 @@
 use std::{collections::BTreeSet, num::NonZeroUsize};
 
 use crossterm::event::KeyModifiers;
+
+use crate::popup_size::PopupSize;
 use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
@@ -919,6 +921,10 @@ pub struct UiConfig {
     pub pane_gaps: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
+    /// Scratch terminal width as cells or a percentage string. Default: half the terminal.
+    pub scratch_terminal_width: Option<PopupSize>,
+    /// Scratch terminal height as cells or a percentage string. Default: half the terminal.
+    pub scratch_terminal_height: Option<PopupSize>,
     /// Hide the tab row when the workspace has one tab. Default: false.
     pub hide_tab_bar_when_single_tab: bool,
     /// Desktop tab row placement. Default: top.
@@ -1164,6 +1170,8 @@ impl Default for UiConfig {
             pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
+            scratch_terminal_width: None,
+            scratch_terminal_height: None,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),
@@ -1440,6 +1448,8 @@ status_indicators = "symbols"
         assert!(default_config.ui.pane_outer_borders);
         assert!(default_config.ui.pane_scrollbars);
         assert!(default_config.ui.pane_gaps);
+        assert_eq!(default_config.ui.scratch_terminal_width, None);
+        assert_eq!(default_config.ui.scratch_terminal_height, None);
         assert!(!default_config.ui.show_agent_labels_on_pane_borders);
         assert!(!default_config.ui.hide_tab_bar_when_single_tab);
         assert_eq!(
@@ -1456,6 +1466,8 @@ pane_outer_borders = false
 pane_scrollbars = false
 pane_gaps = true
 show_agent_labels_on_pane_borders = true
+scratch_terminal_width = "80%"
+scratch_terminal_height = 30
 hide_tab_bar_when_single_tab = true
 tab_bar_position = "bottom"
 tab_bar_right = [
@@ -1468,6 +1480,14 @@ tab_bar_right = [
 tab_bar_right_separator = " · "
 "#;
         let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.ui.scratch_terminal_width,
+            Some(crate::popup_size::PopupSize::Percent(80))
+        );
+        assert_eq!(
+            config.ui.scratch_terminal_height,
+            Some(crate::popup_size::PopupSize::Cells(30))
+        );
         assert!(!config.ui.pane_borders);
         assert!(!config.ui.pane_outer_borders);
         assert!(!config.ui.pane_scrollbars);

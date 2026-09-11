@@ -874,6 +874,7 @@ fn restore_tab(
             crate::workspace::Tab {
                 custom_name: snap.custom_name.clone(),
                 auto_name: snap.auto_name.clone(),
+                created_name: snap.created_name.clone(),
                 number,
                 root_pane,
                 layout,
@@ -1340,6 +1341,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     auto_name: None,
+                    created_name: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -1427,6 +1429,7 @@ mod tests {
                 next_public_tab_number: 6,
                 tabs: vec![TabSnapshot {
                     auto_name: None,
+                    created_name: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -1544,6 +1547,7 @@ mod tests {
                 tabs: vec![
                     TabSnapshot {
                         auto_name: None,
+                        created_name: None,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
@@ -1553,6 +1557,7 @@ mod tests {
                     },
                     TabSnapshot {
                         auto_name: None,
+                        created_name: None,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
@@ -1562,6 +1567,7 @@ mod tests {
                     },
                     TabSnapshot {
                         auto_name: None,
+                        created_name: None,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
@@ -1571,6 +1577,7 @@ mod tests {
                     },
                     TabSnapshot {
                         auto_name: None,
+                        created_name: None,
                         custom_name: None,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
@@ -1636,6 +1643,7 @@ mod tests {
             next_public_tab_number: 0,
             tabs: vec![TabSnapshot {
                 auto_name: None,
+                created_name: None,
                 custom_name: None,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -1677,6 +1685,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     auto_name: None,
+                    created_name: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -1798,6 +1807,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     auto_name: None,
+                    created_name: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
@@ -1992,6 +2002,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     auto_name: None,
+                    created_name: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes,
@@ -2021,6 +2032,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let tab = TabSnapshot {
             auto_name: None,
+            created_name: None,
             custom_name: Some("logs".into()),
             layout: LayoutSnapshot::Split {
                 direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -2097,6 +2109,7 @@ mod tests {
             next_public_tab_number: 2,
             tabs: vec![TabSnapshot {
                 auto_name: None,
+                created_name: None,
                 custom_name: None,
                 layout: LayoutSnapshot::Pane(10),
                 panes: HashMap::from([(

@@ -517,6 +517,7 @@ impl Workspace {
             tab.custom_name
                 .clone()
                 .or_else(|| tab.auto_name.clone())
+                .or_else(|| tab.created_name.clone())
                 .unwrap_or_else(|| (tab_idx + 1).to_string()),
         )
     }
@@ -1304,6 +1305,7 @@ impl Workspace {
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new(terminal_id));
         let tab = Tab {
+            created_name: None,
             custom_name: None,
             auto_name: None,
             number: 1,
@@ -1362,6 +1364,7 @@ impl Workspace {
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new(TerminalId::alloc()));
         let tab = Tab {
+            created_name: None,
             custom_name: name.map(str::to_string),
             auto_name: None,
             number: self.next_public_tab_number,
@@ -1859,6 +1862,22 @@ mod tests {
         assert_eq!(ws.tabs[2].root_pane, moved_root);
         assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
         ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn unnamed_tab_shows_its_creation_time_instead_of_its_position() {
+        let mut ws = Workspace::test_new("test");
+        let idx = ws.test_add_tab(None);
+        assert_eq!(ws.tab_display_name(idx).as_deref(), Some("2"));
+
+        ws.tabs[idx].created_name = Some("09:41".into());
+        assert_eq!(ws.tab_display_name(idx).as_deref(), Some("09:41"));
+
+        // Anything that actually names the tab still wins.
+        ws.tabs[idx].set_auto_name("agent-session".into());
+        assert_eq!(ws.tab_display_name(idx).as_deref(), Some("agent-session"));
+        ws.tabs[idx].set_custom_name("renamed".into());
+        assert_eq!(ws.tab_display_name(idx).as_deref(), Some("renamed"));
     }
 
     #[test]

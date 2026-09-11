@@ -13,6 +13,12 @@ use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, Term
 
 pub(crate) type DetachedPane = (PaneId, TerminalId);
 
+/// `hh:mm` in local time, the label a tab falls back to before anything names it.
+fn created_name_now() -> Option<String> {
+    let now = crate::platform::local_datetime()?;
+    Some(format!("{:02}:{:02}", now.hour(), now.minute()))
+}
+
 pub(crate) struct MovedPane {
     pub pane_id: PaneId,
     pub pane_state: PaneState,
@@ -40,6 +46,9 @@ pub struct Tab {
     /// Session name published by the tab's only agent, used as the tab's label
     /// until the tab is renamed by hand. A manual `custom_name` always wins.
     pub auto_name: Option<String>,
+    /// Clock label (`hh:mm`) stamped when the tab was created, shown instead of
+    /// the tab's position while nothing has named it. Any real name wins.
+    pub created_name: Option<String>,
     pub number: usize,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -185,6 +194,7 @@ impl Tab {
             Self {
                 custom_name: None,
                 auto_name: None,
+                created_name: created_name_now(),
                 number,
                 root_pane: root_id,
                 layout,
@@ -503,6 +513,7 @@ impl Tab {
         Self {
             custom_name,
             auto_name: None,
+            created_name: created_name_now(),
             number,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),

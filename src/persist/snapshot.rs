@@ -171,6 +171,8 @@ pub struct TabSnapshot {
     pub custom_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_name: Option<String>,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -233,6 +235,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
         let tab = TabSnapshot {
             custom_name: None,
             auto_name: None,
+            created_name: None,
             layout: snap.layout,
             panes: snap.panes,
             zoomed: snap.zoomed,
@@ -603,6 +606,7 @@ fn capture_tab(
     }
     TabSnapshot {
         custom_name: tab.custom_name.clone(),
+        created_name: tab.created_name.clone(),
         auto_name: tab.auto_name.clone(),
         layout: capture_node(tab.layout.root()),
         panes,
@@ -915,6 +919,7 @@ mod tests {
                 next_public_tab_number: 2,
                 tabs: vec![TabSnapshot {
                     auto_name: None,
+                    created_name: None,
                     custom_name: Some("api".to_string()),
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
@@ -1541,6 +1546,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     auto_name: None,
+                    created_name: None,
                     custom_name: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,

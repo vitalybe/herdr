@@ -315,7 +315,7 @@ impl App {
         self.spawn_popup_command(
             None,
             Vec::new(),
-            PopupGeometry::default(),
+            self.state.scratch_terminal_size,
             true,
             |pane_id, rows, cols, cwd, launch_env, app| {
                 TerminalRuntime::spawn(

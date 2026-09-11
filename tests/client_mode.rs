@@ -1037,7 +1037,7 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
         &serde_json::json!({
             "id": "second-tab",
             "method": "tab.create",
-            "params": {"workspace_id": workspace_id, "focus": true},
+            "params": {"workspace_id": workspace_id, "focus": true, "label": "tab-b"},
         })
         .to_string(),
     );
@@ -1046,7 +1046,7 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
         .as_str()
         .expect("second pane id")
         .to_string();
-    wait_for_window_title(&output, "|W=space-a|T=2|P=|O=");
+    wait_for_window_title(&output, "|W=space-a|T=tab-b|P=|O=");
     let titles_before_hidden_update = captured_window_titles(&output).len();
     send_pane_shell_command(&api_socket, &pane_id, r"printf '\033]0;hidden update\007'");
     // Intentionally consume the AppState title through a read-only request
@@ -1057,7 +1057,7 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
         &second_pane_id,
         r"printf '\033]0;foreground marker\007'",
     );
-    wait_for_window_title(&output, "|W=space-a|T=2|P=|O=foreground marker");
+    wait_for_window_title(&output, "|W=space-a|T=tab-b|P=|O=foreground marker");
     assert!(
         captured_window_titles(&output)[titles_before_hidden_update..]
             .iter()

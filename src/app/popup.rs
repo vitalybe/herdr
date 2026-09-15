@@ -525,6 +525,31 @@ mod tests {
         assert!(app.state.popup_pane.is_some());
     }
 
+    #[tokio::test]
+    async fn popup_close_api_hides_the_scratch_terminal() {
+        let (mut app, _pane_id, terminal_id) = app_with_scratch_popup();
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "close-popup".into(),
+            method: crate::api::schema::Method::PopupClose(
+                crate::api::schema::EmptyParams::default(),
+            ),
+        });
+        let response: crate::api::schema::SuccessResponse =
+            serde_json::from_str(&response).unwrap();
+        assert_eq!(response.result, crate::api::schema::ResponseResult::Ok {});
+
+        assert!(app.state.popup_pane.is_none());
+        assert_eq!(
+            app.state
+                .hidden_scratch_popup
+                .as_ref()
+                .map(|popup| &popup.terminal_id),
+            Some(&terminal_id)
+        );
+        assert!(app.terminal_runtimes.get(&terminal_id).is_some());
+    }
+
     #[test]
     fn popup_close_api_closes_only_active_popup() {
         let mut app = app_with_popup();

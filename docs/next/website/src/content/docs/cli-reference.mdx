@@ -191,7 +191,7 @@ an explicit pane id or `--pane ID` splits that pane, `--current` splits the
 calling pane, and an omitted target keeps using the UI-focused pane.
 The split response exposes the new pane ID as `.result.pane.pane_id`.
 
-`popup close` closes the popup terminal currently on screen, whether it is the scratch terminal or a plugin popup pane, and ends its process. It returns `popup_not_open` when no popup is visible, including while the scratch terminal is hidden.
+`popup close` dismisses the popup terminal currently on screen. The scratch terminal is hidden with its shell left running, exactly as pressing `ctrl+backtick` again does, so reopening it keeps its history; any other popup, such as a plugin popup pane, is closed and its process ends. It returns `popup_not_open` when no popup is visible, including while the scratch terminal is hidden.
 
 `pane input --right-click pane` forwards unmodified right-click gestures to a
 mouse-reporting pane application. `herdr` restores the default pane menu.

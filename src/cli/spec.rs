@@ -323,7 +323,10 @@ fn notification_command() -> Command {
 fn popup_command() -> Command {
     Command::new("popup")
         .about("Control the active popup terminal")
-        .subcommand(Command::new("close").about("Close the active popup terminal"))
+        .subcommand(
+            Command::new("close")
+                .about("Hide the scratch terminal, or close another popup terminal"),
+        )
 }
 
 fn agent_command() -> Command {

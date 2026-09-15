@@ -1163,7 +1163,9 @@ impl App {
             }
             Method::PaneClose(target) => return self.handle_pane_close(request.id, target),
             Method::PopupClose(_) => {
-                return if self.close_popup_pane() {
+                // Matches the ctrl+` toggle: the scratch terminal is hidden and keeps
+                // running, any other popup is terminated.
+                return if self.hide_scratch_popup() || self.close_popup_pane() {
                     responses::encode_success(request.id, ResponseResult::Ok {})
                 } else {
                     responses::encode_error(request.id, "popup_not_open", "no popup is open")

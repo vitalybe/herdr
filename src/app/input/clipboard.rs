@@ -130,6 +130,106 @@ mod tests {
             .is_some_and(crate::selection::Selection::is_visible));
     }
 
+    /// Popup terminals carry their own pane identity outside any workspace, so
+    /// selection, copy and the invariants all have to accept that pane.
+    fn app_with_popup_screen_bytes(
+        bytes: &[u8],
+    ) -> (App, Rect, tokio::sync::mpsc::Receiver<Bytes>) {
+        let mut app = app_for_mouse_test();
+        let inner =
+            crate::popup_size::resolve_popup_geometry(None, None, app.state.view.terminal_area)
+                .expect("popup geometry")
+                .inner;
+        let (runtime, input_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                inner.width,
+                inner.height,
+                0,
+                bytes,
+                4,
+            );
+        app.install_test_popup_runtime(runtime);
+        (app, inner, input_rx)
+    }
+
+    #[tokio::test]
+    async fn popup_drag_selects_text_and_ctrl_c_copies_it() {
+        let (mut app, inner, mut input_rx) = app_with_popup_screen_bytes(b"alpha beta");
+        app.state.copy_on_select = false;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            inner.x,
+            inner.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            inner.x + 4,
+            inner.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            inner.x + 4,
+            inner.y,
+        ));
+
+        assert_visible_selection(&app);
+        app.state.assert_invariants_for_test();
+        assert!(input_rx.try_recv().is_err());
+
+        app.handle_terminal_key_headless_from(
+            7,
+            TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(clipboard_write_content(&mut app), b"alpha");
+        assert!(app.state.selection.is_none());
+        assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn popup_click_without_drag_leaves_no_selection() {
+        let (mut app, inner, _input_rx) = app_with_popup_screen_bytes(b"alpha beta");
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            inner.x,
+            inner.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            inner.x,
+            inner.y,
+        ));
+
+        assert!(app.state.selection.is_none());
+    }
+
+    #[tokio::test]
+    async fn hiding_the_scratch_popup_drops_its_selection() {
+        let (mut app, inner, _input_rx) = app_with_popup_screen_bytes(b"alpha beta");
+        if let Some(popup) = app.state.popup_pane.as_mut() {
+            popup.scratch = true;
+        }
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            inner.x,
+            inner.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            inner.x + 4,
+            inner.y,
+        ));
+        assert_visible_selection(&app);
+
+        assert!(app.hide_scratch_popup());
+
+        assert!(app.state.selection.is_none());
+        app.state.assert_invariants_for_test();
+    }
+
     #[tokio::test]
     async fn copy_on_select_disabled_ctrl_c_copies_and_clears_retained_selection() {
         let (mut app, info, mut input_rx) = app_with_screen_bytes_and_input(b"alpha beta");

@@ -2799,14 +2799,25 @@ impl AppState {
             return;
         }
 
-        let ws_idx = match self.active {
-            Some(ws_idx) if self.workspaces.get(ws_idx).is_some() => ws_idx,
-            _ => return,
+        // A popup selection belongs to the popup's own terminal, which is not a
+        // pane in any workspace.
+        let popup_terminal_id = self
+            .popup_pane
+            .as_ref()
+            .filter(|popup| popup.pane_id == sel.pane_id)
+            .map(|popup| popup.terminal_id.clone());
+        let text = if let Some(terminal_id) = popup_terminal_id {
+            terminal_runtimes
+                .get(&terminal_id)
+                .and_then(|rt| rt.extract_selection(&sel))
+        } else {
+            let ws_idx = match self.active {
+                Some(ws_idx) if self.workspaces.get(ws_idx).is_some() => ws_idx,
+                _ => return,
+            };
+            self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, sel.pane_id)
+                .and_then(|rt| rt.extract_selection(&sel))
         };
-
-        let text = self
-            .runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, sel.pane_id)
-            .and_then(|rt| rt.extract_selection(&sel));
         if let Some(text) = text {
             if !text.is_empty() {
                 self.request_clipboard_write = Some(text.into_bytes());

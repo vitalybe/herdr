@@ -2615,8 +2615,11 @@ impl AppState {
                 "empty app state must not keep rename line-split target"
             );
             assert!(
-                self.selection.is_none(),
-                "empty app state must not keep text selection"
+                self.selection.as_ref().is_none_or(|selection| self
+                    .popup_pane
+                    .as_ref()
+                    .is_some_and(|popup| popup.pane_id == selection.pane_id)),
+                "empty app state must not keep text selection outside the popup"
             );
             assert!(
                 self.selection_autoscroll.is_none(),
@@ -2805,7 +2808,15 @@ impl AppState {
             assert_live_pane(pane_id, "rename pane target");
         }
         if let Some(selection) = &self.selection {
-            assert_live_pane(selection.pane_id, "text selection");
+            // A selection made inside the popup is keyed by the popup's own pane,
+            // which never joins a workspace.
+            if !self
+                .popup_pane
+                .as_ref()
+                .is_some_and(|popup| popup.pane_id == selection.pane_id)
+            {
+                assert_live_pane(selection.pane_id, "text selection");
+            }
         } else {
             assert!(
                 self.selection_autoscroll.is_none(),

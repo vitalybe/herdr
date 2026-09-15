@@ -471,6 +471,18 @@ pub(super) fn render_popup_pane(
     frame.render_widget(Clear, outer);
     frame.render_widget(block, outer);
     rt.render(frame, inner, !pane_is_scrolled_back(rt));
+    // Guarded so an unselected popup render never takes the scroll-metrics lock.
+    if app.selection.is_some() {
+        render_selection_highlight(
+            &app.selection,
+            frame,
+            popup.pane_id,
+            inner,
+            rt.scroll_metrics(),
+            &app.palette,
+            app.host_terminal_theme,
+        );
+    }
 }
 
 #[derive(Clone, Copy, Default)]

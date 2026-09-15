@@ -27,11 +27,6 @@ fn is_modifier_only_key(code: &KeyCode) -> bool {
     matches!(code, KeyCode::Modifier(_))
 }
 
-fn is_escape(key: &TerminalKey) -> bool {
-    let key = key.as_key_event();
-    key.code == KeyCode::Esc && key.modifiers.is_empty()
-}
-
 impl App {
     #[cfg(test)]
     pub(crate) fn handle_terminal_key_headless(
@@ -46,7 +41,7 @@ impl App {
         source_id: InputSourceId,
         key: TerminalKey,
     ) -> Option<TerminalInputTarget> {
-        match self.prepare_popup_key_forward(key.clone()) {
+        match self.prepare_popup_key_forward(source_id, key.clone()) {
             PreparedPopupInput::NotOpen => {}
             PreparedPopupInput::Consumed => return None,
             PreparedPopupInput::Bytes { target, bytes } => {
@@ -240,24 +235,29 @@ impl App {
         })
     }
 
-    fn prepare_popup_key_forward(&mut self, key: TerminalKey) -> PreparedPopupInput {
+    fn prepare_popup_key_forward(
+        &mut self,
+        source_id: InputSourceId,
+        key: TerminalKey,
+    ) -> PreparedPopupInput {
         if self.state.popup_pane.is_none() {
             return PreparedPopupInput::NotOpen;
         }
         // The scratch terminal is the one popup the user drives by hand: it
         // swallows every other key, so its own bindings are matched here.
+        // Escape is not one of them - it belongs to whatever is running in the
+        // shell, so the toggle binding is the only way to park the modal.
         if self
             .state
             .popup_pane
             .as_ref()
             .is_some_and(|popup| popup.scratch)
         {
-            if is_escape(&key)
-                || self
-                    .state
-                    .keybinds
-                    .scratch_terminal
-                    .matches_direct_key(&key)
+            if self
+                .state
+                .keybinds
+                .scratch_terminal
+                .matches_direct_key(&key)
             {
                 self.hide_scratch_popup();
                 return PreparedPopupInput::Consumed;
@@ -272,6 +272,12 @@ impl App {
                 return PreparedPopupInput::Consumed;
             }
         }
+        // A retained popup selection takes the copy key, exactly as it does in a
+        // tiled pane; any other key drops the highlight before reaching the shell.
+        if self.try_copy_retained_selection(source_id, key.clone()) {
+            return PreparedPopupInput::Consumed;
+        }
+        self.state.clear_selection();
         let Some(terminal_id) = self
             .state
             .popup_pane
@@ -410,7 +416,7 @@ impl App {
         &mut self,
         key: TerminalKey,
     ) -> Option<TerminalInputTarget> {
-        match self.prepare_popup_key_forward(key.clone()) {
+        match self.prepare_popup_key_forward(crate::app::LOCAL_INPUT_SOURCE, key.clone()) {
             PreparedPopupInput::NotOpen => {}
             PreparedPopupInput::Consumed => return None,
             PreparedPopupInput::Bytes { target, bytes } => {
@@ -1687,15 +1693,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scratch_popup_hides_on_escape_instead_of_forwarding_it() {
+    async fn scratch_popup_forwards_escape_to_its_shell() {
         let mut app = app_for_mouse_test();
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(40, 12);
+        app.install_test_popup_runtime(runtime);
+        if let Some(popup) = app.state.popup_pane.as_mut() {
+            popup.scratch = true;
+        }
+
+        app.handle_terminal_key_headless(TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()));
+
+        assert_eq!(rx.try_recv().unwrap().as_ref(), b"\x1b");
+        assert!(app.state.popup_pane.is_some());
+        assert!(app.state.hidden_scratch_popup.is_none());
+    }
+
+    #[tokio::test]
+    async fn scratch_popup_still_parks_on_its_toggle_binding() {
+        let mut app = app_for_mouse_test();
+        app.state.keybinds = crate::config::Config::default().keybinds();
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(40, 12);
         let (_pane_id, terminal_id) = app.install_test_popup_runtime(runtime);
         if let Some(popup) = app.state.popup_pane.as_mut() {
             popup.scratch = true;
         }
 
-        app.handle_terminal_key_headless(TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()));
+        app.handle_terminal_key_headless(TerminalKey::new(
+            KeyCode::Char('`'),
+            KeyModifiers::CONTROL,
+        ));
 
         assert!(rx.try_recv().is_err());
         assert!(app.state.popup_pane.is_none());

@@ -22,6 +22,7 @@ impl App {
         let Some(popup) = self.state.popup_pane.take() else {
             return false;
         };
+        self.state.clear_selection();
         self.state
             .direct_attach_resize_locks
             .remove(&popup.terminal_id);
@@ -234,6 +235,7 @@ impl App {
         let Some(popup) = self.state.popup_pane.take() else {
             return false;
         };
+        self.state.clear_selection();
         self.state
             .direct_attach_resize_locks
             .remove(&popup.terminal_id);
@@ -267,6 +269,7 @@ impl App {
         let Some(popup) = popup else {
             return false;
         };
+        self.state.clear_selection();
         self.state
             .direct_attach_resize_locks
             .remove(&popup.terminal_id);

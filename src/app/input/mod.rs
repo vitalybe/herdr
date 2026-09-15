@@ -550,7 +550,16 @@ impl App {
                 }
             },
             MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_) => {
-                rt.encode_mouse_button(mouse.kind, position, mouse.modifiers)
+                match rt.encode_mouse_button(mouse.kind, position, mouse.modifiers) {
+                    Some(bytes) => Some(bytes),
+                    None => {
+                        // The popup application is not reading the mouse, so the
+                        // gesture is herdr's: select text the way a tiled pane does.
+                        let metrics = rt.scroll_metrics();
+                        self.update_popup_selection(mouse, inner, metrics);
+                        return;
+                    }
+                }
             }
             MouseEventKind::Moved => rt.encode_mouse_motion(mouse.kind, position, mouse.modifiers),
         };
@@ -563,6 +572,63 @@ impl App {
         if let Err(err) = rt.try_send_bytes(Bytes::from(bytes)) {
             warn!(err = %err, kind = ?mouse.kind, "failed to forward popup mouse event");
         }
+    }
+
+    /// Click-drag-release text selection inside the popup, for popup programs
+    /// that leave the mouse to herdr. Mirrors the tiled-pane gesture: a plain
+    /// click selects nothing, a drag highlights, and the release retains the
+    /// selection for the copy key unless `copy_on_select` takes it right away.
+    fn update_popup_selection(
+        &mut self,
+        mouse: MouseEvent,
+        inner: ratatui::layout::Rect,
+        metrics: Option<crate::pane::ScrollMetrics>,
+    ) {
+        let Some(pane_id) = self.state.popup_pane.as_ref().map(|popup| popup.pane_id) else {
+            return;
+        };
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.state.selection = Some(crate::selection::Selection::anchor(
+                    pane_id,
+                    mouse.row.saturating_sub(inner.y),
+                    mouse.column.saturating_sub(inner.x),
+                    metrics,
+                ));
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let Some(selection) = self
+                    .state
+                    .selection
+                    .as_mut()
+                    .filter(|selection| selection.pane_id == pane_id)
+                else {
+                    return;
+                };
+                selection.drag(mouse.column, mouse.row, inner, metrics);
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let Some(selection) = self
+                    .state
+                    .selection
+                    .as_ref()
+                    .filter(|selection| selection.pane_id == pane_id)
+                else {
+                    return;
+                };
+                if selection.was_just_click() {
+                    self.state.selection = None;
+                } else if self.state.copy_on_select {
+                    self.state.copy_selection(&self.terminal_runtimes);
+                    self.dispatch_pending_clipboard_write();
+                } else if let Some(selection) = self.state.selection.as_mut() {
+                    selection.finish();
+                }
+            }
+            _ => return,
+        }
+        self.render_dirty.request_generic();
+        self.render_notify.notify_one();
     }
 
     fn focus_pane_before_mouse_press(&mut self, mouse: MouseEvent) {

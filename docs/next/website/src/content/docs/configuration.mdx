@@ -247,9 +247,9 @@ On Windows, custom command strings use `cmd.exe /d /c`, so environment variables
 
 `keys.scratch_terminal` (default `ctrl+backtick`) shows a session-modal shell
 that keeps running while hidden. It starts in the working directory of the pane
-it was opened from, and Escape or the same key hides it again and returns focus
-to that pane. Reopening restores the same shell with its history and working
-directory intact.
+it was opened from, and the same key hides it again and returns focus to that
+pane. Reopening restores the same shell with its history and working directory
+intact.
 
 `keys.scratch_terminal_to_tab` (default `ctrl+shift+backtick`) moves the scratch
 shell into a tab of its own, history included, whether the modal is showing or
@@ -267,9 +267,14 @@ terminal distinguishes `ctrl+backtick`. Rebind them to any other chord your
 setup delivers. A `prefix+` binding also works, but only while the modal is
 hidden, because the scratch terminal receives every key until it is dismissed.
 
-The scratch terminal receives all terminal input except its own bindings, and
-Escape dismisses it rather than reaching the shell, so full-screen programs that
-rely on Escape belong in a pane or a popup command instead.
+The scratch terminal receives all terminal input except its own bindings,
+Escape included, so full-screen programs such as editors work in it.
+
+Text selection works as it does in a pane: drag to select, and with
+`ui.copy_on_select` the release copies. With `copy_on_select = false` the
+selection is retained until Ctrl+C or Cmd+C copies it. A program in the scratch
+terminal that reads the mouse itself receives the drag instead, same as in a
+pane.
 
 The modal is centred and takes half the terminal in each direction. Size it with
 `ui.scratch_terminal_width` and `ui.scratch_terminal_height`, as a number of

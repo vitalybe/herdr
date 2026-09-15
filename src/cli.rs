@@ -120,6 +120,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "agent" => agent::run_agent_command(&args[2..])?,
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,
+        "popup" => run_popup_command(&args[2..])?,
         "plugin" => plugin::run_plugin_command(&args[2..])?,
         "integration" => integration::run_integration_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
@@ -392,6 +393,25 @@ fn key_config_backup_path(path: &std::path::Path) -> std::path::PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("config.toml");
     path.with_file_name(format!("{file_name}.bak-keybind-v2-{timestamp}"))
+}
+
+fn run_popup_command(args: &[String]) -> std::io::Result<i32> {
+    match args.first().map(|arg| arg.as_str()) {
+        Some("close") if args.len() == 1 => runtime::popup_close(),
+        Some("help" | "--help" | "-h") => {
+            print_popup_help();
+            Ok(0)
+        }
+        _ => {
+            print_popup_help();
+            Ok(2)
+        }
+    }
+}
+
+fn print_popup_help() {
+    eprintln!("herdr popup commands:");
+    eprintln!("  herdr popup close");
 }
 
 fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {

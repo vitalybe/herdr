@@ -73,6 +73,13 @@ pub(super) fn tab_close(tab_id: String) -> std::io::Result<i32> {
     print_method_response("cli:tab:close", Method::TabClose(TabTarget { tab_id }))
 }
 
+pub(super) fn popup_close() -> std::io::Result<i32> {
+    print_method_response(
+        "cli:popup:close",
+        Method::PopupClose(EmptyParams::default()),
+    )
+}
+
 pub(super) fn worktree_list(params: WorktreeListParams) -> std::io::Result<i32> {
     print_method_response("cli:worktree:list", Method::WorktreeList(params))
 }

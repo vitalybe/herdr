@@ -39,6 +39,7 @@ pub(super) fn command() -> Command {
         .subcommand(notification_command())
         .subcommand(agent_command())
         .subcommand(pane_command())
+        .subcommand(popup_command())
         .subcommand(terminal_command())
         .subcommand(session_command())
         .subcommand(integration_command())
@@ -317,6 +318,12 @@ fn notification_command() -> Command {
                 ]))
                 .arg(option("sound", "SOUND").value_parser(["none", "done", "request"])),
         )
+}
+
+fn popup_command() -> Command {
+    Command::new("popup")
+        .about("Control the active popup terminal")
+        .subcommand(Command::new("close").about("Close the active popup terminal"))
 }
 
 fn agent_command() -> Command {

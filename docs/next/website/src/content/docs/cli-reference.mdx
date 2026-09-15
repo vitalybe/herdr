@@ -182,6 +182,7 @@ herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [
 herdr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--no-focus]
 herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]
 herdr pane close <pane_id>
+herdr popup close
 ```
 
 For pane commands that accept `--current`, Herdr uses the calling pane's
@@ -189,6 +190,8 @@ For pane commands that accept `--current`, Herdr uses the calling pane's
 an explicit pane id or `--pane ID` splits that pane, `--current` splits the
 calling pane, and an omitted target keeps using the UI-focused pane.
 The split response exposes the new pane ID as `.result.pane.pane_id`.
+
+`popup close` closes the popup terminal currently on screen, whether it is the scratch terminal or a plugin popup pane, and ends its process. It returns `popup_not_open` when no popup is visible, including while the scratch terminal is hidden.
 
 `pane input --right-click pane` forwards unmodified right-click gestures to a
 mouse-reporting pane application. `herdr` restores the default pane menu.

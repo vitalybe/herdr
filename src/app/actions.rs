@@ -1714,34 +1714,9 @@ impl AppState {
         })
     }
 
-    /// The slot in `workspace_id`'s own tab list that corresponds to Tabs-band
-    /// slot `at`: one past the nearest row above `at` that belongs to that space,
-    /// or the front of the space when the band has none above it.
-    ///
-    /// Rows of other spaces and line-split dividers are skipped, so a band slot
-    /// always resolves to a real position even though the band spans every space.
-    pub(crate) fn tab_index_for_pane_section_slot(&self, workspace_id: &str, at: usize) -> usize {
-        use crate::app::state::PaneManualEntry;
-        let Some(ws) = self.workspaces.iter().find(|ws| ws.id == workspace_id) else {
-            return 0;
-        };
-        let at = at.min(self.pane_section_order.order.len());
-        self.pane_section_order.order[..at]
-            .iter()
-            .rev()
-            .find_map(|entry| match entry {
-                PaneManualEntry::Pane(tab_ref) if tab_ref.workspace_id == workspace_id => ws
-                    .tabs
-                    .iter()
-                    .position(|tab| tab.number == tab_ref.tab_number),
-                _ => None,
-            })
-            .map_or(0, |idx| idx + 1)
-    }
-
-    /// Move a tab's Tabs-band row to an exact slot, overriding the placement
-    /// [`Self::reconcile_pane_section_order`] derived from its neighbours. Used
-    /// when a caller named the slot outright instead of letting it be inferred.
+    /// Move a tab's Tabs-band row to an exact slot, overriding the append
+    /// [`Self::reconcile_pane_section_order`] gave it. Used when a caller named
+    /// the slot outright.
     pub(crate) fn pin_pane_section_slot(
         &mut self,
         workspace_id: &str,
@@ -1763,9 +1738,11 @@ impl AppState {
     /// all workspaces. Called from the compute_view mutation phase so render stays
     /// pure, and from the API path so a request always reads a current band.
     ///
-    /// Drops references to tabs that no longer exist, seeds the natural display
-    /// order on first run, then places genuinely new tabs beside their natural
-    /// neighbour.
+    /// Drops references to tabs that no longer exist, then appends rows for tabs
+    /// the band has not placed yet. The band is otherwise the user's own order:
+    /// nothing here re-groups rows by the space they belong to, so a row stays
+    /// where it was dragged and a new one lands at the end unless its creator
+    /// named a slot.
     pub(crate) fn reconcile_pane_section_order(&mut self) {
         use crate::app::state::{PaneManualEntry, PaneSectionRef};
         // Flat set of live tabs in natural display order (workspaces x tabs).
@@ -1791,42 +1768,14 @@ impl AppState {
             .known
             .retain(|tab_ref| current.contains(tab_ref));
 
-        if !self.pane_section_order.seeded {
-            // First reconcile: establish the natural tab order. Append tabs not
-            // yet present (line-splits, if any, keep their positions untouched).
-            for tab_ref in &flat {
-                if self.pane_section_order.known.insert(tab_ref.clone()) {
-                    self.pane_section_order
-                        .order
-                        .push(PaneManualEntry::Pane(tab_ref.clone()));
-                }
+        // Give every tab the band has not placed yet a row at the end, in the
+        // order the spaces report them. Line-splits keep their positions.
+        for tab_ref in &flat {
+            if self.pane_section_order.known.insert(tab_ref.clone()) {
+                self.pane_section_order
+                    .order
+                    .push(PaneManualEntry::Pane(tab_ref.clone()));
             }
-            self.pane_section_order.seeded = true;
-            return;
-        }
-
-        // A genuinely new tab lands beside its natural neighbour: right after the
-        // nearest preceding tab already in the order, or at the top when it has
-        // none. That way the slot a tab is created into - `tab.create` with an
-        // `index`, or the tab bar's append - is the slot its row takes here.
-        // Line-splits are left in place.
-        for (flat_idx, tab_ref) in flat.iter().enumerate() {
-            if self.pane_section_order.known.contains(tab_ref) {
-                continue;
-            }
-            let at = flat[..flat_idx]
-                .iter()
-                .rev()
-                .find_map(|preceding| {
-                    self.pane_section_order.order.iter().position(|entry| {
-                        matches!(entry, PaneManualEntry::Pane(existing) if existing == preceding)
-                    })
-                })
-                .map_or(0, |pos| pos + 1);
-            self.pane_section_order
-                .order
-                .insert(at, PaneManualEntry::Pane(tab_ref.clone()));
-            self.pane_section_order.known.insert(tab_ref.clone());
         }
     }
 
@@ -4327,7 +4276,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_section_reconcile_seeds_natural_order_then_places_new_tabs_beside_their_neighbour() {
+    fn pane_section_reconcile_appends_new_tabs_and_ignores_their_space() {
         let mut state = app_with_workspaces(&["one", "two"]);
         state.reconcile_pane_section_order();
         let seeded = pane_section_tab_numbers(&state);
@@ -4342,32 +4291,32 @@ mod tests {
         state.reconcile_pane_section_order();
         assert_eq!(pane_section_tab_numbers(&state), seeded);
 
-        // A new tab is genuinely new, so it takes the slot next to the tab it
-        // was created after - here appended, so after its space's first tab.
+        // A tab the band has not placed yet goes to the end, even though its
+        // space already owns the row sitting at the front of the band.
         let new_tab = state.workspaces[0].test_add_tab(Some("later"));
         state.ensure_test_terminals();
         state.reconcile_pane_section_order();
         let new_number = state.workspaces[0].tabs[new_tab].number;
+        assert_eq!(pane_section_tab_numbers(&state).len(), 3);
         assert_eq!(
-            pane_section_tab_numbers(&state)[1],
+            pane_section_tab_numbers(&state)[2],
             (state.workspaces[0].id.clone(), new_number)
         );
-        assert_eq!(pane_section_tab_numbers(&state).len(), 3);
 
         // Closing that tab drops its slot again.
         assert!(state.workspaces[0].close_tab(new_tab));
         state.reconcile_pane_section_order();
         assert_eq!(pane_section_tab_numbers(&state), seeded);
 
-        // A tab created at the front of its space leads the band, which is what
-        // `tab.create --index 0` produces.
+        // Where a tab sits inside its own space says nothing about where its row
+        // goes: moved to the front of its space, it still appends to the band.
         let front_tab = state.workspaces[0].test_add_tab(Some("first"));
         assert!(state.workspaces[0].move_tab(front_tab, 0));
         state.ensure_test_terminals();
         state.reconcile_pane_section_order();
         let front_number = state.workspaces[0].tabs[0].number;
         assert_eq!(
-            pane_section_tab_numbers(&state)[0],
+            *pane_section_tab_numbers(&state).last().unwrap(),
             (state.workspaces[0].id.clone(), front_number)
         );
         state.assert_invariants_for_test();

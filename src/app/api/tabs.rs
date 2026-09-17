@@ -65,28 +65,19 @@ impl App {
         };
         // `index` names a slot in the sidebar Tabs band, which is the order a
         // caller sees. Reconcile first so the band is current, then check bounds
-        // against it, so a bad index fails before a PTY is spawned.
+        // against it, so a bad index fails before a PTY is spawned. The slot only
+        // places the row; the tab itself is appended to its space like any other.
         self.state.reconcile_pane_section_order();
         let workspace_id = self.state.workspaces[ws_idx].id.clone();
-        let space_slot = match insert_index {
-            Some(insert_index) => {
-                if insert_index > self.state.pane_section_order.order.len() {
-                    return encode_error(
-                        id,
-                        "tab_create_failed",
-                        format!("index {insert_index} is out of bounds"),
-                    );
-                }
-                // The band spans every space, so the requested slot also has to
-                // resolve to a position inside this space's own tab list, which
-                // is what the tab bar shows.
-                Some(
-                    self.state
-                        .tab_index_for_pane_section_slot(&workspace_id, insert_index),
-                )
+        if let Some(insert_index) = insert_index {
+            if insert_index > self.state.pane_section_order.order.len() {
+                return encode_error(
+                    id,
+                    "tab_create_failed",
+                    format!("index {insert_index} is out of bounds"),
+                );
             }
-            None => None,
-        };
+        }
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
             self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
         });
@@ -120,23 +111,8 @@ impl App {
             Ok((tab_idx, terminal, runtime)) => {
                 self.terminal_runtimes.insert(terminal.id.clone(), runtime);
                 self.state.terminals.insert(terminal.id.clone(), terminal);
-                // The tab is always appended first; `index` then slots it into
-                // place through the same reorder the tab bar and drag use.
-                let tab_idx = match space_slot {
-                    Some(space_slot) => {
-                        self.state.workspaces[ws_idx].move_tab(tab_idx, space_slot);
-                        if self.state.active == Some(ws_idx) {
-                            self.state.tab_scroll_follow_active = true;
-                            self.state.refresh_tab_bar_view();
-                        }
-                        space_slot
-                    }
-                    None => tab_idx,
-                };
-                // Give the new tab its band row, then pin it to the requested
-                // slot. Without the pin the reconcile pass would infer a slot
-                // from the tab's neighbours, which only matches the request when
-                // the band and the space happen to agree.
+                // Give the new tab its band row, which reconcile appends, then
+                // move it to the requested slot.
                 self.state.reconcile_pane_section_order();
                 if let Some(insert_index) = insert_index {
                     let tab_number = self.state.workspaces[ws_idx].tabs[tab_idx].number;
@@ -570,8 +546,10 @@ mod tests {
         // The label and the reported index follow the tab to its requested slot.
         assert_eq!(tab.index, 1);
         assert_eq!(tab.label, "wedged");
+        // The slot moved the row, not the tab: inside its space the tab is still
+        // appended, so it is last there while its row sits at slot 1.
         assert_eq!(app.state.workspaces[0].tabs.len(), 3);
-        assert_eq!(app.tab_info(0, 1).unwrap().tab_id, tab.tab_id);
+        assert_eq!(app.tab_info(0, 2).unwrap().tab_id, tab.tab_id);
 
         // Past the end of the band is an error, and creates nothing.
         let response = app.handle_tab_create(
@@ -591,7 +569,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tab_create_index_is_a_band_slot_not_a_position_in_the_space() {
+    async fn tab_create_index_places_the_row_and_leaves_the_space_order_alone() {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(&Config::default(), true, None, api_rx, event_hub);
@@ -633,13 +611,18 @@ mod tests {
         assert_eq!(tab.index, 1);
         assert_eq!(app.state.pane_section_order.order.len(), 4);
 
-        // The position inside the space is derived from the slot, not equal to
-        // it: no row of the second space sits above slot 1, so the tab lands at
-        // the front of that space. Under the old per-space reading of `index` it
-        // would have landed at position 1 instead.
+        // The space is left out of it entirely: the tab is appended to its own
+        // space like any other, so it is last there, and the first space keeps
+        // both of its tabs in place.
         assert_eq!(app.state.workspaces[1].tabs.len(), 2);
-        assert_eq!(app.tab_info(1, 0).unwrap().tab_id, tab.tab_id);
-        assert_eq!(app.tab_info(1, 0).unwrap().label, "wedged");
+        assert_eq!(app.tab_info(1, 1).unwrap().tab_id, tab.tab_id);
+        assert_eq!(app.tab_info(1, 1).unwrap().label, "wedged");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 2);
+
+        // The rows of the first space are pushed apart by the new one rather
+        // than regrouped around it.
+        assert_eq!(app.tab_info(0, 0).unwrap().index, 0);
+        assert_eq!(app.tab_info(0, 1).unwrap().index, 2);
 
         shutdown_test_runtimes(&mut app);
     }

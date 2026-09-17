@@ -1115,7 +1115,6 @@ mod tests {
         // Rebuilding drops entries whose workspace is gone and keeps the counter
         // above every restored line-split id.
         let rebuilt = crate::app::state::PaneSectionOrder::from_keys(keys, &state.workspaces[..1]);
-        assert!(rebuilt.seeded);
         assert!(rebuilt.next_line_split_id > split.0);
         assert_eq!(rebuilt.order.len(), 2);
     }

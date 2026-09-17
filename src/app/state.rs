@@ -1442,9 +1442,10 @@ pub(crate) enum PaneManualEntryKey {
 
 /// Flat, client-only ordering of the sidebar Tabs band.
 ///
-/// `order` drives the display order across all spaces, `known` tracks which tabs
-/// have already been placed (so genuinely new tabs get the placement rule), and
-/// `seeded` records whether the natural order has been captured at least once.
+/// `order` drives the display order across all spaces and `known` tracks which
+/// tabs already have a row, so a tab that does not yet have one gets appended.
+/// Rows are never re-grouped by the space they belong to: the order is the
+/// user's, and beyond that first append the band ignores which space a tab is in.
 ///
 /// This band is the order callers address tabs by: `TabInfo::index` reports a
 /// slot in it and `tab.create` takes one, so it is reachable from the API even
@@ -1461,7 +1462,6 @@ pub struct SidebarSectionCollapse {
 pub(crate) struct PaneSectionOrder {
     pub(crate) order: Vec<PaneManualEntry>,
     pub(crate) known: std::collections::HashSet<PaneSectionRef>,
-    pub(crate) seeded: bool,
     /// Monotonic counter handing out [`LineSplitId`]s for this section. Never
     /// reused, so ids stay stable while the session lives.
     pub(crate) next_line_split_id: u64,
@@ -1479,9 +1479,8 @@ impl PaneSectionOrder {
     }
 
     /// Rebuild a Tabs-band order from persisted keys, keeping only tab entries
-    /// whose workspace still exists. `seeded` is set because a snapshot was
-    /// present, so reconcile treats later arrivals as genuinely new tabs rather
-    /// than reseeding from the natural order.
+    /// whose workspace still exists. Restored rows count as placed, so reconcile
+    /// appends only tabs the snapshot did not carry.
     pub(crate) fn from_keys(
         keys: Vec<PaneManualEntryKey>,
         workspaces: &[crate::workspace::Workspace],
@@ -1520,7 +1519,6 @@ impl PaneSectionOrder {
         Self {
             order,
             known,
-            seeded: true,
             next_line_split_id,
         }
     }

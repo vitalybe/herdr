@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- `tab create` now takes `--index N`, placing the new tab at that position in the workspace instead of at the end, and every tab object reports its current position as `index`, so a pane can read its own tab's position with `herdr tab get $HERDR_TAB_ID`.
+- `tab create` now takes `--index N`, placing the new tab's row at that slot in the sidebar Tabs band instead of at the end, and every tab object reports its current slot as `index`, so a pane can read its own row with `herdr tab get $HERDR_TAB_ID` and pass `.index + 1` to open a tab directly below itself.
 - A scratch terminal modal opens with `ctrl+backtick`, starts in the focused pane's working directory, hides with the same key without ending its shell, and can be moved into a tab of its own with `ctrl+shift+backtick`. Every other key reaches its shell, Escape included.
 - `herdr popup close` dismisses the popup terminal currently on screen from a script. The scratch terminal is hidden with its shell still running, like pressing `ctrl+backtick` again; other popups such as plugin popup panes are closed.
 - The scratch terminal supports mouse text selection and copying like a pane does, honoring `ui.copy_on_select` and the Ctrl+C/Cmd+C copy of a retained selection.

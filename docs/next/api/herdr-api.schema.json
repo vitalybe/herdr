@@ -1038,7 +1038,7 @@
               "type": "boolean"
             },
             "index": {
-              "description": "Current position of the tab in its workspace. Changes when tabs are\ncreated, moved, or closed around it.",
+              "description": "Current position of the tab's row in the sidebar Tabs band, which spans\nevery space and also holds line-split dividers. Changes when tabs are\ncreated, moved, reordered, or closed around it. This is the same number\n`tab.create` takes as `index`.",
               "format": "uint",
               "minimum": 0,
               "type": "integer"
@@ -4075,7 +4075,7 @@
               "type": "boolean"
             },
             "index": {
-              "description": "Position the new tab takes in the workspace. Defaults to the end.",
+              "description": "Slot the new tab's row takes in the sidebar Tabs band. `workspace_id`\nstill decides which space owns the tab; the slot only places its row, and\nthe tab's position inside that space follows from it. Defaults to the end.",
               "format": "uint",
               "minimum": 0,
               "type": [
@@ -9913,7 +9913,7 @@
               "type": "boolean"
             },
             "index": {
-              "description": "Current position of the tab in its workspace. Changes when tabs are\ncreated, moved, or closed around it.",
+              "description": "Current position of the tab's row in the sidebar Tabs band, which spans\nevery space and also holds line-split dividers. Changes when tabs are\ncreated, moved, reordered, or closed around it. This is the same number\n`tab.create` takes as `index`.",
               "format": "uint",
               "minimum": 0,
               "type": "integer"

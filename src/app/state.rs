@@ -1442,11 +1442,13 @@ pub(crate) enum PaneManualEntryKey {
 
 /// Flat, client-only ordering of the sidebar Tabs band.
 ///
-/// This is TUI presentation state: it never enters the server/runtime protocol
-/// and never changes the real tab order inside any space. `order` drives the
-/// display order across all spaces, `known` tracks which tabs have already been
-/// placed (so genuinely new tabs get the placement rule), and `seeded` records
-/// whether the natural order has been captured at least once.
+/// `order` drives the display order across all spaces, `known` tracks which tabs
+/// have already been placed (so genuinely new tabs get the placement rule), and
+/// `seeded` records whether the natural order has been captured at least once.
+///
+/// This band is the order callers address tabs by: `TabInfo::index` reports a
+/// slot in it and `tab.create` takes one, so it is reachable from the API even
+/// though the band itself is owned and reordered by the client.
 /// Which stacked sidebar bands the user has collapsed to a header row.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SidebarSectionCollapse {

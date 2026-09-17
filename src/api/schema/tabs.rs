@@ -14,7 +14,9 @@ pub struct TabCreateParams {
     pub focus: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Position the new tab takes in the workspace. Defaults to the end.
+    /// Slot the new tab's row takes in the sidebar Tabs band. `workspace_id`
+    /// still decides which space owns the tab; the slot only places its row, and
+    /// the tab's position inside that space follows from it. Defaults to the end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<usize>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -43,8 +45,10 @@ pub struct TabMoveParams {
 pub struct TabInfo {
     pub tab_id: String,
     pub workspace_id: String,
-    /// Current position of the tab in its workspace. Changes when tabs are
-    /// created, moved, or closed around it.
+    /// Current position of the tab's row in the sidebar Tabs band, which spans
+    /// every space and also holds line-split dividers. Changes when tabs are
+    /// created, moved, reordered, or closed around it. This is the same number
+    /// `tab.create` takes as `index`.
     pub index: usize,
     pub number: usize,
     pub label: String,

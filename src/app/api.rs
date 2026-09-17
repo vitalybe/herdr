@@ -940,6 +940,10 @@ impl App {
         request: crate::api::schema::Request,
     ) -> String {
         self.sync_pending_terminal_titles();
+        // Tab positions are reported as slots in the sidebar Tabs band, which is
+        // otherwise only reconciled when a view is computed. Reconcile here so a
+        // request reads a current band even with no client attached.
+        self.state.reconcile_pane_section_order();
         use crate::api::schema::{
             ErrorBody, ErrorResponse, Method, ResponseResult, SuccessResponse,
         };

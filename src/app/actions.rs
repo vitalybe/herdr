@@ -1700,12 +1700,72 @@ impl AppState {
         true
     }
 
+    /// Position of a tab's row in the flat Tabs-band order, or `None` when the
+    /// band holds no row for it yet (the order has never been reconciled).
+    pub(crate) fn pane_section_index_of(
+        &self,
+        workspace_id: &str,
+        tab_number: usize,
+    ) -> Option<usize> {
+        use crate::app::state::PaneManualEntry;
+        self.pane_section_order.order.iter().position(|entry| {
+            matches!(entry, PaneManualEntry::Pane(tab_ref)
+                if tab_ref.tab_number == tab_number && tab_ref.workspace_id == workspace_id)
+        })
+    }
+
+    /// The slot in `workspace_id`'s own tab list that corresponds to Tabs-band
+    /// slot `at`: one past the nearest row above `at` that belongs to that space,
+    /// or the front of the space when the band has none above it.
+    ///
+    /// Rows of other spaces and line-split dividers are skipped, so a band slot
+    /// always resolves to a real position even though the band spans every space.
+    pub(crate) fn tab_index_for_pane_section_slot(&self, workspace_id: &str, at: usize) -> usize {
+        use crate::app::state::PaneManualEntry;
+        let Some(ws) = self.workspaces.iter().find(|ws| ws.id == workspace_id) else {
+            return 0;
+        };
+        let at = at.min(self.pane_section_order.order.len());
+        self.pane_section_order.order[..at]
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                PaneManualEntry::Pane(tab_ref) if tab_ref.workspace_id == workspace_id => ws
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.number == tab_ref.tab_number),
+                _ => None,
+            })
+            .map_or(0, |idx| idx + 1)
+    }
+
+    /// Move a tab's Tabs-band row to an exact slot, overriding the placement
+    /// [`Self::reconcile_pane_section_order`] derived from its neighbours. Used
+    /// when a caller named the slot outright instead of letting it be inferred.
+    pub(crate) fn pin_pane_section_slot(
+        &mut self,
+        workspace_id: &str,
+        tab_number: usize,
+        at: usize,
+    ) {
+        let Some(from) = self.pane_section_index_of(workspace_id, tab_number) else {
+            return;
+        };
+        let entry = self.pane_section_order.order.remove(from);
+        let at = at.min(self.pane_section_order.order.len());
+        if at != from {
+            self.mark_session_dirty();
+        }
+        self.pane_section_order.order.insert(at, entry);
+    }
+
     /// Reconcile the client-only Tabs-band order with the live set of tabs across
     /// all workspaces. Called from the compute_view mutation phase so render stays
-    /// pure.
+    /// pure, and from the API path so a request always reads a current band.
     ///
     /// Drops references to tabs that no longer exist, seeds the natural display
-    /// order on first run, then places genuinely new tabs at the top of the list.
+    /// order on first run, then places genuinely new tabs beside their natural
+    /// neighbour.
     pub(crate) fn reconcile_pane_section_order(&mut self) {
         use crate::app::state::{PaneManualEntry, PaneSectionRef};
         // Flat set of live tabs in natural display order (workspaces x tabs).

@@ -293,6 +293,9 @@ impl App {
             self.render_notify.clone(),
             self.render_dirty.clone(),
         );
+        // Give the new tab its band row before focusing it, so the row lands below
+        // the tab the scratch terminal was promoted from, the way `tab.create` does.
+        self.state.reconcile_pane_section_order();
         self.state.workspaces[ws_idx].active_tab = tab_idx;
         self.state.mode = Mode::Terminal;
         self.state.mark_session_dirty();

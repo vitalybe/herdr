@@ -266,6 +266,10 @@ impl App {
         let workspace_id = self.state.workspaces[idx].id.clone();
         let root_pane = self.state.workspaces[idx].tabs[0].root_pane.raw();
         crate::logging::workspace_created(&workspace_id, root_pane);
+        // Give the new tab its band row while the tab it was created from is
+        // still active, so the row lands below that one instead of appending
+        // at the end once focus has moved here.
+        self.state.reconcile_pane_section_order();
         if focus || self.state.active.is_none() {
             self.state.switch_workspace(idx);
             self.state.mode = Mode::Terminal;

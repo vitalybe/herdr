@@ -1738,11 +1738,13 @@ impl AppState {
     /// all workspaces. Called from the compute_view mutation phase so render stays
     /// pure, and from the API path so a request always reads a current band.
     ///
-    /// Drops references to tabs that no longer exist, then appends rows for tabs
-    /// the band has not placed yet. The band is otherwise the user's own order:
-    /// nothing here re-groups rows by the space they belong to, so a row stays
-    /// where it was dragged and a new one lands at the end unless its creator
-    /// named a slot.
+    /// Drops references to tabs that no longer exist, then gives tabs the band
+    /// has not placed yet a row right below the active tab's row - the tab the
+    /// new one was created from - so a new row lands beside its parent and stays
+    /// inside the parent's line-split section. Tabs with no such parent append at
+    /// the end. The band is otherwise the user's own order: nothing here re-groups
+    /// rows by the space they belong to, so a row stays where it was dragged and
+    /// an explicit slot still wins.
     pub(crate) fn reconcile_pane_section_order(&mut self) {
         use crate::app::state::{PaneManualEntry, PaneSectionRef};
         // Flat set of live tabs in natural display order (workspaces x tabs).
@@ -1768,15 +1770,48 @@ impl AppState {
             .known
             .retain(|tab_ref| current.contains(tab_ref));
 
-        // Give every tab the band has not placed yet a row at the end, in the
-        // order the spaces report them. Line-splits keep their positions.
+        // Row of the active tab, which is the parent a new tab was created from.
+        // Resolved before any insertion, so a tab that is already active because
+        // creation focused it finds nothing and falls back to appending.
+        let parent = self.active_tab_ref();
+        let mut at = parent.and_then(|parent| {
+            self.pane_section_order
+                .order
+                .iter()
+                .position(
+                    |entry| matches!(entry, PaneManualEntry::Pane(tab_ref) if *tab_ref == parent),
+                )
+                .map(|pos| pos + 1)
+        });
+
+        // Place every tab the band has not placed yet, in the order the spaces
+        // report them. Line-splits keep their positions.
         for tab_ref in &flat {
             if self.pane_section_order.known.insert(tab_ref.clone()) {
-                self.pane_section_order
-                    .order
-                    .push(PaneManualEntry::Pane(tab_ref.clone()));
+                match at {
+                    Some(pos) => {
+                        self.pane_section_order
+                            .order
+                            .insert(pos, PaneManualEntry::Pane(tab_ref.clone()));
+                        at = Some(pos + 1);
+                    }
+                    None => self
+                        .pane_section_order
+                        .order
+                        .push(PaneManualEntry::Pane(tab_ref.clone())),
+                }
             }
         }
+    }
+
+    /// The active workspace's active tab as a Tabs-band reference.
+    fn active_tab_ref(&self) -> Option<crate::app::state::PaneSectionRef> {
+        let ws = self.workspaces.get(self.active?)?;
+        let tab = ws.tabs.get(ws.active_tab)?;
+        Some(crate::app::state::PaneSectionRef {
+            workspace_id: ws.id.clone(),
+            tab_number: tab.number,
+        })
     }
 
     /// Flip the collapsed state of a line-split divider, hiding or revealing the
@@ -4276,7 +4311,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_section_reconcile_appends_new_tabs_and_ignores_their_space() {
+    fn pane_section_reconcile_places_new_tabs_below_their_parent_row() {
         let mut state = app_with_workspaces(&["one", "two"]);
         state.reconcile_pane_section_order();
         let seeded = pane_section_tab_numbers(&state);
@@ -4291,33 +4326,56 @@ mod tests {
         state.reconcile_pane_section_order();
         assert_eq!(pane_section_tab_numbers(&state), seeded);
 
-        // A tab the band has not placed yet goes to the end, even though its
-        // space already owns the row sitting at the front of the band.
+        // A tab the band has not placed yet lands right below the active tab's
+        // row - the tab it was created from - not at the end of the band.
+        state.active = Some(0);
+        state.workspaces[0].active_tab = 0;
         let new_tab = state.workspaces[0].test_add_tab(Some("later"));
         state.ensure_test_terminals();
         state.reconcile_pane_section_order();
         let new_number = state.workspaces[0].tabs[new_tab].number;
         assert_eq!(pane_section_tab_numbers(&state).len(), 3);
         assert_eq!(
-            pane_section_tab_numbers(&state)[2],
+            pane_section_tab_numbers(&state)[1],
             (state.workspaces[0].id.clone(), new_number)
         );
 
-        // Closing that tab drops its slot again.
+        // The parent's row is what counts, not the space: created from the other
+        // space's tab, the row follows that one instead.
+        state.active = Some(1);
+        state.workspaces[1].active_tab = 0;
+        let cross_tab = state.workspaces[0].test_add_tab(Some("cross"));
+        state.ensure_test_terminals();
+        state.reconcile_pane_section_order();
+        let cross_number = state.workspaces[0].tabs[cross_tab].number;
+        let rows = pane_section_tab_numbers(&state);
+        let parent_row = rows
+            .iter()
+            .position(|row| *row == (state.workspaces[1].id.clone(), 1))
+            .expect("parent row");
+        assert_eq!(
+            rows[parent_row + 1],
+            (state.workspaces[0].id.clone(), cross_number)
+        );
+
+        // Closing those tabs drops their slots again.
+        assert!(state.workspaces[0].close_tab(cross_tab));
         assert!(state.workspaces[0].close_tab(new_tab));
+        state.workspaces[0].active_tab = 0;
         state.reconcile_pane_section_order();
         assert_eq!(pane_section_tab_numbers(&state), seeded);
 
-        // Where a tab sits inside its own space says nothing about where its row
-        // goes: moved to the front of its space, it still appends to the band.
-        let front_tab = state.workspaces[0].test_add_tab(Some("first"));
-        assert!(state.workspaces[0].move_tab(front_tab, 0));
+        // A tab with no parent row - here the active tab is the new one itself,
+        // as when creation focuses it before the band catches up - appends.
+        let orphan = state.workspaces[0].test_add_tab(Some("orphan"));
+        state.active = Some(0);
+        state.workspaces[0].active_tab = orphan;
         state.ensure_test_terminals();
         state.reconcile_pane_section_order();
-        let front_number = state.workspaces[0].tabs[0].number;
+        let orphan_number = state.workspaces[0].tabs[orphan].number;
         assert_eq!(
             *pane_section_tab_numbers(&state).last().unwrap(),
-            (state.workspaces[0].id.clone(), front_number)
+            (state.workspaces[0].id.clone(), orphan_number)
         );
         state.assert_invariants_for_test();
     }

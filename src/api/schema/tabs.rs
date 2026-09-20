@@ -16,7 +16,8 @@ pub struct TabCreateParams {
     pub label: Option<String>,
     /// Slot the new tab's row takes in the sidebar Tabs band. This only places
     /// the row: the tab is appended to the space `workspace_id` names, exactly
-    /// as it would be without a slot. Defaults to the end of the band.
+    /// as it would be without a slot. Defaults to the slot right below the
+    /// active tab's row, or the end of the band when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<usize>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]

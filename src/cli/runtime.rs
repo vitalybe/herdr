@@ -80,6 +80,13 @@ pub(super) fn popup_close() -> std::io::Result<i32> {
     )
 }
 
+pub(super) fn popup_to_tab() -> std::io::Result<i32> {
+    print_method_response(
+        "cli:popup:to_tab",
+        Method::PopupToTab(EmptyParams::default()),
+    )
+}
+
 pub(super) fn worktree_list(params: WorktreeListParams) -> std::io::Result<i32> {
     print_method_response("cli:worktree:list", Method::WorktreeList(params))
 }

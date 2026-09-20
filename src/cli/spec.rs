@@ -327,6 +327,7 @@ fn popup_command() -> Command {
             Command::new("close")
                 .about("Hide the scratch terminal, or close another popup terminal"),
         )
+        .subcommand(Command::new("to-tab").about("Move the scratch terminal into a tab of its own"))
 }
 
 fn agent_command() -> Command {

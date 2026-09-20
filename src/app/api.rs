@@ -1175,6 +1175,20 @@ impl App {
                     responses::encode_error(request.id, "popup_not_open", "no popup is open")
                 };
             }
+            Method::PopupToTab(_) => {
+                // Matches the ctrl+shift+` chord: the scratch terminal moves into a
+                // tab of its own, whether it is currently visible or hidden. Command
+                // popups have no promotion.
+                return if self.scratch_popup_to_tab() {
+                    responses::encode_success(request.id, ResponseResult::Ok {})
+                } else {
+                    responses::encode_error(
+                        request.id,
+                        "scratch_not_open",
+                        "no scratch terminal is running",
+                    )
+                };
+            }
             Method::PaneSendKeys(params) => return self.handle_pane_send_keys(request.id, params),
             Method::IntegrationInstall(params) => {
                 return self.handle_integration_install(request.id, params);

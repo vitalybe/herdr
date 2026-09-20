@@ -1320,3 +1320,16 @@ fn popup_close_request_round_trips() {
     assert_eq!(json["method"], "popup.close");
     assert_eq!(json["params"], serde_json::json!({}));
 }
+
+#[test]
+fn popup_to_tab_request_round_trips() {
+    let request = Request {
+        id: "popup-to-tab".into(),
+        method: Method::PopupToTab(EmptyParams::default()),
+    };
+
+    let json = serde_json::to_value(request).unwrap();
+
+    assert_eq!(json["method"], "popup.to_tab");
+    assert_eq!(json["params"], serde_json::json!({}));
+}

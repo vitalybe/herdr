@@ -398,6 +398,7 @@ fn key_config_backup_path(path: &std::path::Path) -> std::path::PathBuf {
 fn run_popup_command(args: &[String]) -> std::io::Result<i32> {
     match args.first().map(|arg| arg.as_str()) {
         Some("close") if args.len() == 1 => runtime::popup_close(),
+        Some("to-tab") if args.len() == 1 => runtime::popup_to_tab(),
         Some("help" | "--help" | "-h") => {
             print_popup_help();
             Ok(0)
@@ -412,6 +413,7 @@ fn run_popup_command(args: &[String]) -> std::io::Result<i32> {
 fn print_popup_help() {
     eprintln!("herdr popup commands:");
     eprintln!("  herdr popup close");
+    eprintln!("  herdr popup to-tab");
 }
 
 fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {

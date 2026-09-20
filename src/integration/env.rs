@@ -8,6 +8,9 @@ use portable_pty::CommandBuilder;
 pub(crate) const HERDR_PANE_ID_ENV_VAR: &str = "HERDR_PANE_ID";
 pub(crate) const HERDR_TAB_ID_ENV_VAR: &str = "HERDR_TAB_ID";
 pub(crate) const HERDR_WORKSPACE_ID_ENV_VAR: &str = "HERDR_WORKSPACE_ID";
+/// Marks a popup terminal, so a process can tell it is running in one without an
+/// API round trip. Value is `scratch` or `command`.
+pub(crate) const HERDR_POPUP_ENV_VAR: &str = "HERDR_POPUP";
 
 pub(crate) const PI_CODING_AGENT_DIR_ENV_VAR: &str = "PI_CODING_AGENT_DIR";
 pub(crate) const OMP_CONFIG_DIR_ENV_VAR: &str = "PI_CONFIG_DIR";

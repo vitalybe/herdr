@@ -159,6 +159,11 @@ impl App {
         let terminal_id = TerminalId::alloc();
         // The scratch terminal can be promoted into a real pane, so it keeps its
         // pane identity; command popups stay anonymous.
+        let mut extra_env = extra_env;
+        extra_env.push((
+            crate::integration::HERDR_POPUP_ENV_VAR.to_string(),
+            if scratch { "scratch" } else { "command" }.to_string(),
+        ));
         let launch_env = PaneLaunchEnv::from_extra(extra_env);
         let launch_env = if scratch {
             launch_env
@@ -568,5 +573,59 @@ mod tests {
         let response = app.handle_api_request(close());
         let response: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(response.error.code, "popup_not_open");
+    }
+
+    fn popup_to_tab_request() -> crate::api::schema::Request {
+        crate::api::schema::Request {
+            id: "popup-to-tab".into(),
+            method: crate::api::schema::Method::PopupToTab(
+                crate::api::schema::EmptyParams::default(),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn popup_to_tab_api_promotes_the_visible_scratch_terminal() {
+        let (mut app, _pane_id, terminal_id) = app_with_scratch_popup();
+
+        let response = app.handle_api_request(popup_to_tab_request());
+        let response: crate::api::schema::SuccessResponse =
+            serde_json::from_str(&response).unwrap();
+        assert_eq!(response.result, crate::api::schema::ResponseResult::Ok {});
+
+        assert!(app.state.popup_pane.is_none());
+        assert!(app.state.workspaces[0].tabs.iter().any(|tab| tab
+            .panes
+            .values()
+            .any(|pane| pane.attached_terminal_id == terminal_id)));
+    }
+
+    #[tokio::test]
+    async fn popup_to_tab_api_promotes_the_hidden_scratch_terminal() {
+        let (mut app, _pane_id, terminal_id) = app_with_scratch_popup();
+        assert!(app.hide_scratch_popup());
+
+        let response = app.handle_api_request(popup_to_tab_request());
+        let response: crate::api::schema::SuccessResponse =
+            serde_json::from_str(&response).unwrap();
+        assert_eq!(response.result, crate::api::schema::ResponseResult::Ok {});
+
+        assert!(app.state.hidden_scratch_popup.is_none());
+        assert!(app.state.workspaces[0].tabs.iter().any(|tab| tab
+            .panes
+            .values()
+            .any(|pane| pane.attached_terminal_id == terminal_id)));
+    }
+
+    #[test]
+    fn popup_to_tab_api_reports_no_scratch_terminal() {
+        // A command popup is open, but only the scratch terminal can be promoted.
+        let mut app = app_with_popup();
+
+        let response = app.handle_api_request(popup_to_tab_request());
+        let response: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response.error.code, "scratch_not_open");
+        assert!(app.state.popup_pane.is_some());
     }
 }

@@ -4075,7 +4075,7 @@
               "type": "boolean"
             },
             "index": {
-              "description": "Slot the new tab's row takes in the sidebar Tabs band. This only places\nthe row: the tab is appended to the space `workspace_id` names, exactly\nas it would be without a slot. Defaults to the end of the band.",
+              "description": "Slot the new tab's row takes in the sidebar Tabs band. This only places\nthe row: the tab is appended to the space `workspace_id` names, exactly\nas it would be without a slot. Defaults to the slot right below the\nactive tab's row, or the end of the band when it has none.",
               "format": "uint",
               "minimum": 0,
               "type": [
@@ -5631,6 +5631,22 @@
           "properties": {
             "method": {
               "const": "popup.close",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "popup.to_tab",
               "type": "string"
             },
             "params": {

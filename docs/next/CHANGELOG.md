@@ -6,13 +6,14 @@
 - `tab create` now takes `--index N`, placing the new tab's row at that slot in the sidebar Tabs band instead of at the end, and every tab object reports its current slot as `index`, so a pane can read its own row with `herdr tab get $HERDR_TAB_ID` and pass `.index + 1` to open a tab directly below itself. The slot places the row only, leaving the tab's position inside its space unchanged.
 - A scratch terminal modal opens with `ctrl+backtick`, starts in the focused pane's working directory, hides with the same key without ending its shell, and can be moved into a tab of its own with `ctrl+shift+backtick`. Every other key reaches its shell, Escape included.
 - `herdr popup close` dismisses the popup terminal currently on screen from a script. The scratch terminal is hidden with its shell still running, like pressing `ctrl+backtick` again; other popups such as plugin popup panes are closed.
+- `herdr popup to-tab` moves the scratch terminal into a tab of its own from a script, like pressing `ctrl+shift+backtick`, whether the scratch terminal is on screen or hidden. Popup terminals also carry `HERDR_POPUP=scratch` or `HERDR_POPUP=command`, so a process can tell it is running in one.
 - The scratch terminal supports mouse text selection and copying like a pane does, honoring `ui.copy_on_select` and the Ctrl+C/Cmd+C copy of a retained selection.
 - The scratch terminal modal sizes itself from `ui.scratch_terminal_width` and `ui.scratch_terminal_height`, in cells or as a percentage string like `"80%"`.
 - New tabs nobody has named show the `hh:mm` they were created instead of their position number, including a scratch terminal moved into a tab. A rename or an agent session name still replaces it.
 - Custom themes can now define separate light and dark color overrides when automatic theme switching is enabled. (#837, thanks @aneym)
 
 ### Fixed
-- New tabs now appear at the end of the sidebar Tabs band instead of at the top, and rows already in the band stay where they were put.
+- New tabs now appear in the sidebar Tabs band right below the row of the tab they were created from, inside the same line-split section, and rows already in the band stay where they were put. A scratch terminal moved into a tab lands there too, instead of at the end of the band.
 - Running named servers now activate remote agent-detection manifests downloaded by another server, preventing stale agent states and `agent explain` output until restart. (#2711)
 - New lifecycle event subscriptions now stream only events emitted after subscription begins instead of replaying retained history. (#1270)
 - Windows users whose endpoint security blocks the fileless PowerShell install command can now use a local `install.cmd` bootstrap; installer downloads use `curl.exe` while preserving package checksum verification. (#2751)

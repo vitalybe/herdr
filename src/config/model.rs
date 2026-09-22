@@ -394,6 +394,10 @@ pub struct KeysConfig {
     pub previous_pane: BindingConfig,
     /// Focus the next tab shown in the sidebar tabs band. Unset by default.
     pub next_pane: BindingConfig,
+    /// Move the focused tab's row one slot up in the sidebar Tabs band.
+    pub move_pane_previous: BindingConfig,
+    /// Move the focused tab's row one slot down in the sidebar Tabs band.
+    pub move_pane_next: BindingConfig,
     /// Focus an agent by index 1-9. Unset by default.
     pub focus_agent: BindingConfig,
     /// Local-client shortcut that sends a clipboard image to a remote Herdr session. Default: "ctrl+v".
@@ -535,6 +539,8 @@ pub(crate) struct KeysConfigOverlay {
     previous_pane: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_pane: Option<BindingConfig>,
+    move_pane_previous: Option<BindingConfig>,
+    move_pane_next: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_agent: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -666,6 +672,8 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(rename_tab);
         apply_field!(previous_tab);
         apply_field!(next_tab);
+        apply_field!(move_pane_previous);
+        apply_field!(move_pane_next);
         apply_field!(move_tab_previous);
         apply_field!(move_tab_next);
         apply_field!(switch_tab);
@@ -775,6 +783,8 @@ impl KeysConfig {
         copy_effective_action_field!(rename_tab, keybinds.rename_tab);
         copy_effective_action_field!(previous_tab, keybinds.previous_tab);
         copy_effective_action_field!(next_tab, keybinds.next_tab);
+        copy_effective_action_field!(move_pane_previous, keybinds.move_pane_previous);
+        copy_effective_action_field!(move_pane_next, keybinds.move_pane_next);
         copy_effective_action_field!(move_tab_previous, keybinds.move_tab_previous);
         copy_effective_action_field!(move_tab_next, keybinds.move_tab_next);
         copy_effective_indexed_field!(switch_tab, keybinds.switch_tab);
@@ -1094,6 +1104,8 @@ impl Default for KeysConfig {
             next_agent: BindingConfig::empty(),
             previous_pane: BindingConfig::empty(),
             next_pane: BindingConfig::empty(),
+            move_pane_previous: BindingConfig::empty(),
+            move_pane_next: BindingConfig::empty(),
             focus_agent: BindingConfig::empty(),
             remote_image_paste: "ctrl+v".into(),
             new_tab: BindingConfig::one("prefix+c"),

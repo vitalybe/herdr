@@ -1876,6 +1876,46 @@ impl AppState {
         true
     }
 
+    /// Move the active tab's row one slot up (`delta < 0`) or down in the
+    /// sidebar Tabs band. The band is the user's own order, so this moves the
+    /// row only - the tab keeps its place inside its space. Stops at either
+    /// end rather than wrapping, and steps over a line-split like any row.
+    pub(crate) fn move_active_pane_section_row(&mut self, delta: isize) -> bool {
+        use crate::app::state::PaneManualEntryRef;
+        self.reconcile_pane_section_order();
+        let Some(tab_ref) = self.active_tab_ref() else {
+            return false;
+        };
+        let Some(from) = self.pane_section_index_of(&tab_ref.workspace_id, tab_ref.tab_number)
+        else {
+            return false;
+        };
+        // `move_pane_section_entry` takes the slot the row lands *before*, so
+        // moving down has to clear the neighbour's own slot as well.
+        let insert = if delta < 0 {
+            if from == 0 {
+                return false;
+            }
+            from - 1
+        } else {
+            if from + 1 >= self.pane_section_order.order.len() {
+                return false;
+            }
+            from + 2
+        };
+        if !self.move_pane_section_entry(PaneManualEntryRef::Pane(tab_ref), insert) {
+            return false;
+        }
+        if let Some(pane_id) = self
+            .active
+            .and_then(|ws_idx| self.workspaces.get(ws_idx))
+            .and_then(crate::workspace::Workspace::focused_pane_id)
+        {
+            self.ensure_pane_section_row_visible(pane_id);
+        }
+        true
+    }
+
     pub fn scroll_tabs_left(&mut self) {
         self.tab_scroll_follow_active = false;
         self.tab_scroll = self.tab_scroll.saturating_sub(1);
@@ -4396,6 +4436,32 @@ mod tests {
                 if *id == split && name == "scheduled")
         ));
         assert!(state.workspaces[1].public_pane_number(new_pane).is_some());
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn move_active_pane_section_row_steps_the_band_and_stops_at_the_ends() {
+        let mut state = app_with_workspaces(&["one", "two", "three"]);
+        state.reconcile_pane_section_order();
+        let before = pane_section_tab_numbers(&state);
+
+        // The first space is active, so its row is the one that moves.
+        assert!(state.move_active_pane_section_row(1));
+        let after = pane_section_tab_numbers(&state);
+        assert_eq!(after[0], before[1]);
+        assert_eq!(after[1], before[0]);
+
+        assert!(state.move_active_pane_section_row(-1));
+        assert_eq!(pane_section_tab_numbers(&state), before);
+
+        // Already at the top: nothing to move into.
+        assert!(!state.move_active_pane_section_row(-1));
+        assert_eq!(pane_section_tab_numbers(&state), before);
+
+        // And the same at the bottom.
+        state.active = Some(2);
+        assert!(!state.move_active_pane_section_row(1));
+        assert_eq!(pane_section_tab_numbers(&state), before);
         state.assert_invariants_for_test();
     }
 

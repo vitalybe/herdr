@@ -4,6 +4,7 @@
 
 ### Added
 - `tab create` now takes `--index N`, placing the new tab's row at that slot in the sidebar Tabs band instead of at the end, and every tab object reports its current slot as `index`, so a pane can read its own row with `herdr tab get $HERDR_TAB_ID` and pass `.index + 1` to open a tab directly below itself. The slot places the row only, leaving the tab's position inside its space unchanged.
+- Optional `keys.move_pane_previous` and `keys.move_pane_next` bindings move the focused tab's row one slot up or down in the sidebar Tabs band, stopping at either end. They pair with `keys.previous_pane` and `keys.next_pane`, which walk the same band.
 - A scratch terminal modal opens with `ctrl+backtick`, starts in the focused pane's working directory, hides with the same key without ending its shell, and can be moved into a tab of its own with `ctrl+shift+backtick`. Every other key reaches its shell, Escape included.
 - `herdr popup close` dismisses the popup terminal currently on screen from a script. The scratch terminal is hidden with its shell still running, like pressing `ctrl+backtick` again; other popups such as plugin popup panes are closed.
 - `herdr popup to-tab` moves the scratch terminal into a tab of its own from a script, like pressing `ctrl+shift+backtick`, whether the scratch terminal is on screen or hidden. Popup terminals also carry `HERDR_POPUP=scratch` or `HERDR_POPUP=command`, so a process can tell it is running in one.

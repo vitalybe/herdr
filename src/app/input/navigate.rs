@@ -291,6 +291,14 @@ impl App {
                     leave_navigate_mode(&mut self.state);
                 }
             }
+            NavigateAction::MovePanePrevious => {
+                self.state.move_active_pane_section_row(-1);
+                leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::MovePaneNext => {
+                self.state.move_active_pane_section_row(1);
+                leave_navigate_mode(&mut self.state);
+            }
             NavigateAction::NewTab => {
                 if self.state.active.is_some() {
                     if self.state.prompt_new_tab_name {
@@ -1471,6 +1479,8 @@ pub(crate) enum NavigateAction {
     NextAgent,
     PreviousPane,
     NextPane,
+    MovePanePrevious,
+    MovePaneNext,
     NewTab,
     RenameTab,
     PreviousTab,
@@ -1627,6 +1637,8 @@ fn non_indexed_action_for_key(
         (&kb.rename_tab, NavigateAction::RenameTab),
         (&kb.previous_tab, NavigateAction::PreviousTab),
         (&kb.next_tab, NavigateAction::NextTab),
+        (&kb.move_pane_previous, NavigateAction::MovePanePrevious),
+        (&kb.move_pane_next, NavigateAction::MovePaneNext),
         (&kb.move_tab_previous, NavigateAction::MoveTabPrevious),
         (&kb.move_tab_next, NavigateAction::MoveTabNext),
         (&kb.close_tab, NavigateAction::CloseTab),
@@ -1823,6 +1835,14 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::NextPane => {
             state.next_pane();
+            leave_navigate_mode(state);
+        }
+        NavigateAction::MovePanePrevious => {
+            state.move_active_pane_section_row(-1);
+            leave_navigate_mode(state);
+        }
+        NavigateAction::MovePaneNext => {
+            state.move_active_pane_section_row(1);
             leave_navigate_mode(state);
         }
         NavigateAction::NewTab => {

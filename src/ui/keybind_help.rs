@@ -173,6 +173,8 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
         help_entry(keybind_label(&kb.last_pane), "last pane"),
         help_entry(keybind_label(&kb.previous_pane), "previous pane"),
         help_entry(keybind_label(&kb.next_pane), "next pane"),
+        help_entry(keybind_label(&kb.move_pane_previous), "move pane row up"),
+        help_entry(keybind_label(&kb.move_pane_next), "move pane row down"),
     ];
     groups.push(("panes", panes));
 

@@ -626,6 +626,18 @@
           "description": "Focus the next tab shown in the sidebar tabs band. Unset by default."
         },
         {
+          "key": "keys.move_pane_previous",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Move the focused tab's row one slot up in the sidebar tabs band. Unset by default."
+        },
+        {
+          "key": "keys.move_pane_next",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Move the focused tab's row one slot down in the sidebar tabs band. Unset by default."
+        },
+        {
           "key": "keys.focus_agent",
           "type": "keybinding",
           "default": "unset",

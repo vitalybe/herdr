@@ -261,15 +261,16 @@ impl Workspace {
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
     ) -> Self {
-        let id = generate_workspace_id();
-        let root_pane = moved.pane_id;
         let tab = Tab::from_existing_pane(1, tab_label, moved, events, render_notify, render_dirty);
-        let mut public_pane_numbers = HashMap::new();
-        public_pane_numbers.insert(root_pane, 1);
+        Self::from_moved_tab(label, identity_cwd, tab)
+    }
+
+    /// A new workspace whose only tab is one moved out of another workspace.
+    pub(crate) fn from_moved_tab(label: Option<String>, identity_cwd: PathBuf, tab: Tab) -> Self {
         let (cached_git_space, cached_auto_label, cached_git_status_key) =
             discover_workspace_git_identity(&identity_cwd);
-        Self {
-            id,
+        let mut workspace = Self {
+            id: generate_workspace_id(),
             custom_name: label,
             identity_cwd: identity_cwd.clone(),
             cached_identity_cwd: identity_cwd.clone(),
@@ -281,15 +282,17 @@ impl Workspace {
             worktree_space: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
-            public_pane_numbers,
-            next_public_pane_number: 2,
-            next_public_tab_number: 2,
-            tabs: vec![tab],
+            public_pane_numbers: HashMap::new(),
+            next_public_pane_number: 1,
+            next_public_tab_number: 1,
+            tabs: Vec::new(),
             active_tab: 0,
             home_tab: 0,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
-        }
+        };
+        workspace.insert_moved_tab(tab);
+        workspace
     }
 
     // Test modules construct workspaces through the default constructor; production paths
@@ -1083,6 +1086,32 @@ impl Workspace {
         let tab =
             Tab::from_existing_pane(number, label, moved, events, render_notify, render_dirty);
         if !self.public_pane_numbers.contains_key(&pane_id) {
+            self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
+        }
+        self.tabs.push(tab);
+        self.tabs.len() - 1
+    }
+
+    /// Detach a whole tab so it can join another workspace. Its panes give up
+    /// their public numbers here; the receiving workspace hands out new ones.
+    pub(crate) fn take_tab_for_move(&mut self, tab_idx: usize) -> Option<Tab> {
+        if tab_idx >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(tab_idx);
+        for pane_id in tab.layout.pane_ids() {
+            self.unregister_pane(pane_id);
+        }
+        self.adjust_active_tab_after_removal(tab_idx);
+        Some(tab)
+    }
+
+    /// Append a tab taken from another workspace, numbering it and its panes
+    /// in this workspace. Returns the tab's index.
+    pub(crate) fn insert_moved_tab(&mut self, mut tab: Tab) -> usize {
+        tab.number = self.next_public_tab_number;
+        self.next_public_tab_number += 1;
+        for pane_id in tab.layout.pane_ids() {
             self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
         }
         self.tabs.push(tab);

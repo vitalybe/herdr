@@ -43,6 +43,22 @@ pub struct TabMoveParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabMoveToWorkspaceParams {
+    /// Tab to move. Defaults to the tab holding `pane_id`, then the focused tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    /// Destination workspace, by id or by label (case-insensitive). A label no
+    /// workspace carries creates a new workspace with that label. Omitted, the
+    /// label is derived from the tab's focused pane cwd: the main repository's
+    /// folder name inside a git checkout (linked worktrees included), else the
+    /// cwd's folder name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabInfo {
     pub tab_id: String,
     pub workspace_id: String,

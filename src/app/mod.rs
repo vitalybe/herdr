@@ -676,6 +676,7 @@ impl App {
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
+            moving_tab_to_space: false,
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
             rename_pane_target: None,

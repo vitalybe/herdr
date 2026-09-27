@@ -1734,6 +1734,51 @@ impl AppState {
         self.pane_section_order.order.insert(at, entry);
     }
 
+    /// Point a tab's Tabs-band row at the tab's new identity after it moved to
+    /// another workspace, so the row keeps its slot instead of being dropped
+    /// and re-placed.
+    pub(crate) fn rekey_pane_section_row(
+        &mut self,
+        old: &crate::app::state::PaneSectionRef,
+        new: crate::app::state::PaneSectionRef,
+    ) {
+        use crate::app::state::PaneManualEntry;
+        let Some(entry) = self
+            .pane_section_order
+            .order
+            .iter_mut()
+            .find(|entry| matches!(entry, PaneManualEntry::Pane(tab_ref) if tab_ref == old))
+        else {
+            return;
+        };
+        *entry = PaneManualEntry::Pane(new.clone());
+        self.pane_section_order.known.remove(old);
+        self.pane_section_order.known.insert(new);
+    }
+
+    /// Drop a workspace that has no tabs left, keeping `active` and `selected`
+    /// on the same workspaces.
+    pub(crate) fn remove_empty_workspace(&mut self, ws_idx: usize) {
+        self.workspaces.remove(ws_idx);
+        if self.workspaces.is_empty() {
+            self.active = None;
+            self.selected = 0;
+            return;
+        }
+        if let Some(active) = self.active {
+            if active == ws_idx {
+                self.active = Some(ws_idx.min(self.workspaces.len() - 1));
+            } else if active > ws_idx {
+                self.active = Some(active - 1);
+            }
+        }
+        if self.selected == ws_idx {
+            self.selected = ws_idx.min(self.workspaces.len() - 1);
+        } else if self.selected > ws_idx {
+            self.selected -= 1;
+        }
+    }
+
     /// Reconcile the client-only Tabs-band order with the live set of tabs across
     /// all workspaces. Called from the compute_view mutation phase so render stays
     /// pure, and from the API path so a request always reads a current band.

@@ -1705,7 +1705,15 @@ impl ContextMenuState {
                 "Open worktree...",
                 if collapsed { "Expand" } else { "Collapse" },
             ],
-            ContextMenuKind::Tab { .. } => vec!["New tab", "Rename", "Close"],
+            ContextMenuKind::Tab { .. } => {
+                vec![
+                    "New tab",
+                    "Rename",
+                    "Move to space...",
+                    "Auto space",
+                    "Close",
+                ]
+            }
             ContextMenuKind::LineSplit { .. } => vec!["Rename", "Delete"],
             ContextMenuKind::Pane {
                 source_pane_id,
@@ -1905,6 +1913,8 @@ pub struct AppState {
     /// handled by the outer App/event loop instead of directly from AppState.
     pub request_clipboard_write: Option<Vec<u8>>,
     pub creating_new_tab: bool,
+    /// The tab-name dialog is asking which space to move the active tab to.
+    pub moving_tab_to_space: bool,
     pub requested_new_tab_name: Option<String>,
     pub pending_workspace_create_cwd: Option<std::path::PathBuf>,
     pub rename_pane_target: Option<PaneId>,
@@ -2376,6 +2386,7 @@ impl AppState {
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
+            moving_tab_to_space: false,
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
             rename_pane_target: None,

@@ -300,6 +300,17 @@ fn tab_command() -> Command {
                 .arg(required("label", "LABEL").num_args(1..)),
         )
         .subcommand(id_command("close", "tab_id", "Close a tab"))
+        .subcommand(
+            Command::new("space")
+                .about("Move a tab to a space, creating the space if it does not exist")
+                .arg(required("space", "SPACE"))
+                .arg(option("tab", "TAB_ID")),
+        )
+        .subcommand(
+            Command::new("auto-space")
+                .about("Move a tab to the space named after its repository or folder")
+                .arg(option("tab", "TAB_ID")),
+        )
 }
 
 fn notification_command() -> Command {

@@ -114,6 +114,22 @@ impl AppState {
         None
     }
 
+    /// Workspace and tab index of the Tabs-band tab row at `row`, if any.
+    pub(super) fn pane_section_tab_at_row(&self, row: u16) -> Option<(usize, usize)> {
+        use crate::app::state::PaneSectionRowContent;
+        let area = self
+            .view
+            .pane_section_row_areas
+            .iter()
+            .find(|area| row >= area.rect.y && row < area.rect.y + area.rect.height)?;
+        match area.content {
+            PaneSectionRowContent::Pane {
+                ws_idx, tab_idx, ..
+            } => Some((ws_idx, tab_idx)),
+            PaneSectionRowContent::LineSplit { .. } => None,
+        }
+    }
+
     /// Whether the given cell hits the Tabs-band "+ split" affordance.
     pub(super) fn on_pane_section_split_button(&self, col: u16, row: u16) -> bool {
         if self.sidebar_collapsed {

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
+use crate::api::schema::{
+    TabCreateParams, TabListParams, TabMoveToWorkspaceParams, TabRenameParams,
+};
 
 pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
@@ -15,6 +17,8 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "focus" => tab_focus(&args[1..]),
         "rename" => tab_rename(&args[1..]),
         "close" => tab_close(&args[1..]),
+        "space" => tab_space(&args[1..], false),
+        "auto-space" => tab_space(&args[1..], true),
         "help" | "--help" | "-h" => {
             print_tab_help();
             Ok(0)
@@ -188,6 +192,61 @@ fn tab_close(args: &[String]) -> std::io::Result<i32> {
     super::runtime::tab_close(super::normalize_tab_id(raw_tab_id))
 }
 
+const TAB_SPACE_USAGE: &str =
+    "usage: herdr tab space <space> [--tab <tab_id>]\n       herdr tab auto-space [--tab <tab_id>]";
+
+/// Move a tab into the space named `<space>` (an id or a label), creating the
+/// space when none carries that label. `auto-space` names the space after the
+/// tab's repository (or folder) instead. Without `--tab` it moves the caller's
+/// own tab, falling back to the focused tab outside Herdr.
+fn tab_space(args: &[String], auto: bool) -> std::io::Result<i32> {
+    let mut workspace = None;
+    let mut tab_id = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--tab" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --tab");
+                    return Ok(2);
+                };
+                tab_id = Some(super::normalize_tab_id(value));
+                index += 2;
+            }
+            other if other.starts_with("--") => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
+            other if !auto && workspace.is_none() => {
+                workspace = Some(other.to_string());
+                index += 1;
+            }
+            _ => {
+                eprintln!("{TAB_SPACE_USAGE}");
+                return Ok(2);
+            }
+        }
+    }
+    if !auto && workspace.is_none() {
+        eprintln!("{TAB_SPACE_USAGE}");
+        return Ok(2);
+    }
+    let pane_id = if tab_id.is_none() {
+        std::env::var("HERDR_PANE_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    } else {
+        None
+    };
+
+    super::runtime::tab_move_to_workspace(TabMoveToWorkspaceParams {
+        tab_id,
+        pane_id,
+        workspace,
+    })
+}
+
 fn print_tab_help() {
     eprintln!("herdr tab commands:");
     eprintln!("  herdr tab list [--workspace <workspace_id>]");
@@ -198,4 +257,6 @@ fn print_tab_help() {
     eprintln!("  herdr tab focus <tab_id>");
     eprintln!("  herdr tab rename <tab_id> <label>");
     eprintln!("  herdr tab close <tab_id>");
+    eprintln!("  herdr tab space <space> [--tab <tab_id>]");
+    eprintln!("  herdr tab auto-space [--tab <tab_id>]");
 }

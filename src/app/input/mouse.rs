@@ -1208,6 +1208,16 @@ impl AppState {
                     self.mode = Mode::ContextMenu;
                     return None;
                 }
+                if let Some((ws_idx, tab_idx)) = self.pane_section_tab_at_row(mouse.row) {
+                    self.context_menu = Some(ContextMenuState {
+                        kind: ContextMenuKind::Tab { ws_idx, tab_idx },
+                        x: mouse.column,
+                        y: mouse.row,
+                        list: MenuListState::new(0),
+                    });
+                    self.mode = Mode::ContextMenu;
+                    return None;
+                }
                 if let Some(idx) = self.workspace_at_row(mouse.row) {
                     self.selected = idx;
                     let kind = self
@@ -4460,7 +4470,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 3,
+            menu.y + 5,
         ));
 
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);

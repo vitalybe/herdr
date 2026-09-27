@@ -4126,6 +4126,31 @@
           ],
           "type": "object"
         },
+        "TabMoveToWorkspaceParams": {
+          "properties": {
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "description": "Tab to move. Defaults to the tab holding `pane_id`, then the focused tab.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace": {
+              "description": "Destination workspace, by id or by label (case-insensitive). A label no\nworkspace carries creates a new workspace with that label. Omitted, the\nlabel is derived from the tab's focused pane cwd: the main repository's\nfolder name inside a git checkout (linked worktrees included), else the\ncwd's folder name.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "TabRenameParams": {
           "properties": {
             "label": {
@@ -4899,6 +4924,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabMoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.move_to_workspace",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabMoveToWorkspaceParams"
             }
           },
           "required": [

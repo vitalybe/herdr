@@ -410,6 +410,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::TabFocus(_) => "tab.focus",
         Method::TabRename(_) => "tab.rename",
         Method::TabMove(_) => "tab.move",
+        Method::TabMoveToWorkspace(_) => "tab.move_to_workspace",
         Method::TabClose(_) => "tab.close",
         Method::AgentList(_) => "agent.list",
         Method::AgentGet(_) => "agent.get",

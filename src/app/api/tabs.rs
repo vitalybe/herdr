@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, TabCreateParams, TabListParams,
-    TabMoveParams, TabRenameParams, TabTarget,
+    TabMoveParams, TabMoveToWorkspaceParams, TabRenameParams, TabTarget,
 };
 use crate::app::{App, Mode};
 
@@ -281,6 +281,181 @@ impl App {
         encode_success(id, ResponseResult::TabList { tabs })
     }
 
+    /// Move a whole tab, layout and all, into another workspace, creating the
+    /// workspace when no workspace carries the requested label. The tab and its
+    /// panes get new public ids there; old pane ids keep resolving through the
+    /// alias table so processes started under them can still address their pane.
+    pub(super) fn handle_tab_move_to_workspace(
+        &mut self,
+        id: String,
+        params: TabMoveToWorkspaceParams,
+    ) -> String {
+        let source = if let Some(tab_id) = &params.tab_id {
+            let Some(source) = self.parse_tab_id(tab_id) else {
+                return tab_not_found(id, tab_id);
+            };
+            source
+        } else if let Some(pane_id) = &params.pane_id {
+            let Some((ws_idx, pane_id_raw)) = self.parse_pane_id(pane_id) else {
+                return encode_error(id, "pane_not_found", format!("pane {pane_id} not found"));
+            };
+            let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id_raw)
+            else {
+                return encode_error(id, "pane_not_found", format!("pane {pane_id} not found"));
+            };
+            (ws_idx, tab_idx)
+        } else if let Some(ws_idx) = self.state.active {
+            (ws_idx, self.state.workspaces[ws_idx].active_tab)
+        } else {
+            return encode_error(id, "tab_not_found", "no focused tab");
+        };
+        let (source_ws_idx, source_tab_idx) = source;
+        let target = match &params.workspace {
+            Some(workspace) => workspace.trim().to_string(),
+            None => self.auto_workspace_label(source_ws_idx, source_tab_idx),
+        };
+        let target = target.as_str();
+        if target.is_empty() {
+            return encode_error(id, "invalid_params", "workspace must not be empty");
+        }
+
+        let target_ws_idx = self
+            .state
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == target)
+            .or_else(|| {
+                self.state.workspaces.iter().position(|ws| {
+                    ws.display_name_from(&self.state.terminals, &self.terminal_runtimes)
+                        .eq_ignore_ascii_case(target)
+                })
+            });
+        if target_ws_idx == Some(source_ws_idx) {
+            let Some(tab) = self.tab_info(source_ws_idx, source_tab_idx) else {
+                return tab_not_found(id, target);
+            };
+            return encode_success(id, ResponseResult::TabInfo { tab });
+        }
+
+        let source_ws = &self.state.workspaces[source_ws_idx];
+        let previous_workspace_id = source_ws.id.clone();
+        let Some(previous_tab_id) = self.public_tab_id(source_ws_idx, source_tab_idx) else {
+            return tab_not_found(id, &previous_workspace_id);
+        };
+        let previous_row = crate::app::state::PaneSectionRef {
+            workspace_id: previous_workspace_id.clone(),
+            tab_number: source_ws.tabs[source_tab_idx].number,
+        };
+        let previous_pane_ids: Vec<_> = source_ws.tabs[source_tab_idx]
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter_map(|pane_id| Some((self.public_pane_id(source_ws_idx, pane_id)?, pane_id)))
+            .collect();
+        let was_focused =
+            self.state.active == Some(source_ws_idx) && source_ws.active_tab == source_tab_idx;
+
+        let Some(tab) = self.state.workspaces[source_ws_idx].take_tab_for_move(source_tab_idx)
+        else {
+            return tab_not_found(id, &previous_tab_id);
+        };
+        let created_workspace = target_ws_idx.is_none();
+        let (mut target_ws_idx, target_tab_idx) = match target_ws_idx {
+            Some(ws_idx) => (ws_idx, self.state.workspaces[ws_idx].insert_moved_tab(tab)),
+            None => {
+                let identity_cwd = tab
+                    .terminal_id(tab.root_pane)
+                    .and_then(|terminal_id| self.state.terminals.get(terminal_id))
+                    .map(|terminal| terminal.cwd.clone())
+                    .unwrap_or_else(|| self.state.workspaces[source_ws_idx].identity_cwd.clone());
+                self.state
+                    .workspaces
+                    .push(crate::workspace::Workspace::from_moved_tab(
+                        Some(target.to_string()),
+                        identity_cwd,
+                        tab,
+                    ));
+                (self.state.workspaces.len() - 1, 0)
+            }
+        };
+        for (public_id, pane_id) in previous_pane_ids {
+            self.state.public_pane_id_aliases.insert(public_id, pane_id);
+        }
+
+        let source_closed = self.state.workspaces[source_ws_idx].tabs.is_empty();
+        if source_closed {
+            self.state.remove_empty_workspace(source_ws_idx);
+            if target_ws_idx > source_ws_idx {
+                target_ws_idx -= 1;
+            }
+        }
+
+        let target_ws = &self.state.workspaces[target_ws_idx];
+        let new_row = crate::app::state::PaneSectionRef {
+            workspace_id: target_ws.id.clone(),
+            tab_number: target_ws.tabs[target_tab_idx].number,
+        };
+        self.state.rekey_pane_section_row(&previous_row, new_row);
+        if was_focused {
+            self.state
+                .switch_workspace_tab(target_ws_idx, target_tab_idx);
+        } else if !source_closed && self.state.active == Some(source_ws_idx) {
+            self.state.refresh_tab_bar_view();
+        }
+        self.state.mark_session_dirty();
+        self.schedule_session_save();
+
+        self.emit_event(EventEnvelope {
+            event: EventKind::TabClosed,
+            data: EventData::TabClosed {
+                tab_id: previous_tab_id,
+                workspace_id: previous_workspace_id.clone(),
+            },
+        });
+        if source_closed {
+            self.emit_event(EventEnvelope {
+                event: EventKind::WorkspaceClosed,
+                data: EventData::WorkspaceClosed {
+                    workspace_id: previous_workspace_id,
+                    workspace: None,
+                },
+            });
+        }
+        if created_workspace {
+            let workspace = self.workspace_info(target_ws_idx);
+            self.emit_event(EventEnvelope {
+                event: EventKind::WorkspaceCreated,
+                data: EventData::WorkspaceCreated { workspace },
+            });
+        }
+        self.emit_tab_created_events(target_ws_idx, target_tab_idx);
+        let Some(tab) = self.tab_info(target_ws_idx, target_tab_idx) else {
+            return encode_error(id, "tab_move_failed", "moved tab is unavailable");
+        };
+
+        encode_success(id, ResponseResult::TabInfo { tab })
+    }
+
+    /// The workspace label a tab belongs in by where its focused pane is: the
+    /// main repository's folder name in a git checkout, so every worktree of a
+    /// repo lands in one workspace, else the folder name.
+    fn auto_workspace_label(&self, ws_idx: usize, tab_idx: usize) -> String {
+        let Some(cwd) = self.state.workspaces[ws_idx]
+            .tabs
+            .get(tab_idx)
+            .and_then(|tab| self.launch_cwd_for_pane_in_workspace(ws_idx, tab.layout.focused()))
+        else {
+            return String::new();
+        };
+        if let Some(space) = crate::workspace::git_space_metadata(&cwd) {
+            return space.repo_name;
+        }
+        cwd.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| cwd.display().to_string())
+    }
+
     pub(super) fn handle_tab_close(&mut self, id: String, target: TabTarget) -> String {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return tab_not_found(id, &target.tab_id);
@@ -436,6 +611,97 @@ mod tests {
             } if closed_workspace_id == &workspace_id
                 && workspace.workspace_id == workspace_id
         ));
+    }
+
+    #[test]
+    fn api_tab_move_to_workspace_joins_existing_space_by_label() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(&Config::default(), true, None, api_rx, event_hub.clone());
+        let mut alpha = Workspace::test_new("alpha");
+        alpha.test_add_tab(Some("mover"));
+        alpha.switch_tab(1);
+        app.state.workspaces = vec![alpha, Workspace::test_new("Work")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.reconcile_pane_section_order();
+        let moved_root = app.state.workspaces[0].tabs[1].root_pane;
+        let old_pane_id = app.public_pane_id(0, moved_root).unwrap();
+        let old_row = app
+            .state
+            .pane_section_index_of(&app.public_workspace_id(0), 2)
+            .unwrap();
+
+        let response = app.handle_tab_move_to_workspace(
+            "req".into(),
+            TabMoveToWorkspaceParams {
+                tab_id: Some(app.public_tab_id(0, 1).unwrap()),
+                pane_id: None,
+                workspace: Some("work".into()),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabInfo { tab } = success.result else {
+            panic!("expected tab info");
+        };
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[1].tabs.len(), 2);
+        assert_eq!(app.state.workspaces[1].tabs[1].root_pane, moved_root);
+        assert_eq!(tab.tab_id, app.public_tab_id(1, 1).unwrap());
+        assert_eq!(app.state.active, Some(1), "the focused tab is followed");
+        assert_eq!(app.state.workspaces[1].active_tab, 1);
+        assert_eq!(app.parse_pane_id(&old_pane_id), Some((1, moved_root)));
+        let new_number = app.state.workspaces[1].tabs[1].number;
+        assert_eq!(
+            app.state
+                .pane_section_index_of(&app.public_workspace_id(1), new_number),
+            Some(old_row),
+            "the band row keeps its slot"
+        );
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn api_tab_move_to_workspace_creates_missing_space_and_closes_empty_source() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(&Config::default(), true, None, api_rx, event_hub.clone());
+        app.state.workspaces = vec![Workspace::test_new("keep"), Workspace::test_new("solo")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let moved_root = app.state.workspaces[1].tabs[0].root_pane;
+        let solo_id = app.public_workspace_id(1);
+
+        let response = app.handle_tab_move_to_workspace(
+            "req".into(),
+            TabMoveToWorkspaceParams {
+                tab_id: Some(app.public_tab_id(1, 0).unwrap()),
+                pane_id: None,
+                workspace: Some("fresh".into()),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::TabInfo { .. }));
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(
+            app.state.workspaces[1].custom_name.as_deref(),
+            Some("fresh")
+        );
+        assert_eq!(app.state.workspaces[1].tabs[0].root_pane, moved_root);
+        assert_eq!(app.state.active, Some(0), "an unfocused tab moves quietly");
+        let kinds: Vec<_> = event_hub
+            .events_after(0)
+            .into_iter()
+            .map(|(_, event)| event.event)
+            .collect();
+        assert!(kinds.contains(&EventKind::WorkspaceClosed));
+        assert!(kinds.contains(&EventKind::WorkspaceCreated));
+        assert!(app.parse_workspace_id(&solo_id).is_none());
+        app.state.assert_invariants_for_test();
     }
 
     #[test]

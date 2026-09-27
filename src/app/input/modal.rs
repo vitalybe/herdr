@@ -577,6 +577,26 @@ pub(super) fn open_new_tab_dialog(state: &mut AppState) {
     state.mode = Mode::RenameTab;
 }
 
+/// Ask which space to move the active tab to, prefilled with its current
+/// space. A name no space carries creates that space.
+pub(super) fn open_move_tab_to_space_dialog(state: &mut AppState) {
+    let Some(name) = state
+        .active
+        .and_then(|i| state.workspaces.get(i))
+        .map(|ws| ws.display_name_from_terminals(&state.terminals))
+    else {
+        return;
+    };
+    state.creating_new_tab = false;
+    state.moving_tab_to_space = true;
+    state.requested_new_tab_name = None;
+    state.pending_workspace_create_cwd = None;
+    state.rename_pane_target = None;
+    state.set_name_input(name);
+    state.name_input_replace_on_type = true;
+    state.mode = Mode::RenameTab;
+}
+
 pub(super) fn leave_modal(state: &mut AppState) {
     if state.active.is_some() {
         state.mode = Mode::Terminal;
@@ -652,6 +672,8 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                     crate::logging::workspace_renamed(&workspace_id);
                     state.mark_session_dirty();
                 }
+                // Moving needs the server; the state-only path just closes.
+                Mode::RenameTab if state.moving_tab_to_space => {}
                 Mode::RenameTab if state.creating_new_tab => {
                     state.request_new_tab = true;
                     let default_name = next_new_tab_default_name(state);
@@ -715,6 +737,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                 _ => {}
             }
             state.creating_new_tab = false;
+            state.moving_tab_to_space = false;
             state.pending_workspace_create_cwd = None;
             state.rename_pane_target = None;
             state.rename_line_split_target = None;
@@ -1067,6 +1090,13 @@ pub(super) fn apply_context_menu_action(
             state.switch_tab(tab_idx);
             open_rename_active_tab(state, false);
         }
+        (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Move to space...")) => {
+            state.selected = ws_idx;
+            state.active = Some(ws_idx);
+            state.switch_tab(tab_idx);
+            open_move_tab_to_space_dialog(state);
+        }
+        (ContextMenuKind::Tab { .. }, Some("Auto space")) => leave_modal(state),
         (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Close")) => {
             state.selected = ws_idx;
             state.active = Some(ws_idx);
@@ -1274,6 +1304,21 @@ impl App {
                         crate::api::schema::WorkspaceRenameParams {
                             workspace_id,
                             label: new_name,
+                        },
+                    );
+                }
+            }
+            Mode::RenameTab if self.state.moving_tab_to_space => {
+                let tab_id = self.state.active.and_then(|ws_idx| {
+                    self.public_tab_id(ws_idx, self.state.workspaces[ws_idx].active_tab)
+                });
+                if let (Some(tab_id), false) = (tab_id, new_name.is_empty()) {
+                    self.runtime_tab_move_to_workspace(
+                        "tui.tab.move_to_workspace",
+                        crate::api::schema::TabMoveToWorkspaceParams {
+                            tab_id: Some(tab_id),
+                            pane_id: None,
+                            workspace: Some(new_name),
                         },
                     );
                 }
@@ -1505,6 +1550,24 @@ impl App {
                 self.focus_tab_idx_via_api(tab_idx);
                 open_rename_active_tab(&mut self.state, false);
             }
+            (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Move to space...")) => {
+                self.focus_workspace_idx_via_api(ws_idx);
+                self.focus_tab_idx_via_api(tab_idx);
+                open_move_tab_to_space_dialog(&mut self.state);
+            }
+            (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Auto space")) => {
+                if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
+                    self.runtime_tab_move_to_workspace(
+                        "tui.tab.auto_space",
+                        crate::api::schema::TabMoveToWorkspaceParams {
+                            tab_id: Some(tab_id),
+                            pane_id: None,
+                            workspace: None,
+                        },
+                    );
+                }
+                leave_modal(&mut self.state);
+            }
             (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Close")) => {
                 self.focus_workspace_idx_via_api(ws_idx);
                 self.focus_tab_idx_via_api(tab_idx);
@@ -1659,6 +1722,7 @@ impl App {
 
 fn cancel_rename_modal(state: &mut AppState) {
     state.creating_new_tab = false;
+    state.moving_tab_to_space = false;
     state.requested_new_tab_name = None;
     state.pending_workspace_create_cwd = None;
     state.rename_pane_target = None;

@@ -460,6 +460,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneClearAgentAuthority(_) => "pane.clear_agent_authority",
         Method::PaneReleaseAgent(_) => "pane.release_agent",
         Method::PaneClose(_) => "pane.close",
+        Method::PopupGet(_) => "popup.get",
         Method::PopupClose(_) => "popup.close",
         Method::PopupToTab(_) => "popup.to_tab",
         Method::EventsSubscribe(_) => "events.subscribe",

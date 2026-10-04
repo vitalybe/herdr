@@ -1166,6 +1166,25 @@ impl App {
                 return self.handle_pane_send_input(request.id, params)
             }
             Method::PaneClose(target) => return self.handle_pane_close(request.id, target),
+            Method::PopupGet(_) => {
+                let popup = self
+                    .state
+                    .popup_pane
+                    .as_ref()
+                    .map(|popup| (popup, true))
+                    .or_else(|| {
+                        self.state
+                            .hidden_scratch_popup
+                            .as_ref()
+                            .map(|popup| (popup, false))
+                    })
+                    .map(|(popup, visible)| crate::api::schema::PopupInfo {
+                        terminal_id: popup.terminal_id.to_string(),
+                        kind: if popup.scratch { "scratch" } else { "command" }.to_string(),
+                        visible,
+                    });
+                return responses::encode_success(request.id, ResponseResult::PopupInfo { popup });
+            }
             Method::PopupClose(_) => {
                 // Matches the ctrl+` toggle: the scratch terminal is hidden and keeps
                 // running, any other popup is terminated.

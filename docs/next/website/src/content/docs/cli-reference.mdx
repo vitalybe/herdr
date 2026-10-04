@@ -182,6 +182,7 @@ herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [
 herdr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--no-focus]
 herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]
 herdr pane close <pane_id>
+herdr popup get
 herdr popup close
 herdr popup to-tab
 ```
@@ -196,7 +197,13 @@ The split response exposes the new pane ID as `.result.pane.pane_id`.
 
 `popup to-tab` moves the scratch terminal into a tab of its own, keeping its shell and history, exactly as pressing `ctrl+shift+backtick` does. It works whether the scratch terminal is on screen or hidden, and the new tab's row lands right below the row of the tab it was promoted from. It returns `scratch_not_open` when no scratch terminal is running; a command or plugin popup cannot be promoted.
 
-Popup terminals launch with `HERDR_POPUP` set to `scratch` or `command`, so a process can tell it is running in a popup without an API call. A scratch terminal promoted into a tab keeps that value for the life of its shell.
+`popup get` returns the popup terminal as `.result.popup`, with its `terminal_id`, its `kind` (`scratch` or `command`) and whether it is `visible`, which is false while the scratch terminal is hidden. `.result.popup` is null when no popup is open and no scratch terminal is running.
+
+Popup terminals launch with `HERDR_POPUP` set to `scratch` or `command` and `HERDR_TERMINAL_ID` set to their terminal id. Both describe how the shell was launched and stay in its environment for life, including after a scratch terminal is promoted into a tab. To tell whether a process is still in a popup, compare `HERDR_TERMINAL_ID` with the `terminal_id` that `popup get` reports:
+
+```bash
+[ "$(herdr popup get | jq -r '.result.popup.terminal_id')" = "$HERDR_TERMINAL_ID" ]
+```
 
 `pane input --right-click pane` forwards unmodified right-click gestures to a
 mouse-reporting pane application. `herdr` restores the default pane menu.

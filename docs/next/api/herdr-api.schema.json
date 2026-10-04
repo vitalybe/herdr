@@ -5630,6 +5630,22 @@
         {
           "properties": {
             "method": {
+              "const": "popup.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "popup.close",
               "type": "string"
             },
@@ -8622,6 +8638,28 @@
           ],
           "type": "string"
         },
+        "PopupInfo": {
+          "description": "The session's popup terminal. A process launched in a popup finds its own\n`HERDR_TERMINAL_ID` here only while it is still a popup.",
+          "properties": {
+            "kind": {
+              "description": "`scratch` or `command`, as in `HERDR_POPUP`.",
+              "type": "string"
+            },
+            "terminal_id": {
+              "type": "string"
+            },
+            "visible": {
+              "description": "False while the scratch terminal is hidden with its process still running.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "terminal_id",
+            "kind",
+            "visible"
+          ],
+          "type": "object"
+        },
         "PopupSize": {
           "oneOf": [
             {
@@ -9788,6 +9826,28 @@
               "required": [
                 "type",
                 "pane_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "popup": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/PopupInfo"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "const": "popup_info",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
               ],
               "type": "object"
             },

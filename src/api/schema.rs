@@ -206,6 +206,8 @@ pub enum Method {
     PaneReleaseAgent(PaneReleaseAgentParams),
     #[serde(rename = "pane.close")]
     PaneClose(PaneTarget),
+    #[serde(rename = "popup.get")]
+    PopupGet(EmptyParams),
     #[serde(rename = "popup.close")]
     PopupClose(EmptyParams),
     #[serde(rename = "popup.to_tab")]

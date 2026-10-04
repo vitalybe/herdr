@@ -264,11 +264,25 @@ pub enum ResponseResult {
     PluginPaneClosed {
         pane_id: String,
     },
+    PopupInfo {
+        popup: Option<PopupInfo>,
+    },
     ConfigReload {
         status: crate::config::ConfigReloadStatus,
         diagnostics: Vec<String>,
     },
     Ok {},
+}
+
+/// The session's popup terminal. A process launched in a popup finds its own
+/// `HERDR_TERMINAL_ID` here only while it is still a popup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PopupInfo {
+    pub terminal_id: String,
+    /// `scratch` or `command`, as in `HERDR_POPUP`.
+    pub kind: String,
+    /// False while the scratch terminal is hidden with its process still running.
+    pub visible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -323,6 +323,7 @@ fn notification_command() -> Command {
 fn popup_command() -> Command {
     Command::new("popup")
         .about("Control the active popup terminal")
+        .subcommand(Command::new("get").about("Show the popup terminal, on screen or hidden"))
         .subcommand(
             Command::new("close")
                 .about("Hide the scratch terminal, or close another popup terminal"),

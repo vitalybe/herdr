@@ -164,6 +164,10 @@ impl App {
             crate::integration::HERDR_POPUP_ENV_VAR.to_string(),
             if scratch { "scratch" } else { "command" }.to_string(),
         ));
+        extra_env.push((
+            crate::integration::HERDR_TERMINAL_ID_ENV_VAR.to_string(),
+            terminal_id.to_string(),
+        ));
         let launch_env = PaneLaunchEnv::from_extra(extra_env);
         let launch_env = if scratch {
             launch_env
@@ -618,6 +622,46 @@ mod tests {
             .panes
             .values()
             .any(|pane| pane.attached_terminal_id == terminal_id)));
+    }
+
+    fn popup_get(app: &mut App) -> Option<crate::api::schema::PopupInfo> {
+        let response =
+            app.handle_api_request(crate::api::schema::Request {
+                id: "popup-get".into(),
+                method: crate::api::schema::Method::PopupGet(
+                    crate::api::schema::EmptyParams::default(),
+                ),
+            });
+        let response: crate::api::schema::SuccessResponse =
+            serde_json::from_str(&response).unwrap();
+        let crate::api::schema::ResponseResult::PopupInfo { popup } = response.result else {
+            panic!("expected popup info");
+        };
+        popup
+    }
+
+    #[tokio::test]
+    async fn popup_get_follows_the_scratch_terminal_until_it_becomes_a_tab() {
+        let (mut app, _pane_id, terminal_id) = app_with_scratch_popup();
+        let expected = |visible| crate::api::schema::PopupInfo {
+            terminal_id: terminal_id.to_string(),
+            kind: "scratch".into(),
+            visible,
+        };
+
+        assert_eq!(popup_get(&mut app), Some(expected(true)));
+        assert!(app.hide_scratch_popup());
+        assert_eq!(popup_get(&mut app), Some(expected(false)));
+        assert!(app.scratch_popup_to_tab());
+        assert_eq!(popup_get(&mut app), None);
+    }
+
+    #[test]
+    fn popup_get_reports_a_command_popup() {
+        let mut app = app_with_popup();
+        let popup = popup_get(&mut app).unwrap();
+        assert_eq!(popup.kind, "command");
+        assert!(popup.visible);
     }
 
     #[test]

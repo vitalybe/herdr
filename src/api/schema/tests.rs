@@ -1322,6 +1322,20 @@ fn popup_close_request_round_trips() {
 }
 
 #[test]
+fn popup_get_request_round_trips() {
+    let request = Request {
+        id: "popup-get".into(),
+        method: Method::PopupGet(EmptyParams::default()),
+    };
+
+    let json = serde_json::to_value(&request).unwrap();
+
+    assert_eq!(json["method"], "popup.get");
+    let restored: Request = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, request);
+}
+
+#[test]
 fn popup_to_tab_request_round_trips() {
     let request = Request {
         id: "popup-to-tab".into(),

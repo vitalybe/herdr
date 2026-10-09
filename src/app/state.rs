@@ -905,6 +905,8 @@ pub struct ViewState {
     pub tab_scroll_left_hit_area: Rect,
     pub tab_scroll_right_hit_area: Rect,
     pub new_tab_hit_area: Rect,
+    /// Clickable tab-bar status entries: screen rect and the command to run.
+    pub tab_bar_status_hit_areas: Vec<(Rect, String)>,
     pub terminal_area: Rect,
     pub mobile_header_rect: Rect,
     pub mobile_menu_hit_area: Rect,
@@ -2007,6 +2009,10 @@ pub struct AppState {
     pub tab_bar_position: TabBarPositionConfig,
     pub tab_bar_right: Vec<TabBarStatusSegment>,
     pub tab_bar_right_separator: String,
+    /// `(segment index, shell command)` for clickable status entries.
+    pub tab_bar_right_on_click: Vec<(usize, String)>,
+    /// Set by a click on a status entry; the runtime opens the command in a new tab.
+    pub requested_tab_command: Option<String>,
     pub pane_history_persistence: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`. See `[experimental] reveal_hidden_cursor_for_cjk_ime`.
@@ -2420,6 +2426,7 @@ impl AppState {
                 tab_scroll_left_hit_area: Rect::default(),
                 tab_scroll_right_hit_area: Rect::default(),
                 new_tab_hit_area: Rect::default(),
+                tab_bar_status_hit_areas: Vec::new(),
                 terminal_area: Rect::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),
@@ -2485,6 +2492,8 @@ impl AppState {
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
+            tab_bar_right_on_click: Vec::new(),
+            requested_tab_command: None,
             pane_history_persistence: false,
             reveal_hidden_cursor_for_cjk_ime: false,
             cjk_ime_agent_filter_configured: false,

@@ -51,6 +51,7 @@ impl App {
         self.tab_bar_datetimes.clear();
         self.tab_bar_commands.clear();
         self.state.tab_bar_right.clear();
+        self.state.tab_bar_right_on_click.clear();
         self.state.tab_bar_right_separator = sanitize_separator(separator);
 
         let now = std::time::Instant::now();
@@ -92,6 +93,7 @@ impl App {
                     command,
                     interval_seconds,
                     timeout_seconds,
+                    on_click,
                 } => {
                     if !crate::platform::status_commands_supported()
                         || command.trim().is_empty()
@@ -106,6 +108,11 @@ impl App {
                     self.state
                         .tab_bar_right
                         .push(TabBarStatusSegment::Text(None));
+                    if let Some(on_click) = on_click.as_ref().filter(|c| !c.trim().is_empty()) {
+                        self.state
+                            .tab_bar_right_on_click
+                            .push((segment_index, on_click.clone()));
+                    }
                     self.tab_bar_commands.push(TabBarCommandRuntime {
                         segment_index,
                         command: command.clone(),
@@ -646,6 +653,7 @@ mod tests {
                 command: MULTILINE_COMMAND.into(),
                 interval_seconds: 5,
                 timeout_seconds: 2,
+                on_click: None,
             }],
             " ",
         );
@@ -681,6 +689,7 @@ mod tests {
                 command,
                 interval_seconds: 5,
                 timeout_seconds: 20,
+                on_click: None,
             }],
             " ",
         );
@@ -727,6 +736,7 @@ mod tests {
                 command: MULTILINE_COMMAND.into(),
                 interval_seconds: 5,
                 timeout_seconds: 2,
+                on_click: None,
             }],
             " ",
         );

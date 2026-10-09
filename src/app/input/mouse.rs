@@ -531,6 +531,15 @@ impl AppState {
                     );
                     return None;
                 }
+                if let Some((_, command)) = self
+                    .view
+                    .tab_bar_status_hit_areas
+                    .iter()
+                    .find(|(rect, _)| rect_contains(*rect, mouse.column, mouse.row))
+                {
+                    self.requested_tab_command = Some(command.clone());
+                    return None;
+                }
                 if self.on_new_tab_button(mouse.column, mouse.row) {
                     if self.prompt_new_tab_name {
                         open_new_tab_dialog(self);
@@ -4882,6 +4891,30 @@ mod tests {
         assert!(!app.state.creating_new_tab);
         assert!(app.state.request_new_tab);
         assert!(app.state.requested_new_tab_name.is_none());
+    }
+
+    #[test]
+    fn clicking_status_entry_requests_its_command_in_a_tab() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.tab_bar_right = vec![crate::app::state::TabBarStatusSegment::Text(Some(
+            "sys".into(),
+        ))];
+        app.state.tab_bar_right_on_click = vec![(0, "issues".into())];
+
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 100, 20));
+        let (rect, _) = app.state.view.tab_bar_status_hit_areas[0].clone();
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            rect.x,
+            rect.y,
+        ));
+
+        assert_eq!(app.state.requested_tab_command.as_deref(), Some("issues"));
+        assert!(!app.state.request_new_tab);
     }
 
     #[test]

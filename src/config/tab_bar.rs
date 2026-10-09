@@ -36,6 +36,9 @@ pub enum TabBarRightEntryConfig {
         interval_seconds: u64,
         #[serde(default = "default_command_timeout_seconds")]
         timeout_seconds: u64,
+        /// Shell command run in a new tab when the entry is clicked.
+        #[serde(default)]
+        on_click: Option<String>,
     },
 }
 
@@ -76,6 +79,7 @@ pub(crate) fn tab_bar_right_diagnostics(entries: &[TabBarRightEntryConfig]) -> V
                 command,
                 interval_seconds,
                 timeout_seconds,
+                ..
             } => {
                 if command.trim().is_empty() {
                     diagnostics.push(format!(
@@ -160,11 +164,13 @@ entries = [
                 command: String::new(),
                 interval_seconds: 0,
                 timeout_seconds: 0,
+                on_click: None,
             },
             TabBarRightEntryConfig::Command {
                 command: "status.sh".into(),
                 interval_seconds: MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS + 1,
                 timeout_seconds: MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS + 1,
+                on_click: None,
             },
         ];
 

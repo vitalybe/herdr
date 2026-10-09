@@ -661,6 +661,8 @@ impl App {
             detach_requested: false,
             request_new_workspace: false,
             request_new_tab: false,
+            tab_bar_right_on_click: Vec::new(),
+            requested_tab_command: None,
             request_undo_close: false,
             request_scratch_terminal: false,
             request_scratch_terminal_to_tab: false,
@@ -719,6 +721,7 @@ impl App {
                 tab_scroll_left_hit_area: Rect::default(),
                 tab_scroll_right_hit_area: Rect::default(),
                 new_tab_hit_area: Rect::default(),
+                tab_bar_status_hit_areas: Vec::new(),
                 terminal_area: Rect::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),
@@ -1157,6 +1160,13 @@ impl App {
                         env: Default::default(),
                     },
                 );
+                needs_render = true;
+            }
+
+            if let Some(command) = self.state.requested_tab_command.take() {
+                if let Err(err) = self.spawn_tab_command(&command) {
+                    tracing::error!(err = %err, "failed to open status click command in a tab");
+                }
                 needs_render = true;
             }
 
@@ -2579,6 +2589,7 @@ mod tests {
                 command: "status".into(),
                 interval_seconds: 5,
                 timeout_seconds: 2,
+                on_click: None,
             }],
             " ",
         );

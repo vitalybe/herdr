@@ -48,6 +48,7 @@ fn tab_chrome_label(ws: &crate::workspace::Workspace, tab_idx: usize) -> String 
 struct VisibleStatusSegment<'a> {
     text: &'a str,
     accent: bool,
+    on_click: Option<&'a str>,
 }
 
 fn visible_status_segments(app: &AppState) -> Vec<VisibleStatusSegment<'_>> {
@@ -57,10 +58,12 @@ fn visible_status_segments(app: &AppState) -> Vec<VisibleStatusSegment<'_>> {
         .is_some_and(|workspace| workspace.zoomed);
     app.tab_bar_right
         .iter()
-        .filter_map(|segment| match segment {
+        .enumerate()
+        .filter_map(|(index, segment)| match segment {
             crate::app::state::TabBarStatusSegment::Zoom if zoomed => Some(VisibleStatusSegment {
                 text: ZOOM_INDICATOR,
                 accent: true,
+                on_click: None,
             }),
             crate::app::state::TabBarStatusSegment::Text(Some(text))
                 if display_width_u16(text) > 0 =>
@@ -68,6 +71,11 @@ fn visible_status_segments(app: &AppState) -> Vec<VisibleStatusSegment<'_>> {
                 Some(VisibleStatusSegment {
                     text,
                     accent: false,
+                    on_click: app
+                        .tab_bar_right_on_click
+                        .iter()
+                        .find(|(i, _)| *i == index)
+                        .map(|(_, command)| command.as_str()),
                 })
             }
             crate::app::state::TabBarStatusSegment::Zoom
@@ -94,6 +102,27 @@ fn tab_bar_status_area(app: &AppState, area: Rect) -> Option<Rect> {
     let reserved = width.saturating_add(1);
     (area.width.saturating_sub(reserved) >= MIN_TAB_STRIP_WIDTH)
         .then(|| Rect::new(area.x + area.width.saturating_sub(width), area.y, width, 1))
+}
+
+/// Screen rects of clickable status entries, in the same layout the renderer uses.
+pub(crate) fn tab_bar_status_hit_areas(app: &AppState, area: Rect) -> Vec<(Rect, String)> {
+    let Some(status_area) = tab_bar_status_area(app, area) else {
+        return Vec::new();
+    };
+    let separator_width = display_width_u16(&app.tab_bar_right_separator);
+    let mut x = status_area.x;
+    let mut areas = Vec::new();
+    for (index, segment) in visible_status_segments(app).iter().enumerate() {
+        if index > 0 {
+            x = x.saturating_add(separator_width);
+        }
+        let width = display_width_u16(segment.text);
+        if let Some(command) = segment.on_click {
+            areas.push((Rect::new(x, area.y, width, 1), command.to_string()));
+        }
+        x = x.saturating_add(width);
+    }
+    areas
 }
 
 // Tabs win over status decoration on narrow rows. The extra reserved cell is
@@ -544,6 +573,21 @@ mod tests {
             app.workspaces[0].tab_display_name(custom_tab).as_deref(),
             Some("test")
         );
+    }
+
+    #[test]
+    fn status_hit_areas_cover_only_clickable_entries() {
+        let mut app = AppState::test_new();
+        app.tab_bar_right = vec![
+            crate::app::state::TabBarStatusSegment::Text(Some("sys".into())),
+            crate::app::state::TabBarStatusSegment::Text(Some("14:30".into())),
+        ];
+        app.tab_bar_right_separator = " · ".into();
+        app.tab_bar_right_on_click = vec![(0, "issues".into())];
+
+        // status area is 3 + 3 + 5 = 11 wide, right-aligned in 40 columns
+        let areas = tab_bar_status_hit_areas(&app, Rect::new(0, 2, 40, 1));
+        assert_eq!(areas, vec![(Rect::new(29, 2, 3, 1), "issues".to_string())]);
     }
 
     #[test]

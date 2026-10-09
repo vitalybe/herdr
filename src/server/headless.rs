@@ -962,6 +962,13 @@ impl HeadlessServer {
             crate::render_prof::event("full_render_cause.deferred_new_tab");
         }
 
+        if let Some(command) = self.app.state.requested_tab_command.take() {
+            if let Err(err) = self.app.spawn_tab_command(&command) {
+                tracing::error!(err = %err, "failed to open status click command in a tab");
+            }
+            needs_render = true;
+        }
+
         if self.app.state.request_scratch_terminal {
             self.app.state.request_scratch_terminal = false;
             self.app.toggle_scratch_popup();

@@ -382,6 +382,10 @@ impl App {
             }
         }
 
+        if self.handle_pane_id_label_click(mouse) {
+            return;
+        }
+
         if self.handle_agent_row_double_click(mouse) {
             return;
         }
@@ -629,6 +633,37 @@ impl App {
         }
         self.render_dirty.request_generic();
         self.render_notify.notify_one();
+    }
+
+    /// Click on a pane id border label copies the id. The press and release are
+    /// consumed so the program in the pane never sees them.
+    fn handle_pane_id_label_click(&mut self, mouse: MouseEvent) -> bool {
+        if !matches!(self.state.mode, Mode::Terminal | Mode::Resize)
+            || !matches!(
+                mouse.kind,
+                MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+            )
+        {
+            return false;
+        }
+        let Some(id) = self
+            .state
+            .view
+            .pane_id_hit_areas
+            .iter()
+            .find(|(rect, _)| {
+                mouse.column >= rect.x && mouse.column < rect.x + rect.width && mouse.row == rect.y
+            })
+            .map(|(_, id)| id.clone())
+        else {
+            return false;
+        };
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            self.state.clipboard_feedback_message = Some(format!("Copied {id}"));
+            self.state.request_clipboard_write = Some(id.into_bytes());
+            self.dispatch_pending_clipboard_write();
+        }
+        true
     }
 
     fn focus_pane_before_mouse_press(&mut self, mouse: MouseEvent) {

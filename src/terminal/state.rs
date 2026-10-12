@@ -1284,6 +1284,14 @@ impl TerminalState {
         })
     }
 
+    /// The agent's session id, when its session is referenced by id.
+    pub fn agent_session_id(&self) -> Option<String> {
+        match self.current_session_identity_for_persistence() {
+            Some((_, _, crate::agent_resume::AgentSessionRefKind::Id, value)) => Some(value),
+            _ => None,
+        }
+    }
+
     fn current_session_owner_conflicts(&self, source: &str, agent_label: &str) -> bool {
         self.current_session_identity_for_persistence().is_some_and(
             |(current_source, current_agent, _, _)| {

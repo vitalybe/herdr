@@ -907,6 +907,8 @@ pub struct ViewState {
     pub new_tab_hit_area: Rect,
     /// Clickable tab-bar status entries: screen rect and the command to run.
     pub tab_bar_status_hit_areas: Vec<(Rect, String)>,
+    /// Pane id border labels: screen rect and the public pane id copied on click.
+    pub pane_id_hit_areas: Vec<(Rect, String)>,
     pub terminal_area: Rect,
     pub mobile_header_rect: Rect,
     pub mobile_menu_hit_area: Rect,
@@ -1914,6 +1916,8 @@ pub struct AppState {
     /// Set when UI interaction requested a clipboard write that must be
     /// handled by the outer App/event loop instead of directly from AppState.
     pub request_clipboard_write: Option<Vec<u8>>,
+    /// Feedback text for the next clipboard toast; the default text applies when `None`.
+    pub clipboard_feedback_message: Option<String>,
     pub creating_new_tab: bool,
     /// The tab-name dialog is asking which space to move the active tab to.
     pub moving_tab_to_space: bool,
@@ -2391,6 +2395,7 @@ impl AppState {
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
+            clipboard_feedback_message: None,
             creating_new_tab: false,
             moving_tab_to_space: false,
             requested_new_tab_name: None,
@@ -2427,6 +2432,7 @@ impl AppState {
                 tab_scroll_right_hit_area: Rect::default(),
                 new_tab_hit_area: Rect::default(),
                 tab_bar_status_hit_areas: Vec::new(),
+                pane_id_hit_areas: Vec::new(),
                 terminal_area: Rect::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),

@@ -686,19 +686,27 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                 }
                 Mode::RenameTab => {
                     if let Some(ws_idx) = state.active {
+                        let mut renamed = None;
                         if let Some(ws) = state.workspaces.get_mut(ws_idx) {
                             let workspace_id = ws.id.clone();
                             let active_tab = ws.active_tab;
-                            let keep_auto_name = ws
-                                .tabs
-                                .get(active_tab)
-                                .is_some_and(|tab| tab.is_auto_named())
-                                && ws
-                                    .tab_display_name(active_tab)
-                                    .is_some_and(|name| new_name == name);
+                            let placeholder =
+                                ws.tabs.get(active_tab).is_some_and(|tab| tab.is_numbered())
+                                    && ws.tab_display_name(active_tab).as_deref()
+                                        == Some(new_name.as_str());
                             if let Some(tab) = ws.active_tab_mut() {
-                                if !new_name.is_empty() && !keep_auto_name {
-                                    tab.set_custom_name(new_name);
+                                if placeholder {
+                                    // Confirming the placeholder number names nothing.
+                                } else if new_name.is_empty() {
+                                    // An empty name releases the pin: the agent's
+                                    // session title names the tab again.
+                                    if tab.custom_name.take().is_some() {
+                                        state.mark_session_dirty();
+                                    }
+                                } else {
+                                    // Any typed name pins, even one equal to the
+                                    // current automatic name.
+                                    tab.set_custom_name(new_name.clone());
                                     let tab_id = ws
                                         .public_tab_number(active_tab)
                                         .map(|number| {
@@ -710,7 +718,15 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                                         .unwrap_or_else(|| workspace_id.clone());
                                     crate::logging::tab_renamed(&workspace_id, &tab_id);
                                     state.mark_session_dirty();
+                                    renamed = Some(active_tab);
                                 }
+                            }
+                        }
+                        if let Some(tab_idx) = renamed {
+                            if let Some(session_id) =
+                                state.claude_rename_target(ws_idx, tab_idx, &new_name)
+                            {
+                                crate::platform::push_claude_rename(session_id, new_name);
                             }
                         }
                     }
@@ -1342,28 +1358,46 @@ impl App {
                     },
                 );
             }
-            Mode::RenameTab if !new_name.is_empty() => {
+            Mode::RenameTab => {
                 let Some(ws_idx) = self.state.active else {
                     cancel_rename_modal(&mut self.state);
                     return;
                 };
                 let tab_idx = self.state.workspaces[ws_idx].active_tab;
-                let keep_auto_name = self.state.workspaces[ws_idx]
+                if new_name.is_empty() {
+                    // An empty name releases the pin: the agent's session
+                    // title names the tab again.
+                    if let Some(tab) = self.state.workspaces[ws_idx].tabs.get_mut(tab_idx) {
+                        if tab.custom_name.take().is_some() {
+                            self.state.mark_session_dirty();
+                        }
+                    }
+                } else if self.state.workspaces[ws_idx]
                     .tabs
                     .get(tab_idx)
-                    .is_some_and(|tab| tab.is_auto_named())
+                    .is_some_and(|tab| tab.is_numbered())
                     && self.state.workspaces[ws_idx]
                         .tab_display_name(tab_idx)
-                        .is_some_and(|name| new_name == name);
-                if !keep_auto_name {
-                    if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
-                        self.runtime_tab_rename(
-                            "tui.tab.rename",
-                            crate::api::schema::TabRenameParams {
-                                tab_id,
-                                label: new_name,
-                            },
-                        );
+                        .is_some_and(|name| name == new_name)
+                {
+                    // Confirming the placeholder number names nothing.
+                } else if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
+                    // Resolved before the rename overwrites the agent's title.
+                    let push_to = self.state.claude_rename_target(ws_idx, tab_idx, &new_name);
+                    self.runtime_tab_rename(
+                        "tui.tab.rename",
+                        crate::api::schema::TabRenameParams {
+                            tab_id,
+                            label: new_name.clone(),
+                        },
+                    );
+                    // The API rename is advisory; a name typed here pins.
+                    if let Some(tab) = self.state.workspaces[ws_idx].tabs.get_mut(tab_idx) {
+                        tab.set_custom_name(new_name.clone());
+                    }
+                    self.state.mark_session_dirty();
+                    if let Some(session_id) = push_to {
+                        crate::platform::push_claude_rename(session_id, new_name);
                     }
                 }
             }

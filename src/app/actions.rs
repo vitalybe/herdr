@@ -3377,6 +3377,59 @@ impl AppState {
         changed
     }
 
+    /// The only agent pane of a tab and its known agent, or `None` when the tab
+    /// holds no agent pane or several.
+    fn sole_agent_pane(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+    ) -> Option<(PaneId, crate::detect::Agent)> {
+        let tab = self.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
+        let agent_terminal = |pane: &crate::pane::PaneState| {
+            self.terminals
+                .get(&pane.attached_terminal_id)
+                .filter(|terminal| terminal.is_agent_terminal())
+        };
+        let mut agent_panes = tab
+            .panes
+            .iter()
+            .filter(|(_, pane)| agent_terminal(pane).is_some());
+        let pane_id = match (agent_panes.next(), agent_panes.next()) {
+            (Some((only, _)), None) => *only,
+            _ => return None,
+        };
+        let agent = tab
+            .panes
+            .get(&pane_id)
+            .and_then(agent_terminal)?
+            .effective_known_agent()?;
+        Some((pane_id, agent))
+    }
+
+    /// Session id to push a hand-typed tab name to: the tab's sole agent pane
+    /// is Claude with a known session, and the name differs from the title
+    /// Claude last published (so an echo of a pushed name, or a name Claude
+    /// itself chose, is never written back).
+    pub fn claude_rename_target(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+        name: &str,
+    ) -> Option<String> {
+        let (pane_id, agent) = self.sole_agent_pane(ws_idx, tab_idx)?;
+        if agent != crate::detect::Agent::Claude {
+            return None;
+        }
+        let tab = self.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
+        if tab.auto_name.as_deref() == Some(name) {
+            return None;
+        }
+        let pane = tab.panes.get(&pane_id)?;
+        self.terminals
+            .get(&pane.attached_terminal_id)?
+            .agent_session_id()
+    }
+
     /// Applies an agent-published session title as the automatic name of the
     /// tab holding `pane_id`.
     ///
@@ -3396,28 +3449,10 @@ impl AppState {
                 ws.find_tab_index_for_pane(pane_id)
                     .map(|tab_idx| (ws_idx, tab_idx))
             })?;
-        let tab = self.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
-        let agent_terminal = |pane: &crate::pane::PaneState| {
-            self.terminals
-                .get(&pane.attached_terminal_id)
-                .filter(|terminal| terminal.is_agent_terminal())
-        };
-        let mut agent_panes = tab
-            .panes
-            .iter()
-            .filter(|(_, pane)| agent_terminal(pane).is_some());
-        let sole_agent_pane = match (agent_panes.next(), agent_panes.next()) {
-            (Some((only, _)), None) => *only,
-            _ => return None,
-        };
+        let (sole_agent_pane, agent) = self.sole_agent_pane(ws_idx, tab_idx)?;
         if sole_agent_pane != pane_id {
             return None;
         }
-        let agent = tab
-            .panes
-            .get(&pane_id)
-            .and_then(agent_terminal)?
-            .effective_known_agent()?;
         let title = crate::detect::manifest::session_title(agent, osc_title)?;
         let tab = self.workspaces.get_mut(ws_idx)?.tabs.get_mut(tab_idx)?;
         let changed = tab.set_auto_name(title);
@@ -4533,6 +4568,55 @@ mod tests {
             Some(PaneManualEntry::LineSplit { id, .. }) if *id == split
         ));
         state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn claude_rename_target_skips_echo_and_needs_a_session_id() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        claude_pane(&mut state, pane_id);
+        let terminal_id = state.workspaces[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+
+        // No session reference yet: nothing to push to.
+        assert_eq!(state.claude_rename_target(0, 0, "mine"), None);
+
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("sess-1").unwrap(),
+            });
+        assert_eq!(
+            state.claude_rename_target(0, 0, "mine"),
+            Some("sess-1".to_string())
+        );
+
+        // Claude's own /rename (OSC title) is the tab's auto name: never echoed back.
+        state.apply_reported_session_title(pane_id, "✳ from-claude");
+        assert_eq!(state.claude_rename_target(0, 0, "from-claude"), None);
+        // A pushed name echoed back by Claude changes nothing and pushes nothing.
+        state.workspaces[0].tabs[0].set_custom_name("mine".into());
+        assert_eq!(state.apply_reported_session_title(pane_id, "✳ mine"), None);
+        assert_eq!(state.claude_rename_target(0, 0, "mine"), None);
+    }
+
+    #[test]
+    fn manual_rename_pins_against_later_session_titles() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        claude_pane(&mut state, pane_id);
+        state.apply_reported_session_title(pane_id, "✳ auto");
+        state.workspaces[0].tabs[0].set_custom_name("auto".into());
+        state.apply_reported_session_title(pane_id, "✳ other");
+        assert_eq!(
+            state.workspaces[0].tab_display_name(0).as_deref(),
+            Some("auto")
+        );
     }
 
     #[test]

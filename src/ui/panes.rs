@@ -22,6 +22,58 @@ pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
 }
 
+/// Width of the `[ID <id>]` border label for a pane id string.
+fn pane_id_label_width(id: &str) -> u16 {
+    (id.len() as u16).saturating_add(5)
+}
+
+/// Border label rect for a pane: right-aligned on its own bottom border, else on
+/// the shared line below it (the neighbor's top border), else on its top border.
+/// `None` when the pane has no border line or is too narrow to hold the label
+/// between the corners.
+pub(crate) fn pane_id_label_rect(info: &PaneInfo, panes: &[PaneInfo], id: &str) -> Option<Rect> {
+    let width = pane_id_label_width(id);
+    let rect = info.rect;
+    if info.borders.is_empty() || rect.height == 0 || rect.width < width.saturating_add(3) {
+        return None;
+    }
+    let bottom = rect.y.saturating_add(rect.height);
+    let y = if info.borders.contains(Borders::BOTTOM) {
+        bottom - 1
+    } else if pane_below(info, panes).is_some() {
+        bottom
+    } else if info.borders.contains(Borders::TOP) {
+        rect.y
+    } else {
+        return None;
+    };
+    let x = rect.x.saturating_add(rect.width).saturating_sub(1 + width);
+    Some(Rect::new(x, y, width, 1))
+}
+
+/// Hit rects and ids for every pane that shows an id label. Computed in view
+/// computation so render stays pure.
+pub(crate) fn compute_pane_id_labels(
+    app: &AppState,
+    pane_infos: &[PaneInfo],
+) -> Vec<(Rect, String)> {
+    let Some(ws) = app.active.and_then(|idx| app.workspaces.get(idx)) else {
+        return Vec::new();
+    };
+    if !app.pane_borders {
+        return Vec::new();
+    }
+    pane_infos
+        .iter()
+        .filter_map(|info| {
+            let number = ws.public_pane_number(info.id)?;
+            let id = crate::workspace::public_pane_id_for_number(&ws.id, number);
+            let rect = pane_id_label_rect(info, pane_infos, &id)?;
+            Some((rect, id))
+        })
+        .collect()
+}
+
 fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<String> {
     let label = label.trim();
     if label.is_empty() || pane_width <= 4 {
@@ -538,6 +590,37 @@ fn render_pane_borders(
     }
 
     render_pane_border_titles(app, ws, pane_infos, frame);
+    render_pane_id_labels(app, pane_infos, frame);
+}
+
+fn render_pane_id_labels(app: &AppState, pane_infos: &[PaneInfo], frame: &mut Frame) {
+    let buf = frame.buffer_mut();
+    let area = buf.area;
+    for (rect, id) in &app.view.pane_id_hit_areas {
+        if rect.y < area.y
+            || rect.y >= area.y.saturating_add(area.height)
+            || rect.x < area.x
+            || rect.x.saturating_add(rect.width) > area.x.saturating_add(area.width)
+        {
+            continue;
+        }
+        let focused = pane_infos.iter().any(|info| {
+            info.is_focused
+                && rect.x >= info.rect.x
+                && rect.x < info.rect.x + info.rect.width
+                && rect.y >= info.rect.y
+                && rect.y <= info.rect.y + info.rect.height
+        });
+        let style = Style::default().fg(if focused {
+            app.palette.accent
+        } else {
+            app.palette.overlay0
+        });
+        let id_x = rect.x + 4;
+        buf.set_string(rect.x, rect.y, "[ID ", style);
+        buf.set_string(id_x, rect.y, id, style);
+        buf.set_string(id_x + id.len() as u16, rect.y, "]", style);
+    }
 }
 
 fn add_split_border_cells(
@@ -687,12 +770,18 @@ fn render_pane_border_titles(
             continue;
         }
         let start_x = info.rect.x.saturating_add(1);
-        let end_x = info
+        let mut end_x = info
             .rect
             .x
             .saturating_add(info.rect.width)
             .saturating_sub(1)
             .min(area.x.saturating_add(area.width));
+        // Keep the title clear of an id label sharing this border row.
+        if let Some((label, _)) = app.view.pane_id_hit_areas.iter().find(|(label, _)| {
+            label.y == y && label.x >= info.rect.x && label.x < info.rect.x + info.rect.width
+        }) {
+            end_x = end_x.min(label.x);
+        }
         if start_x >= end_x {
             continue;
         }
@@ -1029,6 +1118,43 @@ mod tests {
             &app.view.split_borders,
             frame,
         );
+    }
+
+    fn label_info(x: u16, y: u16, w: u16, h: u16, borders: Borders) -> PaneInfo {
+        let rect = Rect::new(x, y, w, h);
+        PaneInfo {
+            id: crate::layout::PaneId::from_raw(1),
+            rect,
+            inner_rect: pane_inner_rect(rect, borders),
+            scrollbar_rect: None,
+            borders,
+            is_focused: false,
+        }
+    }
+
+    #[test]
+    fn pane_id_label_sits_bottom_right_or_falls_back() {
+        let id = "w1:p3"; // label is `[ID w1:p3]`, 10 cells
+        let own = label_info(0, 0, 40, 10, Borders::ALL);
+        let r = pane_id_label_rect(&own, &[], id).expect("own bottom");
+        assert_eq!((r.x, r.y, r.width), (29, 9, 10));
+
+        // No bottom border but a neighbor below: label sits on the shared line.
+        let mut upper = label_info(0, 0, 40, 10, Borders::ALL);
+        upper.borders.remove(Borders::BOTTOM);
+        let mut lower = label_info(0, 10, 40, 10, Borders::ALL);
+        lower.id = crate::layout::PaneId::from_raw(2);
+        let r = pane_id_label_rect(&upper, &[upper.clone(), lower], id).expect("shared");
+        assert_eq!(r.y, 10);
+
+        // Outer bottom removed, nothing below: top border.
+        let mut top_only = label_info(0, 0, 40, 10, Borders::ALL);
+        top_only.borders.remove(Borders::BOTTOM);
+        let r = pane_id_label_rect(&top_only, &[], id).expect("top");
+        assert_eq!(r.y, 0);
+
+        assert!(pane_id_label_rect(&label_info(0, 0, 12, 10, Borders::ALL), &[], id).is_none());
+        assert!(pane_id_label_rect(&label_info(0, 0, 40, 10, Borders::NONE), &[], id).is_none());
     }
 
     #[test]

@@ -334,6 +334,7 @@ fn compute_view_internal(
         })
         .unwrap_or_default();
 
+    let pane_id_hit_areas = panes::compute_pane_id_labels(app, &pane_infos);
     app.view = crate::app::ViewState {
         layout: ViewLayout::Desktop,
         sidebar_rect: sidebar_area,
@@ -345,6 +346,7 @@ fn compute_view_internal(
         tab_scroll_right_hit_area: tab_bar_view.scroll_right_hit_area,
         new_tab_hit_area: tab_bar_view.new_tab_hit_area,
         tab_bar_status_hit_areas: tab_bar_status_hit_areas(app, tab_bar_rect),
+        pane_id_hit_areas,
         terminal_area,
         mobile_header_rect: Rect::default(),
         mobile_menu_hit_area: Rect::default(),
@@ -399,6 +401,7 @@ fn compute_mobile_view(
         .map(|_| mobile_toast_banner_rect(area, app.config_diagnostic.is_some()))
         .unwrap_or_default();
 
+    let pane_id_hit_areas = panes::compute_pane_id_labels(app, &pane_infos);
     app.view = crate::app::ViewState {
         layout: ViewLayout::Mobile,
         sidebar_rect: Rect::default(),
@@ -410,6 +413,7 @@ fn compute_mobile_view(
         tab_scroll_right_hit_area: Rect::default(),
         new_tab_hit_area: Rect::default(),
         tab_bar_status_hit_areas: Vec::new(),
+        pane_id_hit_areas,
         terminal_area,
         mobile_header_rect: header_rect,
         mobile_menu_hit_area: header_hits.menu,

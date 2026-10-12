@@ -474,12 +474,17 @@ impl App {
 
     pub(crate) fn show_clipboard_feedback(&mut self) {
         if !self.state.toast_config.clipboard.enabled {
+            self.state.clipboard_feedback_message = None;
             self.state.copy_feedback = None;
             self.copy_feedback_deadline = None;
             return;
         }
         self.state.copy_feedback = Some(crate::app::state::CopyFeedback {
-            message: "copied to clipboard".to_string(),
+            message: self
+                .state
+                .clipboard_feedback_message
+                .take()
+                .unwrap_or_else(|| "copied to clipboard".to_string()),
         });
         self.copy_feedback_deadline = Some(Instant::now() + super::COPY_FEEDBACK_DURATION);
     }

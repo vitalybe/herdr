@@ -234,6 +234,36 @@ pub(crate) fn set_default_plugin_pane_pwd(env: &mut Vec<(String, String)>, cwd: 
     }
 }
 
+const CLAUDE_RENAME_DIR: &str = "/tmp/claude-rename";
+
+/// Asks the Claude session `session_id` to `/rename` itself by writing the name
+/// to its FIFO. Runs on its own thread and never blocks: a missing FIFO or one
+/// with no reader is skipped silently.
+pub(crate) fn push_claude_rename(session_id: String, name: String) {
+    std::thread::spawn(move || {
+        let _ = write_claude_rename(Path::new(CLAUDE_RENAME_DIR), &session_id, &name);
+    });
+}
+
+fn write_claude_rename(dir: &Path, session_id: &str, name: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let safe_id = !session_id.is_empty()
+        && session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !safe_id {
+        return Ok(());
+    }
+    // O_NONBLOCK makes open fail with ENXIO when nobody reads the FIFO.
+    let mut fifo = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(dir.join(session_id))?;
+    fifo.write_all(format!("{}\n", name.replace(['\n', '\r'], " ")).as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +284,33 @@ mod tests {
     fn remote_ssh_config_dir_rejects_overlong_control_socket_name() {
         let err = create_remote_ssh_config_dir(&"x".repeat(200)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn claude_rename_writes_to_a_listening_fifo_and_skips_otherwise() {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("herdr-rename-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess-1");
+        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+
+        // No reader: skipped with an error, never blocks.
+        assert!(write_claude_rename(&dir, "sess-1", "x").is_err());
+        // Missing FIFO and unsafe ids are skipped.
+        assert!(write_claude_rename(&dir, "nope", "x").is_err());
+        assert!(write_claude_rename(&dir, "../etc", "x").is_ok());
+
+        let mut reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .unwrap();
+        write_claude_rename(&dir, "sess-1", "my\nname").unwrap();
+        let mut got = String::new();
+        reader.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "my name\n");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

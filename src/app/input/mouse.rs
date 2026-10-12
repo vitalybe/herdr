@@ -4894,6 +4894,46 @@ mod tests {
     }
 
     #[test]
+    fn clicking_pane_id_label_copies_id_and_shows_toast() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("one");
+        ws.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.pane_borders = true;
+
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 100, 30));
+        let (rect, id) = app.state.view.pane_id_hit_areas[0].clone();
+        assert!(id.contains(":p"));
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            rect.x + 5,
+            rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            rect.x + 5,
+            rect.y,
+        ));
+
+        // The write is queued as an event; the toast text is consumed when it lands.
+        assert_eq!(
+            app.state.clipboard_feedback_message,
+            Some(format!("Copied {id}"))
+        );
+        assert!(app.state.request_clipboard_write.is_none());
+        app.handle_internal_event(crate::events::AppEvent::ClipboardWrite {
+            content: id.clone().into_bytes(),
+        });
+        assert_eq!(
+            app.state.copy_feedback.as_ref().map(|f| f.message.clone()),
+            Some(format!("Copied {id}"))
+        );
+    }
+
+    #[test]
     fn clicking_status_entry_requests_its_command_in_a_tab() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![Workspace::test_new("one")];

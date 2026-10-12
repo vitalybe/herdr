@@ -199,7 +199,11 @@ pub(crate) struct RemoteSshConfigPaths {
 #[cfg(unix)]
 mod unix_common;
 #[cfg(unix)]
-pub(crate) use unix_common::{begin_cli_output, end_cli_output};
+pub(crate) use unix_common::{begin_cli_output, end_cli_output, push_claude_rename};
+
+/// No Claude rename channel off Unix.
+#[cfg(not(unix))]
+pub(crate) fn push_claude_rename(_session_id: String, _name: String) {}
 
 #[cfg(not(unix))]
 pub(crate) fn begin_cli_output() {}

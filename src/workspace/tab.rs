@@ -211,10 +211,6 @@ impl Tab {
         ))
     }
 
-    pub fn is_auto_named(&self) -> bool {
-        self.custom_name.is_none()
-    }
-
     /// Whether the tab has no name of its own and shows its position instead.
     /// A tab named by its agent or by tooling is auto-named but not numbered,
     /// so it is styled as a named tab.

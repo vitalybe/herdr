@@ -40,7 +40,13 @@ class FakeOmnigent:
     def sessions(self):
         return self.session_list
 
+    def session(self, session_id):
+        return next((s for s in self.session_list if s["id"] == session_id), None)
+
     def projects(self):
+        self.project_calls = getattr(self, "project_calls", 0) + 1
+        if getattr(self, "projects_fail", False):
+            raise RuntimeError("boom")
         return {"p1": "Alpha"}
 
     def tmux_sockets(self, session_id):
@@ -61,6 +67,9 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(parse(["/x/python", "-m", "omnigent", "attach", "abc", "--server", "u"]),
                          ("session", "abc"))
         self.assertIsNone(parse(["-fish"]))
+        self.assertIsNone(parse(["tmux", "-S", "/tmp/a.sock", "-CC", "attach"]))
+        self.assertEqual(parse(["omnigent", "attach", "--server", "http://u", "abc"]),
+                         ("session", "abc"))
 
     def test_status_map(self):
         self.assertEqual(bridge.map_status(session(status="running")), "working")
@@ -143,6 +152,48 @@ class TickTests(unittest.TestCase):
         self.bridge.move = False
         self.bridge.tick()
         self.assertEqual(self.kinds(), ["report"])
+
+    def test_missing_from_list_is_not_ended(self):
+        self.make([session()], ["omnigent", "attach", "s1"])
+        self.bridge.tick()
+        self.omni.session_list = [session()]
+        self.omni.sessions = lambda: []  # truncated list
+        self.omni.session = lambda sid: session(status="running")
+        self.bridge.tick()
+        self.assertEqual(self.herdr.calls[-1][:3], ("report", "w9:p1", "working"))
+        self.assertNotIn("release", self.kinds())
+
+    def test_reattach_to_other_session_remaps(self):
+        self.make([session(), session(id="s2", project_id=None)], ["omnigent", "attach", "s1"])
+        self.bridge.tick()
+        self.herdr.argv["w9:p1"] = ["omnigent", "attach", "s2"]
+        self.bridge.tick()
+        self.assertEqual(self.bridge.tracked["t1"]["session"], "s2")
+        self.assertIn("release", self.kinds())
+        self.assertEqual(self.kinds().count("move"), 2)
+
+    def test_projects_failure_and_ttl(self):
+        self.make([session(project_id="unknown")], ["omnigent", "attach", "s1"])
+        self.omni.projects_fail = True
+        self.bridge.tick()
+        self.now[0] = 5
+        self.bridge.tick()
+        self.assertEqual(self.omni.project_calls, 1)
+        self.assertIn("report", self.kinds())
+        self.now[0] = 40
+        self.bridge.tick()
+        self.assertEqual(self.omni.project_calls, 2)
+
+
+class PagingTests(unittest.TestCase):
+    def test_follows_has_more(self):
+        pages = {
+            "/v1/sessions?limit=1000": {"data": [{"id": "a"}], "has_more": True, "last_id": "a"},
+            "/v1/sessions?limit=1000&after=a": {"data": [{"id": "b"}], "has_more": False},
+        }
+        omni = bridge.Omnigent("http://x")
+        omni.get = lambda path: pages[path]
+        self.assertEqual([s["id"] for s in omni.sessions()], ["a", "b"])
 
 
 if __name__ == "__main__":

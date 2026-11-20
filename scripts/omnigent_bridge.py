@@ -40,12 +40,14 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 SOURCE = "omnigent-bridge"
 AGENT = "omnigent"
 HEARTBEAT_SECS = 30
 PROJECT_TTL_SECS = 30
+MAX_SESSION_PAGES = 20
 
 
 def map_status(session):
@@ -64,7 +66,7 @@ def parse_attach(argv):
         return None
     rest = argv[argv.index("attach") + 1 :]
     if os.path.basename(argv[0]) == "tmux":
-        if "-C" in argv[: argv.index("attach")]:
+        if {"-C", "-CC"} & set(argv[: argv.index("attach")]):
             return None
         for i, token in enumerate(argv):
             if token == "-S" and i + 1 < len(argv):
@@ -72,8 +74,15 @@ def parse_attach(argv):
             if token.startswith("-S") and len(token) > 2:
                 return ("socket", token[2:])
         return None
-    if "omnigent" in " ".join(argv[:3]) and rest and not rest[0].startswith("-"):
-        return ("session", rest[0])
+    if "omnigent" in " ".join(argv[:3]):
+        skip = False
+        for token in rest:
+            if skip:
+                skip = False
+            elif token == "--server":
+                skip = True
+            elif not token.startswith("-"):
+                return ("session", token)
     return None
 
 
@@ -161,7 +170,23 @@ class Omnigent:
             return json.load(resp)
 
     def sessions(self):
-        return self.get("/v1/sessions")["data"]
+        """All sessions, following cursor pages (the API defaults to 20)."""
+        out, path = [], "/v1/sessions?limit=1000"
+        for _ in range(MAX_SESSION_PAGES):
+            page = self.get(path)
+            out += page["data"]
+            if not page.get("has_more") or not page.get("last_id"):
+                break
+            path = f"/v1/sessions?limit=1000&after={page['last_id']}"
+        return out
+
+    def session(self, session_id):
+        try:
+            return self.get(f"/v1/sessions/{session_id}")
+        except urllib.error.HTTPError as err:
+            if err.code == 404:
+                return None
+            raise
 
     def projects(self):
         return {p["id"]: p["name"] for p in self.get("/v1/projects")["data"]}
@@ -188,11 +213,13 @@ class Bridge:
 
     def refresh_projects(self, sessions):
         now = self.clock()
-        known = {s.get("project_id") for s in sessions} - {None}
-        stale = self.projects_at is None or now - self.projects_at > PROJECT_TTL_SECS
-        if stale or not known <= set(self.project_names):
+        if self.projects_at is not None and now - self.projects_at <= PROJECT_TTL_SECS:
+            return
+        self.projects_at = now  # failures and unknown ids also wait for the TTL
+        try:
             self.project_names = self.omnigent.projects()
-            self.projects_at = now
+        except Exception as err:
+            self.log(f"projects: {err}")
 
     def resolve_session(self, attach, sessions):
         kind, value = attach
@@ -231,6 +258,11 @@ class Bridge:
             except Exception as err:
                 self.log(f"process-info {pane['pane_id']}: {err}")
                 continue
+            if entry is not None and attach is not None and attach != entry["attach"]:
+                if self.resolve_session(attach, sessions) != entry["session"]:
+                    self.release(terminal_id, entry, pane["pane_id"])
+                    del self.tracked[terminal_id]
+                    entry = None  # re-attached elsewhere: map as new
             if entry is None:
                 session_id = self.resolve_session(attach, sessions) if attach else None
                 if session_id is None:
@@ -240,7 +272,7 @@ class Bridge:
                                                    "session": None}, pane["pane_id"])
                     continue
                 entry = self.tracked[terminal_id] = {
-                    "session": session_id, "project": object(), "state": None,
+                    "session": session_id, "attach": attach, "project": object(), "state": None,
                     "sent": 0, "pane": pane["pane_id"], "released": False}
                 self.skipped.pop(terminal_id, None)
             elif attach is None:
@@ -248,7 +280,15 @@ class Bridge:
                 del self.tracked[terminal_id]
                 self.skipped[terminal_id] = now
                 continue
-            self.sync(terminal_id, entry, pane, by_id.get(entry["session"]), now)
+            entry["attach"] = attach
+            session = by_id.get(entry["session"])
+            if session is None:  # absent from the list is not proof it ended
+                try:
+                    session = self.omnigent.session(entry["session"])
+                except Exception as err:
+                    self.log(f"session {entry['session']}: {err}")
+                    continue
+            self.sync(terminal_id, entry, pane, session, now)
 
     def release(self, terminal_id, entry, pane_id):
         if entry["state"] is None or entry["released"]:

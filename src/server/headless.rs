@@ -340,6 +340,8 @@ pub struct HeadlessServer {
     server_event_rx: mpsc::Receiver<ServerEvent>,
     /// Sender for server events (cloned for each client thread).
     server_event_tx: mpsc::Sender<ServerEvent>,
+    /// Supervised omnigent bridge child; dropping it stops the child.
+    omnigent_bridge: Option<crate::server::omnigent_bridge::OmnigentBridge>,
 }
 
 fn apply_terminal_attach_scroll(
@@ -535,6 +537,7 @@ impl HeadlessServer {
             should_quit,
             server_event_rx,
             server_event_tx,
+            omnigent_bridge: None,
         })
     }
 
@@ -5168,6 +5171,9 @@ pub fn run_server() -> io::Result<()> {
         );
         print_ready_message(&api::socket_path(), &client_socket_path());
         server.app.run_plugin_startup_hooks();
+        server.omnigent_bridge = crate::server::omnigent_bridge::OmnigentBridge::start(
+            &loaded_config.config.omnigent_bridge,
+        );
 
         server.run().await
     });
@@ -5280,6 +5286,9 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         info!("handoff import server started");
         print_ready_message(&api::socket_path(), &client_socket_path());
         server.app.run_plugin_startup_hooks();
+        server.omnigent_bridge = crate::server::omnigent_bridge::OmnigentBridge::start(
+            &loaded_config.config.omnigent_bridge,
+        );
         server.run().await
     });
 
@@ -5450,6 +5459,7 @@ mod tests {
             should_quit,
             server_event_rx,
             server_event_tx,
+            omnigent_bridge: None,
         }
     }
 

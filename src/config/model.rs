@@ -331,6 +331,7 @@ pub struct Config {
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
+    pub omnigent_bridge: OmnigentBridgeConfig,
 }
 
 #[derive(Debug)]
@@ -1022,6 +1023,17 @@ impl Default for RemoteConfig {
             manage_ssh_config: true,
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct OmnigentBridgeConfig {
+    /// Run the omnigent bridge as a child of the herdr server. Default: false.
+    pub enabled: bool,
+    /// Path to a bridge script to run instead of the copy built into herdr. Default: "".
+    pub script: String,
+    /// Space for omnigent sessions that have no project. Default: "" (the script's own default).
+    pub default_space: String,
 }
 
 #[derive(Debug, Default, Deserialize)]

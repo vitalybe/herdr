@@ -10,6 +10,7 @@ pub(crate) mod handoff;
 pub mod headless;
 pub(crate) mod keybindings;
 pub(crate) mod notifications;
+pub(crate) mod omnigent_bridge;
 pub(crate) mod render_stream;
 pub mod socket_paths;
 pub(crate) mod terminal_attach;

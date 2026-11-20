@@ -1473,6 +1473,30 @@
       ]
     },
     {
+      "id": "omnigent_bridge",
+      "title": "Omnigent bridge",
+      "keys": [
+        {
+          "key": "omnigent_bridge.enabled",
+          "type": "boolean",
+          "default": "false",
+          "description": "Run the omnigent bridge as a child of the Herdr server. It starts with the server, restarts with backoff if it exits, and stops with the server."
+        },
+        {
+          "key": "omnigent_bridge.script",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Path to a bridge script to run instead of the copy built into Herdr. Empty uses the built-in copy."
+        },
+        {
+          "key": "omnigent_bridge.default_space",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Space for omnigent sessions that have no project. Empty uses the script's own default, `omnigent`."
+        }
+      ]
+    },
+    {
       "id": "advanced",
       "title": "Advanced",
       "keys": [

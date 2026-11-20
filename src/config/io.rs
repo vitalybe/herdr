@@ -349,6 +349,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut invalid_sections,
         |section| config.remote = section,
     );
+    load_live_section(
+        table,
+        "omnigent_bridge",
+        "omnigent bridge config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.omnigent_bridge = section,
+    );
 
     diagnostics.extend(config.theme.diagnostics());
 

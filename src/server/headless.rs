@@ -1478,6 +1478,7 @@ impl HeadlessServer {
 
     fn finish_live_handoff_shutdown(&mut self) {
         self.shutting_down = true;
+        self.omnigent_bridge = None; // the new server starts its own
         self.app.state.should_quit = true;
         self.app.no_session = true;
         info!("live handoff completed; old server exiting");
@@ -4877,6 +4878,9 @@ impl HeadlessServer {
         }
         info!("server shutdown initiated");
         self.shutting_down = true;
+        // Kill the omnigent bridge before panes go away so it cannot mistake
+        // the teardown for the user closing them.
+        self.omnigent_bridge = None;
 
         // Clear client-local host graphics, then send ServerShutdown to all connected clients.
         self.send_all_clients_graphics_cleanup();

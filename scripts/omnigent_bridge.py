@@ -32,6 +32,16 @@ How it works
 - The bridge releases its claim when the session ends or is archived, or when
   the attach process leaves the pane. It never creates panes (sessions
   started elsewhere simply have no pane).
+- Lifecycle sync. Closing a tracked pane (or its tab) in herdr archives the
+  session in omnigent (PATCH /v1/sessions/<id> {"archived": true}); archiving
+  a session that was live while tracked closes its pane (and the tab, when it
+  was the tab's only pane). A pane counts as closed only after it is missing
+  from two consecutive polls of a non-empty pane list, and only when the
+  session is still unarchived; a failed or empty list never archives. Neither
+  direction triggers the other: the bridge forgets a pane before closing it,
+  and an already archived session is never archived again. A pane whose attach
+  process exits on its own and closes the pane within one poll looks like a
+  user close and archives the session.
 - Project -> space: the space label is the project name (/v1/projects), or
   --default-space when the session has no project. The pane's whole tab moves
   (`tab space`, keeping the tab and its other panes) when the pane is first
@@ -62,6 +72,7 @@ AGENT = "omnigent"
 HEARTBEAT_SECS = 30
 PROJECT_TTL_SECS = 30
 MAX_SESSION_PAGES = 20
+CLOSE_CONFIRM_TICKS = 2  # consecutive polls a tracked pane must be missing
 MAX_WORKERS = 8
 NEGATIVE_SOCKET_TTL_SECS = 10
 NEW_SESSION_SECS = 30
@@ -169,6 +180,9 @@ class Herdr:
         self.call("pane", "release-agent", pane_id, "--source", SOURCE,
                   "--agent", AGENT, "--seq", str(seq))
 
+    def close(self, pane_id):
+        self.call("pane", "close", pane_id)
+
     def move_tab(self, tab_id, label):
         """Move the whole tab into space `label`; return the tab's new id."""
         result = self.call("tab", "space", label, "--tab", tab_id)
@@ -188,6 +202,13 @@ class Omnigent:
     def get(self, path):
         with urllib.request.urlopen(self.base + path, timeout=5) as resp:
             return json.load(resp)
+
+    def archive(self, session_id):
+        req = urllib.request.Request(
+            f"{self.base}/v1/sessions/{session_id}", data=b'{"archived": true}',
+            method="PATCH", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            resp.read()
 
     def sessions(self):
         """All sessions, following cursor pages (the API defaults to 20)."""
@@ -230,6 +251,7 @@ class Bridge:
         self.seq = seq or Seq()
         self.tracked = {}  # terminal_id -> dict(session, project, state, sent, pane, ...)
         self.skipped = {}  # terminal_id -> time before which it is not rechecked
+        self.missing = {}  # terminal_id -> consecutive polls a tracked pane was absent
         self.project_names, self.projects_at = {}, None
         self.sessions_cache, self.sessions_at = [], None
         self.session_sockets = {}  # session id -> (fetched_at, [realpath sockets])
@@ -305,8 +327,7 @@ class Bridge:
         self.refresh_projects()
         panes = {p["terminal_id"]: p for p in self.herdr.panes()}
 
-        for terminal_id in [t for t in self.tracked if t not in panes]:
-            del self.tracked[terminal_id]  # pane closed: herdr already dropped it
+        self.reap_closed(panes)
         for terminal_id in [t for t in self.skipped if t not in panes]:
             del self.skipped[terminal_id]
 
@@ -360,7 +381,8 @@ class Bridge:
                 entry = self.tracked[terminal_id] = {
                     "session": session_id, "attach": attach, "project": object(), "state": None,
                     "sent": 0, "pane": pane["pane_id"], "released": False,
-                    "tab_label": None, "title_locked": False, "checked": now}
+                    "tab_label": None, "title_locked": False, "checked": now,
+                    "live": False}
                 self.skipped.pop(terminal_id, None)
             elif attach is None:
                 self.release(terminal_id, entry, pane["pane_id"])
@@ -381,6 +403,41 @@ class Bridge:
                     session = {"id": entry["session"], "optimistic": True}
             self.sync(terminal_id, entry, pane, session, now)
 
+    def reap_closed(self, panes):
+        """Archive the session of each tracked pane the user closed in herdr."""
+        if not panes:  # server stopping or restoring: absence proves nothing
+            self.missing.clear()
+            return
+        for terminal_id in list(self.tracked):
+            if terminal_id in panes:
+                self.missing.pop(terminal_id, None)
+                continue
+            self.missing[terminal_id] = self.missing.get(terminal_id, 0) + 1
+            if self.missing[terminal_id] >= CLOSE_CONFIRM_TICKS:
+                del self.missing[terminal_id]
+                self.archive_closed(self.tracked.pop(terminal_id))
+
+    def archive_closed(self, entry):
+        try:
+            session = self.omnigent.session(entry["session"])
+            if session_ended(session):  # already archived or gone: nothing to do
+                return
+            self.omnigent.archive(entry["session"])
+            self.log(f"archived session {entry['session']} (pane closed)")
+        except Exception as err:
+            self.log(f"archive {entry['session']}: {err}")
+
+    def close_archived(self, terminal_id, entry, pane_id):
+        """Close the pane of a session archived in omnigent. The pane is
+        forgotten first so its disappearance is not taken for a user close."""
+        del self.tracked[terminal_id]
+        self.skipped[terminal_id] = self.clock() + self.recheck_secs
+        try:
+            self.herdr.close(pane_id)
+            self.log(f"closed {pane_id} (session {entry['session']} archived)")
+        except Exception as err:
+            self.log(f"close {pane_id}: {err}")
+
     def release(self, terminal_id, entry, pane_id):
         if entry["state"] is None or entry["released"]:
             return
@@ -395,8 +452,10 @@ class Bridge:
         pane_id = pane["pane_id"]
         if session_ended(session):
             self.release(terminal_id, entry, pane_id)
+            if entry["live"] and session is not None:  # archived (not deleted) while tracked
+                self.close_archived(terminal_id, entry, pane_id)
             return
-        entry["released"] = False
+        entry["live"], entry["released"] = True, False
         # Claim first: the tab move and rename below take extra round trips and
         # must not delay the agent showing up.
         state = map_status(session)

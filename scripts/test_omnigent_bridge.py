@@ -32,6 +32,11 @@ class FakeHerdr:
         self.calls.append(("move", args))
         return args[2]
 
+    def close(self, pane_id):
+        self.calls.append(("close", pane_id))
+        if getattr(self, "close_fails", False):
+            raise RuntimeError("boom")
+
 
 class FakeOmnigent:
     def __init__(self, sessions):
@@ -42,6 +47,9 @@ class FakeOmnigent:
 
     def session(self, session_id):
         return next((s for s in self.session_list if s["id"] == session_id), None)
+
+    def archive(self, session_id):
+        self.archived = getattr(self, "archived", []) + [session_id]
 
     def projects(self):
         self.project_calls = getattr(self, "project_calls", 0) + 1
@@ -88,7 +96,7 @@ class ParseTests(unittest.TestCase):
         self.assertEqual([seq.next(), seq.next(), seq.next()], [5000, 5001, 5002])
 
 
-class TickTests(unittest.TestCase):
+class TickBase(unittest.TestCase):
     def make(self, sessions, argv, workspace="w9"):
         pane = {"pane_id": "w9:p1", "terminal_id": "t1", "workspace_id": workspace}
         self.herdr = FakeHerdr([pane], [{"workspace_id": "w9", "label": "Other"}], {"w9:p1": argv})
@@ -99,6 +107,8 @@ class TickTests(unittest.TestCase):
     def kinds(self):
         return [c[0] for c in self.herdr.calls]
 
+
+class TickTests(TickBase):
     def test_report_dedupe_heartbeat_release(self):
         self.make([session()], ["tmux", "-S", "/tmp/sock-s1", "attach"])
         self.bridge.tick()
@@ -114,10 +124,10 @@ class TickTests(unittest.TestCase):
         self.assertEqual(self.herdr.calls[-1][:3], ("report", "w9:p1", "working"))
         self.omni.session_list = [session(archived=True)]
         self.bridge.tick()
-        self.assertEqual(self.herdr.calls[-1][0], "release")
+        self.assertEqual(self.kinds()[-2:], ["release", "close"])  # archived: pane closed
         self.bridge.tick()
         self.assertEqual(self.kinds().count("release"), 1)
-        seqs = [c[3] if c[0] == "report" else c[2] for c in self.herdr.calls if c[0] != "move"]
+        seqs = [c[3] if c[0] == "report" else c[2] for c in self.herdr.calls if c[0] not in ("move", "close")]
         self.assertEqual(seqs, sorted(set(seqs)))
 
     def test_release_when_attach_leaves(self):
@@ -183,6 +193,108 @@ class TickTests(unittest.TestCase):
         self.now[0] = 40
         self.bridge.tick()
         self.assertEqual(self.omni.project_calls, 2)
+
+
+class LifecycleTests(TickBase):
+    """Closing a pane archives the session and archiving closes the pane."""
+
+    def attached(self):
+        self.make([session()], ["omnigent", "attach", "s1"])
+        self.bridge.tick()
+        self.herdr.calls.clear()
+
+    def test_user_close_archives_after_two_polls(self):
+        self.attached()
+        self.herdr.pane_list = [{"pane_id": "w9:p2", "terminal_id": "t2", "workspace_id": "w9"}]
+        self.herdr.argv["w9:p2"] = ["-fish"]
+        self.bridge.tick()
+        self.assertFalse(hasattr(self.omni, "archived"))  # one missing poll is not enough
+        self.bridge.tick()
+        self.assertEqual(self.omni.archived, ["s1"])
+        self.assertNotIn("t1", self.bridge.tracked)
+        self.bridge.tick()
+        self.assertEqual(self.omni.archived, ["s1"])  # no repeat
+        self.assertNotIn("close", self.kinds())
+
+    def test_pane_reappearing_resets_the_count(self):
+        self.attached()
+        pane = self.herdr.pane_list
+        self.herdr.pane_list = [{"pane_id": "w9:p2", "terminal_id": "t2", "workspace_id": "w9"}]
+        self.herdr.argv["w9:p2"] = ["-fish"]
+        self.bridge.tick()
+        self.herdr.pane_list = pane + self.herdr.pane_list
+        self.bridge.tick()
+        self.herdr.pane_list = self.herdr.pane_list[1:]
+        self.bridge.tick()
+        self.assertFalse(hasattr(self.omni, "archived"))
+
+    def test_empty_or_failed_pane_list_never_archives(self):
+        self.attached()
+        self.herdr.pane_list = []
+        for _ in range(5):
+            self.bridge.tick()
+        self.assertFalse(hasattr(self.omni, "archived"))
+        self.assertIn("t1", self.bridge.tracked)
+
+        def fail():
+            raise RuntimeError("server gone")
+        self.herdr.panes = fail
+        for _ in range(5):
+            with self.assertRaises(RuntimeError):
+                self.bridge.tick()
+        self.assertFalse(hasattr(self.omni, "archived"))
+
+    def test_release_paths_do_not_archive(self):
+        self.attached()
+        self.herdr.argv["w9:p1"] = ["-fish"]  # attach left: released, untracked
+        self.bridge.tick()
+        self.herdr.pane_list = [{"pane_id": "w9:p2", "terminal_id": "t2", "workspace_id": "w9"}]
+        self.herdr.argv["w9:p2"] = ["-fish"]
+        for _ in range(3):
+            self.bridge.tick()
+        self.assertFalse(hasattr(self.omni, "archived"))
+
+    def test_already_archived_session_is_not_archived_again(self):
+        self.attached()
+        self.omni.session_list = [session(archived=True)]
+        self.herdr.pane_list = [{"pane_id": "w9:p2", "terminal_id": "t2", "workspace_id": "w9"}]
+        self.herdr.argv["w9:p2"] = ["-fish"]
+        self.bridge.tick()  # archived while tracked: closes (and forgets) the pane
+        self.bridge.tick()
+        self.bridge.tick()
+        self.assertFalse(hasattr(self.omni, "archived"))
+
+    def test_omnigent_archive_closes_pane_without_rearchiving(self):
+        self.attached()
+        self.omni.session_list = [session(archived=True)]
+        self.bridge.tick()
+        self.assertEqual([c for c in self.herdr.calls if c[0] == "close"], [("close", "w9:p1")])
+        self.assertNotIn("t1", self.bridge.tracked)
+        self.herdr.pane_list = [{"pane_id": "w9:p2", "terminal_id": "t2", "workspace_id": "w9"}]
+        self.herdr.argv["w9:p2"] = ["-fish"]  # the pane is gone now
+        for _ in range(3):
+            self.bridge.tick()
+        self.assertFalse(hasattr(self.omni, "archived"))
+        self.assertEqual(self.kinds().count("close"), 1)
+
+    def test_close_failure_is_not_retried_and_session_stays_archived(self):
+        self.attached()
+        self.herdr.close_fails = True
+        self.omni.session_list = [session(archived=True)]
+        self.bridge.tick()
+        self.bridge.tick()
+        self.assertEqual(self.kinds().count("close"), 1)
+
+    def test_session_archived_before_tracking_is_not_closed(self):
+        self.make([session(archived=True)], ["omnigent", "attach", "s1"])
+        self.bridge.tick()
+        self.assertNotIn("close", self.kinds())
+
+    def test_deleted_session_releases_without_closing(self):
+        self.attached()
+        self.omni.session_list = []
+        self.bridge.tick()
+        self.assertNotIn("close", self.kinds())
 
 
 class PagingTests(unittest.TestCase):

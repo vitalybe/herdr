@@ -10,6 +10,7 @@ Usage (run anywhere herdr's CLI can reach the server):
 
     python3 scripts/omnigent_bridge.py [--api URL] [--interval SECS]
         [--default-space NAME] [--no-move] [--herdr PATH] [--once]
+        [--recheck SECS] [--sessions-ttl SECS]
 
 Env: OMNIGENT_API (default http://127.0.0.1:6767), OMNIGENT_BRIDGE_DEFAULT_SPACE
 (default `omnigent`), HERDR_SOCKET_PATH is honoured by the herdr CLI.
@@ -17,18 +18,29 @@ Env: OMNIGENT_API (default http://127.0.0.1:6767), OMNIGENT_BRIDGE_DEFAULT_SPACE
 How it works
 - A pane maps to a session when its foreground argv is `omnigent attach <id>`
   or `tmux -S <sock> attach` (control-mode `-C` clients are ignored) and
-  <sock> is the tmux_socket of one of the session's terminal resources.
-  process-info runs for panes not yet mapped (retried every --recheck secs)
-  and for mapped panes each poll, to notice the attach process leaving.
+  <sock> is the tmux_socket of one of the session's terminal resources
+  (resolved in parallel and cached per session). process-info runs, in
+  parallel, for a pane as soon as `pane list` shows it changed (a shell
+  running a command retitles the pane), and otherwise as a fallback every
+  --recheck secs for unmapped panes and every 2s for mapped ones (to notice
+  the attach process leaving). The session list is
+  cached for --sessions-ttl secs; a new `omnigent attach <id>` pane fetches
+  just that session, and claims the pane with the session's state at once (an
+  idle claim when the omnigent API does not answer), refining later.
 - State: pending_elicitations_count > 0 -> blocked, running -> working,
   idle -> idle. Reports only on change plus a 30s heartbeat.
 - The bridge releases its claim when the session ends or is archived, or when
   the attach process leaves the pane. It never creates panes (sessions
   started elsewhere simply have no pane).
 - Project -> space: the space label is the project name (/v1/projects), or
-  --default-space when the session has no project. A pane moves only when it
-  is first seen or its project changed, into a new tab of the existing space
-  (case-insensitive label match) or a new space. --no-move disables moving.
+  --default-space when the session has no project. The pane's whole tab moves
+  (`tab space`, keeping the tab and its other panes) when the pane is first
+  seen or its project changed, into the existing space (case-insensitive
+  label match) or a new space. --no-move disables moving.
+- Tab name: the tab takes the omnigent session title (`tab rename`, which is
+  advisory in herdr) and follows later title changes. A tab that already has a
+  non-default name, or whose name changed since the bridge last set it, is
+  treated as user-named and left alone.
 
 Caveat: `experimental.hide_tabs_with_agents` hides agent-only spaces, so spaces
 holding only omnigent panes may disappear from the sidebar spaces list.
@@ -37,17 +49,24 @@ holding only omnigent panes may disappear from the sidebar spaces list.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 SOURCE = "omnigent-bridge"
 AGENT = "omnigent"
 HEARTBEAT_SECS = 30
 PROJECT_TTL_SECS = 30
 MAX_SESSION_PAGES = 20
+MAX_WORKERS = 8
+NEGATIVE_SOCKET_TTL_SECS = 10
+NEW_SESSION_SECS = 30
+UNRESOLVED_RECHECK_SECS = 5
+SIGNATURE_FIELDS = ("terminal_title", "title", "foreground_cwd", "agent", "revision")
 
 
 def map_status(session):
@@ -98,21 +117,18 @@ def target_space(session, project_names, default_space):
     return project_names.get(session.get("project_id")) or default_space
 
 
-def find_workspace(workspaces, label):
-    wanted = label.casefold()
-    for ws in workspaces:
-        if ws.get("label", "").casefold() == wanted:
-            return ws["workspace_id"]
-    return None
+DEFAULT_TAB_LABEL = re.compile(r"\d+(:\d{2})?")  # position ("3") or creation time ("09:41")
 
 
-def move_args(pane_id, label, workspaces):
-    """Return the `pane move` args that put the pane into space `label`."""
-    base = ["pane", "move", pane_id]
-    workspace_id = find_workspace(workspaces, label)
-    if workspace_id:
-        return base + ["--new-tab", "--workspace", workspace_id, "--no-focus"]
-    return base + ["--new-workspace", "--label", label, "--no-focus"]
+def may_rename(label, last_set):
+    """Whether the bridge may name a tab whose current label is `label`.
+
+    First time: only a default label. Afterwards: only while the label is
+    still the one the bridge set, otherwise a user changed it.
+    """
+    if last_set is not None:
+        return label == last_set
+    return DEFAULT_TAB_LABEL.fullmatch(label) is not None
 
 
 class Seq:
@@ -142,9 +158,6 @@ class Herdr:
     def panes(self):
         return self.call("pane", "list")["panes"]
 
-    def workspaces(self):
-        return self.call("workspace", "list")["workspaces"]
-
     def process_info(self, pane_id):
         return self.call("pane", "process-info", "--pane", pane_id)["process_info"]
 
@@ -156,9 +169,16 @@ class Herdr:
         self.call("pane", "release-agent", pane_id, "--source", SOURCE,
                   "--agent", AGENT, "--seq", str(seq))
 
-    def move(self, args):
-        result = self.call(*args)
-        return result.get("move_result", {}).get("pane", {}).get("pane_id")
+    def move_tab(self, tab_id, label):
+        """Move the whole tab into space `label`; return the tab's new id."""
+        result = self.call("tab", "space", label, "--tab", tab_id)
+        return result.get("tab", {}).get("tab_id")
+
+    def tab_label(self, tab_id):
+        return self.call("tab", "get", tab_id)["tab"]["label"]
+
+    def rename_tab(self, tab_id, label):
+        self.call("tab", "rename", tab_id, label)
 
 
 class Omnigent:
@@ -199,19 +219,32 @@ class Omnigent:
 
 class Bridge:
     def __init__(self, herdr, omnigent, default_space="omnigent", move=True,
-                 recheck_secs=10, clock=time.monotonic, seq=None):
+                 recheck_secs=1.5, clock=time.monotonic, seq=None, sessions_ttl_secs=2.0,
+                 tracked_recheck_secs=2.0):
         self.herdr, self.omnigent = herdr, omnigent
         self.default_space, self.move = default_space, move
         self.recheck_secs, self.clock = recheck_secs, clock
+        self.sessions_ttl_secs = sessions_ttl_secs
+        self.tracked_recheck_secs = tracked_recheck_secs
+        self.pane_sigs = {}  # terminal_id -> what `pane list` showed at the last check
         self.seq = seq or Seq()
-        self.tracked = {}  # terminal_id -> dict(session, project, state, sent, pane)
-        self.skipped = {}  # terminal_id -> time of last negative process-info
+        self.tracked = {}  # terminal_id -> dict(session, project, state, sent, pane, ...)
+        self.skipped = {}  # terminal_id -> time before which it is not rechecked
         self.project_names, self.projects_at = {}, None
+        self.sessions_cache, self.sessions_at = [], None
+        self.session_sockets = {}  # session id -> (fetched_at, [realpath sockets])
 
     def log(self, msg):
         print(msg, file=sys.stderr, flush=True)
 
-    def refresh_projects(self, sessions):
+    def pmap(self, fn, items):
+        items = list(items)
+        if len(items) < 2:
+            return [fn(i) for i in items]
+        with ThreadPoolExecutor(max_workers=min(len(items), MAX_WORKERS)) as pool:
+            return list(pool.map(fn, items))
+
+    def refresh_projects(self):
         now = self.clock()
         if self.projects_at is not None and now - self.projects_at <= PROJECT_TTL_SECS:
             return
@@ -221,64 +254,118 @@ class Bridge:
         except Exception as err:
             self.log(f"projects: {err}")
 
-    def resolve_session(self, attach, sessions):
+    def sessions(self, force=False):
+        now = self.clock()
+        if force or self.sessions_at is None or now - self.sessions_at >= self.sessions_ttl_secs:
+            self.sessions_at = now  # a failing API is retried after the TTL too
+            try:
+                self.sessions_cache = self.omnigent.sessions()
+            except Exception as err:
+                self.log(f"sessions: {err}")
+        return self.sessions_cache
+
+    def sockets_of(self, session, now):
+        """Real paths of the session's tmux sockets, cached per session."""
+        cached = self.session_sockets.get(session["id"])
+        is_new = time.time() - session.get("created_at", 0) < NEW_SESSION_SECS
+        if cached and not is_new and (cached[1] or now - cached[0] < NEGATIVE_SOCKET_TTL_SECS):
+            return cached[1]
+        try:
+            sockets = [os.path.realpath(s) for s in self.omnigent.tmux_sockets(session["id"])]
+        except Exception:
+            sockets = []
+        self.session_sockets[session["id"]] = (now, sockets)
+        return sockets
+
+    def resolve_session(self, attach, now):
         kind, value = attach
         if kind == "session":
             return value
         wanted = os.path.realpath(value)
-        for session in sessions:
-            if session_ended(session):
-                continue
-            try:
-                sockets = self.omnigent.tmux_sockets(session["id"])
-            except Exception:
-                continue
-            if any(os.path.realpath(s) == wanted for s in sockets):
-                return session["id"]
+        for force in (False, True):  # a just-created session may not be listed yet
+            live = [s for s in self.sessions(force) if not session_ended(s)]
+            hits = self.pmap(lambda s: wanted in self.sockets_of(s, now), live)
+            for session, hit in zip(live, hits):
+                if hit:
+                    return session["id"]
         return None
 
+    def scan(self, pane):
+        """Return (terminal_id, attach); attach is False when process-info failed."""
+        try:
+            return pane["terminal_id"], attach_from_process_info(
+                self.herdr.process_info(pane["pane_id"]))
+        except Exception as err:
+            self.log(f"process-info {pane['pane_id']}: {err}")
+            return pane["terminal_id"], False
+
     def tick(self):
-        sessions = self.omnigent.sessions()
-        by_id = {s["id"]: s for s in sessions}
-        self.refresh_projects(sessions)
-        panes = {p["terminal_id"]: p for p in self.herdr.panes()}
         now = self.clock()
+        by_id = {s["id"]: s for s in self.sessions()}
+        self.refresh_projects()
+        panes = {p["terminal_id"]: p for p in self.herdr.panes()}
 
         for terminal_id in [t for t in self.tracked if t not in panes]:
             del self.tracked[terminal_id]  # pane closed: herdr already dropped it
         for terminal_id in [t for t in self.skipped if t not in panes]:
             del self.skipped[terminal_id]
 
+        for terminal_id in [t for t in self.pane_sigs if t not in panes]:
+            del self.pane_sigs[terminal_id]
+
+        # process-info is a subprocess plus a process-tree walk, so panes are
+        # only checked when `pane list` shows something changed (a shell
+        # running a command usually retitles the pane) or a slow fallback is due.
+        due = []
+        for terminal_id, pane in panes.items():
+            sig = tuple(pane.get(k) for k in SIGNATURE_FIELDS)
+            entry = self.tracked.get(terminal_id)
+            if sig != self.pane_sigs.get(terminal_id):
+                due.append(pane)
+            elif entry is not None:
+                if now - entry["checked"] >= self.tracked_recheck_secs:
+                    due.append(pane)
+            elif now >= self.skipped.get(terminal_id, -1e9):
+                due.append(pane)
+            self.pane_sigs[terminal_id] = sig
+        attaches = dict(self.pmap(self.scan, due))
+
         for terminal_id, pane in panes.items():
             entry = self.tracked.get(terminal_id)
-            if entry is None and now - self.skipped.get(terminal_id, -1e9) < self.recheck_secs:
-                continue
-            try:
-                attach = attach_from_process_info(self.herdr.process_info(pane["pane_id"]))
-            except Exception as err:
-                self.log(f"process-info {pane['pane_id']}: {err}")
+            if terminal_id in attaches:
+                attach = attaches[terminal_id]
+                if attach is False:  # process-info failed, already logged
+                    continue
+                if entry is not None:
+                    entry["checked"] = now
+            elif entry is not None:
+                attach = entry["attach"]  # not due: no change since the last check
+            else:
                 continue
             if entry is not None and attach is not None and attach != entry["attach"]:
-                if self.resolve_session(attach, sessions) != entry["session"]:
+                if self.resolve_session(attach, now) != entry["session"]:
                     self.release(terminal_id, entry, pane["pane_id"])
                     del self.tracked[terminal_id]
                     entry = None  # re-attached elsewhere: map as new
             if entry is None:
-                session_id = self.resolve_session(attach, sessions) if attach else None
+                session_id = self.resolve_session(attach, now) if attach else None
                 if session_id is None:
-                    self.skipped[terminal_id] = now
+                    # an attach that maps to no session is retried less eagerly
+                    wait = UNRESOLVED_RECHECK_SECS if attach else self.recheck_secs
+                    self.skipped[terminal_id] = now + wait
                     if pane.get("agent") == AGENT:  # claim left by an earlier run
                         self.release(terminal_id, {"state": AGENT, "released": False,
                                                    "session": None}, pane["pane_id"])
                     continue
                 entry = self.tracked[terminal_id] = {
                     "session": session_id, "attach": attach, "project": object(), "state": None,
-                    "sent": 0, "pane": pane["pane_id"], "released": False}
+                    "sent": 0, "pane": pane["pane_id"], "released": False,
+                    "tab_label": None, "title_locked": False, "checked": now}
                 self.skipped.pop(terminal_id, None)
             elif attach is None:
                 self.release(terminal_id, entry, pane["pane_id"])
                 del self.tracked[terminal_id]
-                self.skipped[terminal_id] = now
+                self.skipped[terminal_id] = now + self.recheck_secs
                 continue
             entry["attach"] = attach
             session = by_id.get(entry["session"])
@@ -287,7 +374,11 @@ class Bridge:
                     session = self.omnigent.session(entry["session"])
                 except Exception as err:
                     self.log(f"session {entry['session']}: {err}")
-                    continue
+                    if entry["state"] is not None:
+                        continue
+                    # first sight and the API is not answering: claim now from
+                    # what argv told us, refine when the API is back
+                    session = {"id": entry["session"], "optimistic": True}
             self.sync(terminal_id, entry, pane, session, now)
 
     def release(self, terminal_id, entry, pane_id):
@@ -306,42 +397,61 @@ class Bridge:
             self.release(terminal_id, entry, pane_id)
             return
         entry["released"] = False
+        # Claim first: the tab move and rename below take extra round trips and
+        # must not delay the agent showing up.
+        state = map_status(session)
+        if state != entry["state"] or now - entry["sent"] >= HEARTBEAT_SECS:
+            try:
+                self.herdr.report(pane_id, state, self.seq.next())
+                entry["state"], entry["sent"] = state, now
+            except Exception as err:
+                self.log(f"report {pane_id}: {err}")
+        if session.get("optimistic"):
+            return  # no project or title known yet
+        tab_id = pane["tab_id"]
         project = session.get("project_id")
         if self.move and project != entry["project"]:
-            pane_id = self.move_pane(pane, session) or pane_id
+            tab_id = self.move_tab(pane, session) or tab_id
             entry["project"] = project
-        state = map_status(session)
-        if state == entry["state"] and now - entry["sent"] < HEARTBEAT_SECS:
-            return
-        try:
-            self.herdr.report(pane_id, state, self.seq.next())
-        except Exception as err:
-            self.log(f"report {pane_id}: {err}")
-            return
-        entry["state"], entry["sent"] = state, now
+        self.sync_title(entry, tab_id, session)
 
-    def move_pane(self, pane, session):
+    def move_tab(self, pane, session):
+        """Move the pane's whole tab into its project's space; return the tab id."""
         label = target_space(session, self.project_names, self.default_space)
         try:
-            workspaces = self.herdr.workspaces()
-            current = next((w for w in workspaces
-                            if w["workspace_id"] == pane["workspace_id"]), None)
-            if current and current.get("label", "").casefold() == label.casefold():
-                return None
-            new_id = self.herdr.move(move_args(pane["pane_id"], label, workspaces))
-            self.log(f"moved {pane['pane_id']} -> {new_id} space {label!r}")
+            new_id = self.herdr.move_tab(pane["tab_id"], label)
+            if new_id and new_id != pane["tab_id"]:
+                self.log(f"moved tab {pane['tab_id']} -> {new_id} space {label!r}")
             return new_id
         except Exception as err:
-            self.log(f"move {pane['pane_id']}: {err}")
+            self.log(f"move {pane['tab_id']}: {err}")
             return None
+
+    def sync_title(self, entry, tab_id, session):
+        """Name the tab after the session title unless the user named it."""
+        title = (session.get("title") or "").strip()
+        if not title or entry["title_locked"] or title == entry["tab_label"]:
+            return
+        try:
+            label = self.herdr.tab_label(tab_id)
+            if label != title:
+                if not may_rename(label, entry["tab_label"]):
+                    entry["title_locked"] = True
+                    return
+                self.herdr.rename_tab(tab_id, title)
+            entry["tab_label"] = title
+        except Exception as err:
+            self.log(f"rename {tab_id}: {err}")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--api", default=os.environ.get("OMNIGENT_API", "http://127.0.0.1:6767"))
-    parser.add_argument("--interval", type=float, default=2.0)
-    parser.add_argument("--recheck", type=float, default=10.0,
-                        help="seconds between process-info checks of unmapped panes")
+    parser.add_argument("--interval", type=float, default=0.5)
+    parser.add_argument("--recheck", type=float, default=1.5,
+                        help="fallback seconds between process-info checks of unchanged unmapped panes")
+    parser.add_argument("--sessions-ttl", type=float, default=2.0,
+                        help="seconds the omnigent session list is cached")
     parser.add_argument("--default-space",
                         default=os.environ.get("OMNIGENT_BRIDGE_DEFAULT_SPACE", "omnigent"))
     parser.add_argument("--no-move", action="store_true")
@@ -349,7 +459,7 @@ def main(argv=None):
     parser.add_argument("--once", action="store_true", help="run a single poll and exit")
     args = parser.parse_args(argv)
     bridge = Bridge(Herdr(args.herdr), Omnigent(args.api), args.default_space,
-                    not args.no_move, args.recheck)
+                    not args.no_move, args.recheck, sessions_ttl_secs=args.sessions_ttl)
     while True:
         try:
             bridge.tick()
